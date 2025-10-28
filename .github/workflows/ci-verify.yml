@@ -65,9 +65,10 @@ jobs:
           bash scripts/verify_environment.sh
       - name: Run verification script (Windows)
         if: matrix.os == 'windows-latest'
+        # Run the PowerShell script directly to avoid quoting/escape issues in a .cmd wrapper
         run: |
-          scripts\verify_environment.cmd
-        shell: cmd
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_environment.ps1
+        shell: pwsh
       - name: Upload verification artifact
         uses: actions/upload-artifact@v4
         with:
