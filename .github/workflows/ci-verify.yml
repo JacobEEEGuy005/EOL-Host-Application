@@ -1,0 +1,49 @@
+name: CI - Verify
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install backend deps
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        shell: bash
+      - name: Install frontend deps
+        run: |
+          if [ -d frontend ]; then cd frontend && npm ci; fi
+        shell: bash
+      - name: Run verification script (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bash scripts/verify_environment.sh
+      - name: Run verification script (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          scripts\verify_environment.cmd
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-environment-${{ matrix.os }}
+          path: build/verify_environment/
