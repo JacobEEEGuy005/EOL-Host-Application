@@ -1,4 +1,88 @@
 #!/usr/bin/env python3
+"""Push current branch (or specified) and wait for CI to complete.
+
+This is a thin wrapper around `git push` and `scripts/wait_for_pr_ci.py`.
+
+Usage:
+  python scripts/push_and_wait.py            # push current branch
+  python scripts/push_and_wait.py --branch feature/foo
+  python scripts/push_and_wait.py --pr 6
+
+Requirements:
+  - GITHUB_TOKEN set in env for wait_for_pr_ci.py when using PR/branch monitoring
+  - git and python on PATH
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+import os
+
+
+def current_branch() -> str:
+    p = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise SystemExit(f"Could not determine current branch: {p.stderr.strip()}")
+    return p.stdout.strip()
+
+
+def git_push(remote: str, branch: str) -> None:
+    print(f"Pushing {branch} to {remote}...")
+    p = subprocess.run(["git", "push", remote, branch])
+    if p.returncode != 0:
+        raise SystemExit(p.returncode)
+
+
+def run_wait_script(pr: int | None, branch: str | None, timeout: int, interval: int) -> int:
+    cmd = [sys.executable, os.path.join("scripts", "wait_for_pr_ci.py")]
+    if pr is not None:
+        cmd += ["--pr", str(pr)]
+    elif branch is not None:
+        cmd += ["--branch", branch]
+    else:
+        raise SystemExit("Either --pr or --branch must be provided to wait for CI")
+
+    cmd += ["--timeout", str(timeout), "--interval", str(interval)]
+    print("Waiting for CI to complete...\n    " + " ".join(cmd))
+    p = subprocess.run(cmd)
+    return p.returncode
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser()
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--pr", type=int, help="Pull request number to monitor")
+    g.add_argument("--branch", type=str, help="Branch name to push/monitor")
+    p.add_argument("--remote", type=str, default="origin", help="Git remote to push to (default: origin)")
+    p.add_argument("--timeout", type=int, default=900, help="Timeout in seconds to wait for CI (default: 900)")
+    p.add_argument("--interval", type=int, default=10, help="Polling interval seconds (default: 10)")
+    args = p.parse_args(argv)
+
+    try:
+        branch = args.branch or current_branch()
+    except SystemExit as e:
+        print(e)
+        return 2
+
+    try:
+        git_push(args.remote, branch)
+    except SystemExit as e:
+        print(f"git push failed: {e}")
+        return 3
+
+    # Prefer PR monitoring if PR provided, otherwise monitor the branch
+    rc = run_wait_script(args.pr, branch if args.pr is None else None, args.timeout, args.interval)
+    if rc == 0:
+        print("CI succeeded.")
+    else:
+        print(f"CI failed or timed out (code {rc}).")
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+#!/usr/bin/env python3
 """Push current branch and wait for PR/branch CI to finish.
 
 This script wraps a git push and then waits for the corresponding GitHub
