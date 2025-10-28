@@ -51,6 +51,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           scripts\verify_environment.cmd
+        shell: cmd
       - name: Upload verification artifact
         uses: actions/upload-artifact@v4
         with:
