@@ -32,7 +32,16 @@ jobs:
         shell: bash
       - name: Install frontend deps
         run: |
-          if [ -d frontend ]; then cd frontend && npm ci; fi
+          if [ -d frontend ]; then
+            cd frontend
+            # Prefer clean CI install when a lockfile exists for reproducibility
+            if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+              npm ci
+            else
+              # Fall back to npm install when no lockfile is present so CI won't fail
+              npm install --no-audit --no-fund
+            fi
+          fi
         shell: bash
       - name: Run verification script (Linux)
         if: matrix.os == 'ubuntu-latest'
