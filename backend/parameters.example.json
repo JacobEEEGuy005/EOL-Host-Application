@@ -1,0 +1,6 @@
+{
+  "can_interface": "socketcan",
+  "can_channel": "can0",
+  "can_bitrate": 500000,
+  "log_level": "INFO"
+}

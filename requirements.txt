@@ -7,3 +7,4 @@ cantools
 pyserial
 pydantic
 pytest
+httpx
