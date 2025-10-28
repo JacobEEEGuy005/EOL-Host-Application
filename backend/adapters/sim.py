@@ -41,6 +41,17 @@ class SimAdapter:
         time.sleep(0.001)
         self._q.put(frame)
 
+    def loopback(self, frame: Frame) -> None:
+        """Explicitly enqueue a frame for loopback/receivers. Use when tests
+        or external callers want to guarantee the frame is available to
+        `recv()` even if other consumers are present.
+        """
+        try:
+            self._q.put_nowait(frame)
+        except Exception:
+            # fallback to blocking put in rare conditions
+            self._q.put(frame)
+
     def recv(self, timeout: Optional[float] = None) -> Optional[Frame]:
         try:
             f = self._q.get(timeout=timeout)

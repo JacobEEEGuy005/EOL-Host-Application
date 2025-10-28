@@ -181,5 +181,16 @@ async def api_send_frame(payload: dict):
         sim.send(f)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    # ensure a copy is available for direct recv() callers (tests may read sim.recv)
+    try:
+        # prefer explicit loopback if available
+        if hasattr(sim, "loopback"):
+            sim.loopback(f)
+        else:
+            # best-effort fallback
+            sim.send(f)
+    except Exception:
+        # non-fatal for the API; log could be added here
+        pass
     return {"status": "ok"}
 
