@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import asyncio
 import threading
@@ -59,6 +60,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="EOL Host Backend", lifespan=lifespan)
 
+# Allow local static server or other local origins to call the API during dev/testing.
+if os.environ.get("ENV", "development") in ("development", "test"):
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
+
 
 @app.get("/api/health")
 def health():
@@ -74,6 +85,22 @@ def index():
     if os.path.exists(index_path):
         return FileResponse(index_path, media_type="text/html")
     return HTMLResponse("<html><body><h1>EOL Host Backend</h1><p>Frontend not built.</p></body></html>")
+
+
+# Only register the /ws_test.html endpoint in development mode
+if os.environ.get("ENV", "development") == "development":
+    @app.get("/ws_test.html")
+    def serve_ws_test():
+        """Serve the local `frontend/ws_test.html` test page when present.
+
+        This makes local testing simple (single origin) so the page can POST to
+        `/api/send-frame` without CORS preflight issues.
+        """
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        test_path = os.path.join(repo_root, "frontend", "ws_test.html")
+        if os.path.exists(test_path):
+            return FileResponse(test_path, media_type="text/html")
+        raise HTTPException(status_code=404, detail="ws_test.html not found")
 
 
 # --- WebSocket frames streaming (Stage 1 simulated publisher) -----------------
