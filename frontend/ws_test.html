@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>WS Frames Test</title>
+  <style>body{font-family:Segoe UI,Arial;margin:18px}#log{white-space:pre-wrap;background:#f6f6f6;padding:10px;border-radius:6px;height:300px;overflow:auto}</style>
+</head>
+<body>
+  <h1>WebSocket Frames Test</h1>
+  <p>Connects to <code>/ws/frames</code> and displays received JSON messages.</p>
+  <div>
+    <label>WebSocket URL: <input id="url" value="ws://localhost:8000/ws/frames" size="40"></label>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </div>
+  <div style="margin-top:8px">
+    <label>can_id: <input id="can_id" value="512"></label>
+    <label>data (hex): <input id="data" value="0102"></label>
+    <button id="send">Send Frame (via POST /api/send-frame)</button>
+  </div>
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <script>
+    let ws = null;
+    const log = (s) => { const el = document.getElementById('log'); el.textContent = `${new Date().toISOString()} - ${s}\n` + el.textContent; };
+
+    document.getElementById('connect').onclick = async () => {
+      const url = document.getElementById('url').value;
+      ws = new WebSocket(url);
+      ws.onopen = () => { log('WS open'); document.getElementById('connect').disabled = true; document.getElementById('disconnect').disabled = false; };
+      ws.onmessage = (ev) => { log('recv: ' + ev.data); };
+      ws.onclose = () => { log('WS closed'); document.getElementById('connect').disabled = false; document.getElementById('disconnect').disabled = true; };
+      ws.onerror = (e) => { log('WS error'); };
+
+      // send a lightweight ping every 5s to keep connection active and also to let server know client is alive
+      ws._pingInterval = setInterval(() => { try { ws.send('ping'); } catch(e){} }, 5000);
+    };
+
+    document.getElementById('disconnect').onclick = () => {
+      if (ws) {
+        clearInterval(ws._pingInterval);
+        ws.close();
+        ws = null;
+      }
+    };
+
+    document.getElementById('send').onclick = async () => {
+      const can_id = parseInt(document.getElementById('can_id').value, 10);
+      const data = document.getElementById('data').value.trim();
+      try {
+        const r = await fetch('/api/send-frame', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({can_id: can_id, data: data}) });
+        const j = await r.json();
+        log('POST /api/send-frame => ' + JSON.stringify(j));
+      } catch (e) {
+        log('POST error: ' + e);
+      }
+    };
+  </script>
+</body>
+</html>

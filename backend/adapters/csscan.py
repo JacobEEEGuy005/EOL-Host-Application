@@ -38,6 +38,9 @@ class CSSCANAdapter:
             kwargs["channel"] = self.channel
         if self.bitrate is not None:
             kwargs["bitrate"] = self.bitrate
+        # For virtual backends it's useful to receive our own messages during tests
+        if self.interface == "virtual":
+            kwargs["receive_own_messages"] = True
         self._bus = can.Bus(**kwargs)
 
     def close(self) -> None:
