@@ -111,7 +111,7 @@ The project uses a Web UI (frontend) and a Python backend (service) that owns CA
 - **FastAPI** — REST + WebSocket API
 - **Uvicorn[standard]** — ASGI server
 - **python-can** == 4.5.* — CAN bus abstraction
-- **python-can-csscan-serial** — CL2000 / csscan serial backend (install from PyPI)
+- **python-can-csscan-serial==2.4.1** — CL2000 / csscan serial backend (install from PyPI)
 - **canalystii** == 0.1 — CANalyst-II adapter (where used)
 - **cantools** — DBC parsing and signal decode/encode
 - **pyserial** — serial port access for CL2000 and other serial devices
