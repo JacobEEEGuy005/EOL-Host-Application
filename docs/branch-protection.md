@@ -1,4 +1,4 @@
-Branch Protection Guidance
+# Branch Protection Guidance
 
 Recommended branch protection rules for the `main` branch (configure in GitHub repository settings or via an admin workflow):
 
