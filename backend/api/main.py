@@ -192,5 +192,17 @@ async def api_send_frame(payload: dict):
     except Exception:
         # non-fatal for the API; log could be added here
         pass
+    # Also enqueue into the async frame_queue if present so tests / websocket
+    # broadcaster observers will reliably see the frame even if a reader
+    # thread consumes the SimAdapter queue first. This is a low-risk, test-
+    # friendly enhancement that mirrors the loopback for async consumers.
+    try:
+        frame_queue = getattr(app.state, "frame_queue", None)
+        if frame_queue is not None:
+            # frame_queue is an asyncio.Queue; we're in an async handler so await
+            await frame_queue.put(f)
+    except Exception:
+        # non-fatal; keep API resilient in CI and production
+        pass
     return {"status": "ok"}
 
