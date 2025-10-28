@@ -1,291 +1,11 @@
 # End-of-Line (EOL) Host Application - Project Requirements
 
 **Project Name:** EOL Testing Application for Integrated Power Converter (IPC)  
-**Version:** 1.0  
+**Version:** 1.1  
 **Date:** October 2025  
 **Organization:** Ergon Mobility Pvt Ltd  
-**Platform:** Linux,Windows  
+**Platform:** Linux, Windows
 
----
-
-## 1. Executive Summary
-
-### 1.1 Project Overview
-The End-of-Line (EOL) Host Application is designed to control the EOL Hardware via a CAN Bus. It commands the EOL Hardware to apply voltages to digital inputs or apply a controlled voltage to analog inputs of the IPC. The IPC is put to Test/Calibration mode, where it transmits state of the digital inputs and the analog voltages on the same CAN Bus. The EOL Host application automates this process and generates a test and calibration report for each IPC.
-
-### 1.2 Project Goals
-- Automate end-of-line testing procedures to reduce manual testing time by 90%
-- Ensure 100% signal integrity validation before IPC deployment
-- Provide real-time visual feedback and comprehensive test reporting
-- Support extensible test configurations without code modifications
-
-### 1.3 Target Users
-- Quality Assurance Engineers
-- Production Line Technicians
-- Test Engineers
-- Hardware Validation Teams
-
----
-
-## 2. Functional Requirements
-
-### 2.1 Digital Signal Testing
-
-#### 2.1.1 Relay Control
-**REQ-DST-001:** The system shall control up to 4 relays through CAN Protocol
-- R0: Key Switch relay
-- R1: Reverse relay
-- R2: Boost relay
-- R3: Forward relay
-
-**REQ-DST-002:** System shall initialize all relays to OFF state on startup via CAN.  
-**REQ-DST-003:** System shall implement 100ms debounce delay after relay state changes (configurable via parameters.json)
-
-#### 2.1.2 Digital Test Execution
-**REQ-DST-004:** System shall execute ON/OFF test for each Digital signal
-1. Turn on the relay 
-2. Wait for stabilization (100ms)
-3. Read CAN feedback from EOL Hardware
-4. Read the CAN feedback from IPC
-5. Turn off the relay
-6. Read CAN feedback from EOL Hardware
-7. Read the CAN feedback from IPC
-
-**REQ-DST-005:** System shall mark test as PASS if CAN feedback matches expected value for ON and OFF.
-
-**REQ-DST-006:** System shall mark test as FAIL if:
-- No CAN feedback received within 500ms timeout
-- CAN feedback value doesn't match expected byte value for ON or OFF
-
-**Normalization Note:** Use a single canonical timeout constant (default: 500 ms). All timeout references (previously 300-500ms or 500ms) shall reference this constant and be configurable in parameters.json as `can_feedback_timeout_ms`.
-
-### 2.2 Analog Signal Testing
-
-#### 2.2.1 DAC/MUX Control
-**REQ-AST-001:** System shall control the DAC on the EOL Hardware, capable of 0-5000mV output via CAN. 
-
-**REQ-AST-002:** System shall control 8-channel analog multiplexer via CAN which will apply DAC voltage to IPC Analog Input.
-
-**REQ-AST-003:** System shall supports voltage output range 0-5V.
-
-**REQ-AST-004:** System shall enable the MUX, set MUX to channel 0 by default and reset after each test
-
-#### 2.2.2 Voltage Sweep Testing
-**REQ-AST-005:** System shall perform voltage sweep test for analog signals:
-1. Set MUX to signal-specific channel (0-7)
-2. Sweep DAC voltage from 0V to 5V in 100mV steps
-3. For each voltage step:
-   - Apply voltage via DAC
-   - Wait 200ms for stabilization
-   - Read CAN feedback from EOL Hardware
-   - Read the CAN feedback from IPC
-   - Record all three values (applied, CAN EOL ADC, CAN IPC ADC)
-
-**REQ-AST-006:** System shall mark analog test as PASS if all voltage steps meet tolerance: default tolerance = ±10 mV (0.01 V). Acceptance criteria in testing sections updated to match ±10 mV.
-
-**REQ-AST-007:** System shall generate live plot during voltage sweep showing:
-- X-axis: Applied EOL DAC voltage
-- Y-axis: Feedback voltage from IPC
-- Two lines: IPC CAN feedback (solid) and EOL ADC feedback (dashed)
-
-#### 2.2.3 ADC Verification
-**REQ-AST-008:** System shall read following voltages from EOL ADC:
-- EOL ADC A0 : 5V Rail Voltage
-- EOL ADC A1 : EOL DAC Output Voltage
-
-**REQ-AST-009:** System shall display both voltage in real-time on UI
-
-### 2.3 CAN Bus Communication
-
-#### 2.3.1 CAN Interface Support
-**REQ-CAN-001:** System shall support two CAN interface types:
-1. CANalyst-II (USB-CAN-B) via `canalystii` driver
-2. PEAK CAN via SocketCAN (`can0` interface)
-3. CL2000 using python-can-csscan-serial 
-
-**REQ-CAN-002:** System shall auto-detect and connect to available CAN interface on startup
-
-**REQ-CAN-003:** System shall use 500kbps bitrate for all CAN communications
-
-**REQ-CAN-004:** System shall automatically bring up `can0` interface if using SocketCAN
-
-#### 2.3.2 CAN Message Handling
-**REQ-CAN-005:** System shall run CAN listener in background daemon thread
-
-**REQ-CAN-006:** System shall buffer last 100 CAN messages in thread-safe deque
-
-**REQ-CAN-007:** System shall implement timestamp-based message freshness checking:
-- Only process CAN messages received AFTER test action
-- Compare message timestamp against initial snapshot
-
-**REQ-CAN-008:** System shall poll for CAN feedback with configurable timeout (default 300-500ms)
-
-**REQ-CAN-009:** System shall detect CAN disconnection and attempt automatic reconnection
-
-**REQ-CAN-010:** System shall display real-time CAN connection status with visual indicator:
-- Green: Connected and active
-- Red (blinking): Disconnected
-
-#### 2.3.3 CAN Message Format
-**REQ-CAN-011:** CAN DBC for EOL Hardware will be provided, which is to be used link Host with EOL Hardware 
-
-**REQ-CAN-012:** CAN DBC for IPC will be provided, which will link the digital and analog feedback.
-
-### 2.4 Configuration Management
-
-#### 2.4.1 JSON Configuration File
-**REQ-CFG-001:** System shall load all test definitions from `parameters.json`
-
-**REQ-CFG-002:** Configuration file shall define signals with structure
-- The AI Agent shall shall propose a json structure based on new requriements for the developer to choose
-
-**REQ-CFG-003:** System shall support adding new signals via JSON without code changes
-
-**REQ-CFG-004:** System shall support configuring the json in the GUI
-
-**REQ-CFG-004:** The JSON shall link the EOL test hardware to the signal under test from IPC, using CAN dbc file from both EOL and IPC
-
-**REQ-CFG-005:** System shall validate JSON schema on load and display errors for invalid configuration
-
-**REQ-CFG-006:** Add a versioned JSON schema and example entry (suggested fields)
-
-### 2.5 User Interface Requirements
-
-#### 2.5.1 Application Navigation
-**REQ-UI-001:** System shall display welcome screen on startup with:
-- Ergon Mobility branding (`ergon.jpg` background)
-- "Get Started" button to launch main test interface
-- "Test Configurator" button to launch GUI based windows to configure the json
-
-**REQ-UI-002:** System shall transition from welcome to main UI without blocking
-
-**REQ-UI-003:** Application shall run in maximized window mode by default
-
-#### 2.5.2 Test Configurator
-**REQ-UI-004:** System shall support selecting the dbc files for EOL Hardware and for the IPC
-**REQ-UI-005:** System shall support link the Signal under test from IPC CAN dbc and link it to the which Hardware test from EOL CAN dbc
-**REQ-UI-006:** System shall support on creating, saving, loading json file.
-**REQ-UI-007:** System will check the test configuration before saving as json.
-
-#### 2.5.2 Main Test Interface
-**REQ-UI-008:** Main interface shall display:
-- Application title "CAN Signal Test Runner"
-- CAN connection status (visual dot + text label)
-- The EOL 5V Rail voltage and the DAC Output (updated every 1 second)
-- Control buttons: Run Tests, Export Report, Send CAN Frame, Relay Control
-- Progress label showing test status
-- Results list with color-coded PASS (green) / FAIL (red)
-- Footer with copyright notice
-
-**REQ-UI-009:** Run Tests button shall:
-- Disable itself during test execution
-- Open live plot window for analog tests
-- Open live log window showing console output
-- Enable after test completion
-
-**REQ-UI-010:** Results list shall display format: `Signal Name (category) - STATUS`
-
-**REQ-UI-011:** Double-clicking result item shall open detailed test dialog
-
-#### 2.5.3 Test Detail Dialog
-**REQ-UI-012:** Detail dialog shall display:
-- Signal name, category, and overall status
-- Per-test results with pass/fail indicators
-- For analog tests: textual sweep results table
-- For analog tests: matplotlib graph (applied vs feedback voltage)
-- Close button
-
-**REQ-UI-013:** Sweep results table shall show:
-- Applied voltage from EOL Hardware → CAN feedback voltage from IPC (error) ✅/❌
-- ADC feedback voltage
-- Error tolerance checking
-
-#### 2.5.4 Live Plotting
-**REQ-UI-014:** Live plot window shall:
-- Update in real-time during voltage sweep
-- Display separate lines for Analog Signal 1 (blue) and Analog Signal 2 (green)
-- Show both CAN feedback (solid line) and ADC voltage (dashed line)
-- Auto-scale axes for optimal viewing
-- Include grid and legend
-
-**REQ-UI-015:** Plot shall emit Qt signals for thread-safe updates from test runner
-
-#### 2.5.5 Manual Controls
-**REQ-UI-016:** Relay Control dialog shall provide:
-- Manual ON/OFF buttons for each of 4 relays
-- Styled buttons matching application theme (#005792 blue)
-- Manual controls shall issue CAN control frames to the EOL Hardware (STM32); the Host will not perform local GPIO actuation
-
-**REQ-UI-017:** Manual controls shall be disabled when the CAN link to the EOL Hardware is disconnected; queued commands are not sent when disconnected
-
-#### 2.5.6 Test Logs
-**REQ-UI-018:** Log window shall:
-- Redirect stdout/stderr to scrollable text area
-- Auto-scroll to latest output
-- Display during test execution
-- Stop logging redirection after test completion
-
-### 2.6 Report Generation
-
-**REQ-RPT-001:** System shall support export of test results to:
-- Plain text (.txt)
-- CSV format (.csv)
-
-**REQ-RPT-002:** Report shall include for each signal:
-- Signal name and category
-- Overall status (PASS/FAIL)
-- Per-test results with values
-- Voltage sweep data for analog tests
-
-**REQ-RPT-003:** Export button shall be disabled if no test results available
-
-### 2.7 Error Handling & Recovery
-
-**REQ-ERR-001:** System shall gracefully handle missing hardware:
-- No heartbeat from EOL Hardware
-- Decode error status of EOL Hardware from CAN
-- Disable analog tests if DAC unavailable on the EOL Hardware
-
-**REQ-ERR-002:** System shall display error dialog for critical failures:
-- CAN bus initialization failure
-- Any Error from EOL Hardware
-- Any Error from IPC 
-
-**REQ-ERR-003:** System shall implement test abortion:
-- User can close live plot or log window to stop tests
-- Stop button/signal shall propagate to test thread
-- All hardware shall return to safe state on abort
-
-**REQ-ERR-004:** System shall reset hardware to safe state on:
-- Test completion (success or failure)
-- Application exit
-- Test abortion
-- Error conditions
-
-Safe state defined as:
-- All relays OFF
-- MUX set to channel 0
-- DAC set to 0V
-
----
-
-## 3. Non-Functional Requirements
-
-### 3.1 Performance
-
-**REQ-NFR-001:** Test execution shall complete for all signals within 2 minutes.( This can be relaxed depending on the amount test and duration of each test)
-
-**REQ-NFR-002:** UI shall remain responsive during tests (no blocking operations on main thread)
-
-**REQ-NFR-003:** CAN message polling shall have <50ms latency
-
-**REQ-NFR-004:** Analog voltage sweep shall complete in <30 seconds per signal.
-
-**REQ-NFR-005:** Live plot updates shall occur at minimum 10 FPS
-
-### 3.2 Reliability
-
-**REQ-NFR-006:** System shall handle 1000+ consecutive test runs without memory leaks
 
 **REQ-NFR-007:** CAN reconnection shall succeed within 3 attempts or 5 seconds
 
@@ -335,6 +55,10 @@ Safe state defined as:
 
 **REQ-HW-002:** Recommended OS: Raspberry Pi OS (Bookworm) for Raspberry Pi hosts; Linux distributions or Windows supported when appropriate CAN drivers are installed
 
+**REQ-HW-002a:** For Raspberry Pi 5 targets prefer a 64-bit OS (Ubuntu 22.04 / Raspberry Pi OS 64-bit). Ensure the test user is added to the `dialout` (serial) and appropriate groups and that `can-utils` is available for diagnostics.
+
+**REQ-HW-002b:** For Linux builds targeting Raspberry Pi 5 (arm64), perform native builds and verification on Raspberry Pi OS (64-bit) to ensure binary compatibility and proper validation of vendor drivers and system libraries. Cross-builds may be used for CI, but at least one native build/validation pass on Raspberry Pi OS is required prior to release.
+
 **REQ-HW-003:** Python 3.11+ interpreter for host applications
 
 ### 4.2 EOL Hardware
@@ -372,66 +96,82 @@ Safe state defined as:
 ---
 
 ## 5. Software Dependencies
-- AI Agent to update software dependancies based on new reuirements
+- AI Agent to update software dependencies based on new requirements
 
-### 5.1 Core Framework
+### 5.1 Overview
+The project uses a Web UI (frontend) and a Python backend (service) that owns CAN hardware. The backend exposes REST and WebSocket endpoints consumed by the frontend.
 
-**REQ-SW-001:** PyQt5 == 5.15.9 (GUI framework)
+### 5.2 Frontend (Presentation Layer)
+- Recommended stack: React + TypeScript (or Vue/Svelte) built with Vite
+- Node.js LTS (18.x or 20.x)
+- Frontend libraries: Chart.js / Recharts / Plotly.js for real-time plotting; optional UI library (Material UI, Ant Design)
 
-**REQ-SW-002:** The Host application shall not require `RPi.GPIO` or direct I2C libraries for hardware actuation — hardware actuation is performed by the EOL Hardware (STM32) over CAN. The Host requires CAN backends (see Communication Libraries).
+### 5.3 Backend (Runtime & Libraries)
+- **Python:** 3.11+
+- **FastAPI** — REST + WebSocket API
+- **Uvicorn[standard]** — ASGI server
+- **python-can** == 4.5.* — CAN bus abstraction
+- **python-can-csscan-serial** — CL2000 / csscan serial backend (install from PyPI)
+- **canalystii** == 0.1 — CANalyst-II adapter (where used)
+- **cantools** — DBC parsing and signal decode/encode
+- **pyserial** — serial port access for CL2000 and other serial devices
+- **pydantic** — configuration validation for `parameters.json`
+- **pytest** — unit testing
 
-### 5.2 Communication Libraries
+Optional server-side libraries (for report export or heavy numeric processing):
+- **numpy**
+- **matplotlib** (for server-side plots or PDF exports)
 
-**REQ-SW-003:** python-can == 4.5.0 (CAN bus abstraction)
+### 5.4 System Tools & Debugging
+- **can-utils** (Linux) — SocketCAN utilities for testing (candump, cansend, slcand)
 
-**REQ-SW-004:** canalystii == 0.1 (CANalyst-II driver)
+### 5.5 Packaging & Build Tools
+- **PyInstaller** (optional) — create Windows single-binary of backend
+- **Docker** (optional) — build and distribute backend images (arm64 for RPi 5)
+- **GitHub Actions** — CI matrix builds (windows-latest, ubuntu-latest, ubuntu-arm64) recommended
 
-### 5.4 Visualization
-
-**REQ-SW-005:** matplotlib == 3.10.3 (real-time plotting)
-
-**REQ-SW-006:** numpy == 1.24.2 (numerical operations)
-
-### 5.5 System Tools
-
-**REQ-SW-007:** can-utils (for SocketCAN debugging)
+Notes:
+- The previous PyQt5 desktop requirement has been replaced by the Web UI + backend architecture. If a desktop single-executable is required, the web UI can be packaged with Electron or the backend and frontend can be bundled together.
+- Linux/arm64 builds intended for Raspberry Pi 5 must be built and validated on Raspberry Pi OS (64-bit). CI may perform cross-builds, but release artifacts for RPi must be produced from a native Raspberry Pi OS environment (or validated there) to ensure correct libc/ABI, kernel module and driver compatibility.
 
 ---
 
 ## 6. System Architecture
 - AI Agent to update System Architecture to suit new requirements.
 
-### 6.1 Application Layers
+### 6.1 Application Layers (updated for Web UI)
 
 ```
 ┌─────────────────────────────────────┐
-│     Presentation Layer (PyQt5)      │
-│  main.py, can_test_ui.py            │
+│ Presentation Layer (Web UI, React)  │
+│ - frontend/ (Vite + React + TS)     │
+│ - served as static files by backend │
 └─────────────────┬───────────────────┘
                   │
 ┌─────────────────▼───────────────────┐
-│       Business Logic Layer          │
-│  test_runner.py, parameters.json    │
+│ Backend / Business Logic (FastAPI)  │
+│ - API: REST (control/config)        │
+│ - Realtime: WebSocket (frame stream)│
+│ - test_runner.py, parameters.json   │
 └─────────────────┬───────────────────┘
                   │
 ┌─────────────────▼───────────────────┐
-│     Hardware Abstraction Layer      │
-│  can_adapter.py (Host CAN command   │
-│  serializers), CAN drivers          │
-│  EOL Hardware (STM32) handles GPIO, │
-│  I2C, ADC/DAC, MUX and relay drive  │
-└─────────────────────────────────────┘
+│ Hardware Abstraction Layer (Adapters)│
+│ - python-can adapter plugins (pcan,  │
+│   vector, csscan, socketcan, sim)    │
+│ - EOL Hardware (STM32) over CAN      │
+└──────────────────────────────────────┘
 ```
 
-### 6.2 Threading Model
+### 6.2 Threading & Concurrency Model
 
-**REQ-ARCH-001:** Main thread handles UI events and rendering
+**REQ-ARCH-001:** Presentation is a browser client; the backend must be designed to keep the API event loop non-blocking.
 
-**REQ-ARCH-002:** TestRunnerThread executes tests without blocking UI
+**REQ-ARCH-002:** Test runners shall execute in backend background workers or async tasks so REST/WebSocket responsiveness is preserved.
 
-**REQ-ARCH-003:** CAN listener daemon thread receives messages continuously
+**REQ-ARCH-003:** A CAN listener shall run as a background task or dedicated thread in the backend, feeding a thread-safe queue consumed by test runners and WebSocket broadcasters.
 
-**REQ-ARCH-004:** Qt signals/slots provide thread-safe communication
+**REQ-ARCH-004:** Frontend updates are triggered via WebSocket messages; the frontend must implement reconnection and idempotent handling of events.
 
 ### 6.3 State Management
 
@@ -485,11 +225,22 @@ Safe state defined as:
 
 ### 8.1 Installation
 
-**REQ-DEP-001:** Installation shall be achievable via:
+**REQ-DEP-001:** Installation shall be achievable via separate backend and frontend steps:
+
+Backend (Python):
 ```bash
 git clone <repository>
 cd EndOfLine-Testing
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+Frontend (development or build):
+```bash
+cd frontend
+npm install
+npm run build   # produces static files in frontend/dist
 ```
 
 **REQ-DEP-002:** Virtual environment usage shall be documented but optional
@@ -502,7 +253,12 @@ pip install -r requirements.txt
 
 ### 8.3 Execution
 
-**REQ-DEP-007:** Application shall start via: `python3 main.py`
+**REQ-DEP-007:** Backend service shall start via ASGI server (example):
+```bash
+uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
+```
+
+The backend will serve the built frontend static files in production or the UI may be packaged using Electron if a desktop single-executable is desired.
 
 **REQ-DEP-008:** Application shall handle Ctrl+C gracefully with cleanup
 
@@ -569,14 +325,128 @@ pip install -r requirements.txt
 
 ---
 
+## 13. Build Plan & Milestones
+
+This section defines a staged implementation plan with clear milestones, acceptance criteria and expected artifacts for each stage. The plan is written to support iterative delivery, quick validation on Raspberry Pi 5 (arm64) and Windows, and continuous integration.
+
+Stage 0 — Project Setup & Developer Environment (milestone M0)
+- Goal: Create repository layout, developer guides, basic CI skeleton, and local dev environment for backend and frontend.
+- Acceptance criteria:
+   - `backend/` and `frontend/` folders exist with minimal README
+   - `requirements.txt` and `package.json` created with pinned versions
+   - GitHub Actions basic workflow that runs lint and tests on push (windows + ubuntu)
+   - Developer onboarding doc: build + run instructions for Windows and RPi (WSL/WSL2 guidance)
+   - Required tools and libraries are installed locally and verified: Python 3.11+, pip, Node.js (LTS), npm, `pip` packages from `requirements.txt`, and frontend dependencies via `npm install`.
+   - Verification scripts (`scripts/verify_environment.sh` for Linux/macOS and `scripts/verify_environment.cmd` for Windows) are added and produce machine-readable verification artifacts under `build/verify_environment/verification-<os>-<timestamp>.txt`.
+   - Verification succeeds on at least one representative host per platform (Windows and Raspberry Pi 5 / Ubuntu-arm64) and verification artifacts are committed or uploaded to CI artifacts so the AI agent can read them.
+   - CI includes a verification job that runs the verification scripts on `ubuntu-latest` and `windows-latest` runners and stores the resulting verification artifacts.
+   - Git repository initialized with a default branch `main` and initial commit.
+   - `.gitignore` present and configured to ignore typical Python, Node, and OS artifacts (venv, node_modules, build outputs, editors); sample `.gitignore` added to root.
+   - Branch-based workflow (GitHub Flow) is configured and documented:
+      - Use short-lived feature branches (e.g., `feature/`, `fix/`, `chore/`) branched off `main`.
+      - All changes are introduced via pull requests (PRs) targeting `main`.
+      - PRs require at least one approving review and passing CI (lint + tests) before merge.
+      - Protect `main` with branch protection rules (require PR reviews and green CI) and enable required status checks.
+   - Commit and PR hygiene:
+      - Make regular, small, focused commits with professional messages describing intent and scope.
+      - Adopt a commit message convention (recommendation: Conventional Commits) and include meaningful changelog entries.
+      - Use `CHANGELOG.md` with at least `Unreleased` section; update on merge/ release.
+   - Repository metadata and governance artifacts present: `README.md` (basic build/run), `CONTRIBUTING.md` (branching + PR process), and `.github/PULL_REQUEST_TEMPLATE.md`.
+- Artifacts: repo skeleton, READMEs, CI pipeline stub
+- Estimated time: 1 week
+
+Stage 1 — Backend Core & CAN Adapters (milestone M1)
+- Goal: Implement FastAPI backend, CAN adapter interface, and three adapters: SocketCAN (sim/vcan), CL2000 (`python-can-csscan-serial`), and PCAN (pcan/pcanbasic or socketcan where available).
+- Acceptance criteria:
+   - Backend serves health endpoint `/api/health` and static frontend files
+   - CAN adapter interface documented and implemented for `socketcan`, `csscan` and `pcan` (or adapter shim to PCANBasic)
+   - Unit tests covering adapter open/close/send/recv using mocks and vcan
+   - Local WebSocket `/ws/frames` streams CAN frames (sim adapter emits test frames)
+- Artifacts: `backend/` service, example config, unit tests, adapter docs
+- Estimated time: 2–3 weeks
+
+Stage 2 — Frontend Skeleton & Realtime Integration (milestone M2)
+- Goal: Implement minimal React app that connects to REST and WebSocket endpoints, shows connection status, and renders a live frame table and simple plot.
+- Acceptance criteria:
+   - Frontend connects to backend, displays CAN status, and updates live frame list via WebSocket
+   - Basic plot of simulated analog sweep data using Chart.js or Recharts
+   - Frontend build artifacts served by backend in production mode
+- Artifacts: `frontend/` build, integration tests (E2E smoke with simulated adapter)
+- Estimated time: 2 weeks
+
+Stage 3 — Test Runner, Configuration & DBC Integration (milestone M3)
+- Goal: Implement test runner, `parameters.json` schema, JSON configurator endpoints, and DBC decoding (cantools) support.
+- Acceptance criteria:
+   - `parameters.json` schema v1 validated by backend (Pydantic)
+   - DBC files can be uploaded/selected via API and are used to decode incoming CAN frames
+   - Implemented digital relay and analog sweep test flows per requirements (timeout constants configurable)
+   - Test results persisted to local SQLite or JSON files with export to CSV/TXT
+- Artifacts: test_runner implementation, parameters.json examples, DBC handling, report exports
+- Estimated time: 3–4 weeks
+
+Stage 4 — Hardware Validation & Driver Interop (milestone M4)
+- Goal: Validate real hardware on Windows and RPi 5: PCAN, CANalyst-II, and CL2000. Implement any platform-specific shims and documentation for driver installation.
+- Acceptance criteria:
+   - PCAN device tested on Windows and, where applicable, on Linux with PEAK drivers
+   - CANalyst-II tested on Windows via `canalystii` adapter
+   - CL2000 tested via `python-can-csscan-serial` on Windows and on RPi (serial permissions, baud settings validated)
+   - Documented driver install steps and troubleshooting notes
+- Artifacts: hardware test logs, updated README with vendor driver install steps, any adapter patches
+- Estimated time: 2 weeks (may vary by hardware access)
+
+Stage 5 — Packaging, Deployment & CI (milestone M5)
+- Goal: Create build artifacts for Windows (PyInstaller) and Linux (Deb/arm64 binary or Docker image). Implement CI that builds and artifacts packages for both platforms.
+- Acceptance criteria:
+   - GitHub Actions builds Windows executable and Linux (x64 and arm64) artifacts
+   - systemd service template for RPi and Windows service/installer notes included
+   - Smoke tests run against packaged artifact in CI (using simulated adapters)
+ -   RPi (arm64) artifacts are built and validated on Raspberry Pi OS (64-bit) or produced by a native Raspberry Pi OS build machine; CI must include a validation step that runs the packaged artifact on Raspberry Pi OS (physical device or validated image) and stores logs/artifacts.
+- Artifacts: installers/artifacts, CI workflows, systemd file, packaging docs
+- Estimated time: 2–3 weeks
+
+Stage 6 — Validation, Field Testing & Performance Tuning (milestone M6)
+- Goal: Run extended validation on production hardware, optimize timing, and ensure reliability goals (1000+ runs, reconnection behavior).
+- Acceptance criteria:
+   - 100 consecutive test runs pass on a target bench (or documented failures with mitigation)
+   - CAN reconnection tests pass within defined retry windows
+   - Performance profiling completed; CPU/memory usage within acceptable limits on RPi 5
+- Artifacts: field test reports, performance tuning notes
+- Estimated time: 2–4 weeks
+
+Stage 7 — Documentation, Training & Handover (milestone M7)
+- Goal: Finalize user and developer documentation, training slides, and handover materials to operations/QA.
+- Acceptance criteria:
+   - User guide and operator checklist created
+   - Developer README with architecture, build, and extension guide
+   - Training session completed and acceptance sign-off
+- Artifacts: docs, slides, recorded demo
+- Estimated time: 1–2 weeks
+
+Risks & Mitigations
+- Vendor drivers (Vector/PCAN) availability on Linux — mitigation: provide Windows gateway/proxy approach and document fallbacks.
+- Timing/latency constraints — mitigation: keep timing-critical I/O in backend; prefer kernel timestamps (SocketCAN/PCANBasic) and measure in Stage 6.
+- Hardware access / flakiness — mitigation: provide robust simulation adapters and CI tests using vcan.
+
+KPIs & Success Criteria
+- All core features (digital tests, analog sweeps, report exports) pass automated unit and integration tests.
+- System can run 100 consecutive test cycles without memory growth; CAN reconnection behavior meets requirements.
+- Frontend behaves responsively on Raspberry Pi 5 and Windows; live plots update at target rates (>=10 FPS) under test load.
+
+Next steps
+- Choose which milestone to start first (recommended: Stage 0 → Stage 1). I can scaffold Stage 0 or Stage 1 immediately (create `backend/` and `frontend/` skeletons, `requirements.txt`, `package.json`, and CI stub).
+
 ## 12. Document Revision History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | Oct 2025 | AI Agent | Initial comprehensive requirements document |
+| 1.1 | Oct 2025 | AI Agent | Updated to Web UI + Python backend architecture; added FastAPI, python-can-csscan-serial, frontend stack and RPi deployment notes |
+| 1.2 | Oct 2025 | AI Agent | Added staged build plan and milestones for implementation and verification |
 
 ---
 
 **Document Status:** Draft  
 **Next Review Date:** TBD  
 **Approver:** [Engineering Manager]
+
+---
