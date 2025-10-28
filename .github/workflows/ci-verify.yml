@@ -25,12 +25,12 @@ jobs:
         with:
           node-version: '18'
       - name: Install backend deps
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         shell: bash
-      - name: Install frontend deps
+      - name: Install frontend deps (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           if [ -d frontend ]; then
             cd frontend
@@ -43,6 +43,20 @@ jobs:
             fi
           fi
         shell: bash
+      - name: Install frontend deps (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          if (Test-Path "frontend") {
+            cd frontend
+            # Prefer clean CI install when a lockfile exists for reproducibility
+            if ((Test-Path "package-lock.json") -or (Test-Path "npm-shrinkwrap.json")) {
+              npm ci
+            } else {
+              # Fall back to npm install when no lockfile is present so CI won't fail
+              npm install --no-audit --no-fund
+            }
+          }
+        shell: pwsh
       - name: Run verification script (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |

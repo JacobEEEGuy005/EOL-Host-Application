@@ -2,7 +2,7 @@
 REM Verify environment and write machine-readable artifact (requires PowerShell)
 powershell -NoProfile -Command "
 $ts=(Get-Date).ToString('yyyyMMddTHHmmss');
-$out=Join-Path 'build\\verify_environment' ('verification-windows-'+$ts+'.txt');
+$out=Join-Path 'build\verify_environment' ('verification-windows-'+$ts+'.txt');
 New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null;
 '' | Out-File -FilePath $out;
 ('timestamp: '+$ts) | Out-File -FilePath $out -Append;
