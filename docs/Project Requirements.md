@@ -1,10 +1,15 @@
 # End-of-Line (EOL) Host Application - Project Requirements
 
 **Project Name:** EOL Testing Application for Integrated Power Converter (IPC)  
-**Version:** 1.1  
-**Date:** October 2025  
+**Version:** 1.2  
+**Date:** October 29, 2025  
 **Organization:** Ergon Mobility Pvt Ltd  
 **Platform:** Linux, Windows
+
+## Revision History
+
+- 2025-10-29 — Version 1.2 — Stage 0 finalized: removed lingering desktop-specific references, updated CI and verification steps, added verification artifacts and Stage 0 acceptance criteria.
+- 2025-10 — Version 1.1 — Initial Stage 0 draft and architecture updates.
 
 
 **REQ-NFR-007:** CAN reconnection shall succeed within 3 attempts or 5 seconds
@@ -131,7 +136,7 @@ Optional server-side libraries (for report export or heavy numeric processing):
 - **GitHub Actions** — CI matrix builds (windows-latest, ubuntu-latest, ubuntu-arm64) recommended
 
 Notes:
-- The previous PyQt5 desktop requirement has been replaced by the Web UI + backend architecture. If a desktop single-executable is required, the web UI can be packaged with Electron or the backend and frontend can be bundled together.
+- The previous PyQt5 desktop requirement has been replaced by the Web UI + backend architecture. Desktop packaging (single-executable distributions or Electron wrappers) is out-of-scope for Stage 0 and will be evaluated in Stage 5 if required.
 - Linux/arm64 builds intended for Raspberry Pi 5 must be built and validated on Raspberry Pi OS (64-bit). CI may perform cross-builds, but release artifacts for RPi must be produced from a native Raspberry Pi OS environment (or validated there) to ensure correct libc/ABI, kernel module and driver compatibility.
 
 ---
