@@ -49,7 +49,8 @@ jobs:
           if (Test-Path 'frontend') {
             Push-Location frontend
             # Prefer clean CI install when a lockfile exists for reproducibility
-            if (Test-Path 'package-lock.json' -or Test-Path 'npm-shrinkwrap.json') {
+            $hasLock = (Test-Path 'package-lock.json') -or (Test-Path 'npm-shrinkwrap.json')
+            if ($hasLock) {
               npm ci
             } else {
               # Fall back to npm install when no lockfile is present so CI won't fail
