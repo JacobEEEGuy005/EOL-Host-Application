@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-can
+python-can-csscan-serial
+canalystii
+cantools
+pyserial
+pydantic
+pytest

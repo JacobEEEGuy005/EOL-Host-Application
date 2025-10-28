@@ -1,0 +1,76 @@
+name: CI - Verify
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        shell: bash
+      - name: Install frontend deps (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if [ -d frontend ]; then
+            cd frontend
+            # Prefer clean CI install when a lockfile exists for reproducibility
+            if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+              npm ci
+            else
+              # Fall back to npm install when no lockfile is present so CI won't fail
+              npm install --no-audit --no-fund
+            fi
+          fi
+        shell: bash
+      - name: Install frontend deps (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          if (Test-Path 'frontend') {
+            Push-Location frontend
+            # Prefer clean CI install when a lockfile exists for reproducibility
+            $hasLock = (Test-Path 'package-lock.json') -or (Test-Path 'npm-shrinkwrap.json')
+            if ($hasLock) {
+              npm ci
+            } else {
+              # Fall back to npm install when no lockfile is present so CI won't fail
+              npm install --no-audit --no-fund
+            }
+            Pop-Location
+          }
+        shell: pwsh
+      - name: Run verification script (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bash scripts/verify_environment.sh
+      - name: Run verification script (Windows)
+        if: matrix.os == 'windows-latest'
+        # Run the PowerShell script directly to avoid quoting/escape issues in a .cmd wrapper
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_environment.ps1
+        shell: pwsh
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-environment-${{ matrix.os }}
+          path: build/verify_environment/
