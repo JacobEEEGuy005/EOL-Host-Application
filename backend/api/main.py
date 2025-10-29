@@ -233,3 +233,13 @@ async def api_send_frame(payload: dict):
         pass
     return {"status": "ok"}
 
+
+# Stage-2: DBC router (scaffold)
+try:
+    # import locally so Stage-1 consumers without the file won't break imports
+    from backend.api import dbc as _dbc_module
+    app.include_router(_dbc_module.router)
+except Exception:
+    # If the router isn't present or import fails, don't prevent the app from starting.
+    pass
+
