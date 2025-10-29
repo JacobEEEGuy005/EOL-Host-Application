@@ -15,6 +15,7 @@ Behavior:
     latest workflow run to complete.
   - Exits with 0 if CI succeeds, non-zero otherwise.
 """
+from __future__ import annotations
 
 import argparse
 import subprocess
@@ -54,7 +55,7 @@ def gh_wait_for_pr(branch: str) -> int:
         return 2
     try:
         pr_info = json.loads(p.stdout)
-    except Exception:
+    except json.JSONDecodeError:
         print("gh pr view output could not be parsed; falling back", file=sys.stderr)
         return 2
 
@@ -70,7 +71,7 @@ def gh_wait_for_pr(branch: str) -> int:
         return 2
     try:
         runs = json.loads(p2.stdout)
-    except Exception:
+    except json.JSONDecodeError:
         print("gh run list output could not be parsed; falling back", file=sys.stderr)
         return 2
 
