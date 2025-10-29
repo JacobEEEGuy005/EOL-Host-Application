@@ -592,13 +592,15 @@ class BaseGUI(QtWidgets.QMainWindow):
                 dac_msg_combo.addItem(label, fid)
 
             # value inputs (placed in sub-widgets)
-            dig_value = QtWidgets.QLineEdit()
+            dig_value_low = QtWidgets.QLineEdit()
+            dig_value_high = QtWidgets.QLineEdit()
             mux_chan = QtWidgets.QLineEdit()
             dac_cmd = QtWidgets.QLineEdit()
             # populate digital sub-widget
-            digital_layout.addRow('Digital Message:', dig_msg_combo)
-            digital_layout.addRow('Digital Signal:', dig_signal_combo)
-            digital_layout.addRow('Digital Value:', dig_value)
+            digital_layout.addRow('Command Message:', dig_msg_combo)
+            digital_layout.addRow('Actuation Signal:', dig_signal_combo)
+            digital_layout.addRow('Value - Low:', dig_value_low)
+            digital_layout.addRow('Value - High:', dig_value_high)
             # populate analog sub-widget
             analog_layout.addRow('MUX Channel (analog):', mux_chan)
             analog_layout.addRow('DAC Message:', dac_msg_combo)
@@ -607,15 +609,17 @@ class BaseGUI(QtWidgets.QMainWindow):
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
             dig_signal = QtWidgets.QLineEdit()
-            dig_value = QtWidgets.QLineEdit()
+            dig_value_low = QtWidgets.QLineEdit()
+            dig_value_high = QtWidgets.QLineEdit()
             # analog actuation
             mux_chan = QtWidgets.QLineEdit()
             dac_can = QtWidgets.QLineEdit()
             dac_cmd = QtWidgets.QLineEdit()
             # populate sub-widgets
-            digital_layout.addRow('Digital CAN ID:', dig_can)
-            digital_layout.addRow('Digital Signal:', dig_signal)
-            digital_layout.addRow('Digital Value:', dig_value)
+            digital_layout.addRow('Command Message:', dig_can)
+            digital_layout.addRow('Actuation Signal:', dig_signal)
+            digital_layout.addRow('Value - Low:', dig_value_low)
+            digital_layout.addRow('Value - High:', dig_value_high)
             analog_layout.addRow('MUX Channel (analog):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
             analog_layout.addRow('DAC Command (hex):', dac_cmd)
@@ -686,8 +690,9 @@ class BaseGUI(QtWidgets.QMainWindow):
                     except Exception:
                         can_id = None
                     sig = dig_signal_combo.currentText().strip() if dig_signal_combo.count() else ''
-                    val = dig_value.text().strip()
-                    act = {'type':'digital', 'can_id': can_id, 'signal': sig, 'value': val}
+                    low = dig_value_low.text().strip()
+                    high = dig_value_high.text().strip()
+                    act = {'type':'digital', 'can_id': can_id, 'signal': sig, 'value_low': low, 'value_high': high}
                 else:
                     try:
                         mux = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
@@ -708,7 +713,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                         'type': 'digital',
                         'can_id': can_id,
                         'signal': dig_signal.text().strip(),
-                        'value': dig_value.text().strip()
+                        'value_low': dig_value_low.text().strip(),
+                        'value_high': dig_value_high.text().strip()
                     }
                 else:
                     try:
@@ -818,37 +824,210 @@ class BaseGUI(QtWidgets.QMainWindow):
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
             pass
-        # feedback signal: if DBC loaded, provide dropdown
+
+        # prepare feedback source + signal similar to Create dialog
+        feedback_edit = QtWidgets.QLineEdit()
+        fb_msg_combo = None
+        fb_signal_combo = None
         if self._dbc_db is not None:
-            fb_combo = QtWidgets.QComboBox()
-            sigs = []
-            for m in getattr(self._dbc_db, 'messages', []):
-                for s in getattr(m, 'signals', []):
-                    sigs.append(s.name)
-            fb_combo.addItems(sorted(set(sigs)))
+            fb_messages = list(getattr(self._dbc_db, 'messages', []))
+            fb_msg_display = []
+            for m in fb_messages:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                if fid is None:
+                    continue
+                fb_msg_display.append((m, f"{m.name} (0x{fid:X})"))
+            fb_msg_combo = QtWidgets.QComboBox()
+            for m, label in fb_msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                fb_msg_combo.addItem(label, fid)
+            fb_signal_combo = QtWidgets.QComboBox()
+            def _update_fb_signals_edit(idx=0):
+                fb_signal_combo.clear()
+                try:
+                    m = fb_messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    fb_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            if fb_msg_display:
+                _update_fb_signals_edit(0)
+            fb_msg_combo.currentIndexChanged.connect(_update_fb_signals_edit)
+
+            # set current message/ signal from stored data
             try:
-                fb_combo.setCurrentText(data.get('feedback_signal',''))
+                stored_mid = data.get('feedback_message_id')
+                if stored_mid is not None:
+                    for i in range(fb_msg_combo.count()):
+                        if fb_msg_combo.itemData(i) == stored_mid:
+                            fb_msg_combo.setCurrentIndex(i)
+                            _update_fb_signals_edit(i)
+                            break
+                if data.get('feedback_signal') and fb_signal_combo.count():
+                    try:
+                        fb_signal_combo.setCurrentText(data.get('feedback_signal'))
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            feedback_widget = fb_combo
+
+        # actuation sub-widgets (digital/analog)
+        digital_widget = QtWidgets.QWidget(); digital_layout = QtWidgets.QFormLayout(digital_widget)
+        analog_widget = QtWidgets.QWidget(); analog_layout = QtWidgets.QFormLayout(analog_widget)
+
+        # populate actuation controls from stored data
+        act = data.get('actuation', {}) or {}
+        if self._dbc_db is not None:
+            messages = list(getattr(self._dbc_db, 'messages', []))
+            msg_display = []
+            for m in messages:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                if fid is None:
+                    continue
+                msg_display.append((m, f"{m.name} (0x{fid:X})"))
+            dig_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                dig_msg_combo.addItem(label, fid)
+            dig_signal_combo = QtWidgets.QComboBox()
+            def _update_dig_signals_edit(idx=0):
+                dig_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    dig_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            if msg_display:
+                _update_dig_signals_edit(0)
+            dig_msg_combo.currentIndexChanged.connect(_update_dig_signals_edit)
+            dac_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                dac_msg_combo.addItem(label, fid)
+
+            dig_value_low = QtWidgets.QLineEdit(str(act.get('value_low','')))
+            dig_value_high = QtWidgets.QLineEdit(str(act.get('value_high','')))
+            mux_chan = QtWidgets.QLineEdit(str(act.get('mux_channel','')))
+            dac_cmd = QtWidgets.QLineEdit(str(act.get('dac_command','')))
+
+            # set current dig message index from actuation can_id
+            try:
+                canid = act.get('can_id')
+                if canid is not None:
+                    for i in range(dig_msg_combo.count()):
+                        if dig_msg_combo.itemData(i) == canid:
+                            dig_msg_combo.setCurrentIndex(i)
+                            _update_dig_signals_edit(i)
+                            break
+                if act.get('signal') and dig_signal_combo.count():
+                    try:
+                        dig_signal_combo.setCurrentText(act.get('signal'))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            digital_layout.addRow('Command Message:', dig_msg_combo)
+            digital_layout.addRow('Actuation Signal:', dig_signal_combo)
+            digital_layout.addRow('Value - Low:', dig_value_low)
+            digital_layout.addRow('Value - High:', dig_value_high)
+            analog_layout.addRow('MUX Channel (analog):', mux_chan)
+            analog_layout.addRow('DAC Message:', dac_msg_combo)
+            analog_layout.addRow('DAC Command (hex):', dac_cmd)
         else:
-            feedback_widget = QtWidgets.QLineEdit(data.get('feedback_signal',''))
+            dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
+            dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
+            dig_value_low = QtWidgets.QLineEdit(str(act.get('value_low','')))
+            dig_value_high = QtWidgets.QLineEdit(str(act.get('value_high','')))
+            mux_chan = QtWidgets.QLineEdit(str(act.get('mux_channel','')))
+            dac_can = QtWidgets.QLineEdit(str(act.get('dac_can_id','')))
+            dac_cmd = QtWidgets.QLineEdit(str(act.get('dac_command','')))
+            digital_layout.addRow('Command Message:', dig_can)
+            digital_layout.addRow('Actuation Signal:', dig_signal)
+            digital_layout.addRow('Value - Low:', dig_value_low)
+            digital_layout.addRow('Value - High:', dig_value_high)
+            analog_layout.addRow('MUX Channel (analog):', mux_chan)
+            analog_layout.addRow('DAC CAN ID (analog):', dac_can)
+            analog_layout.addRow('DAC Command (hex):', dac_cmd)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
-        form.addRow('Feedback signal:', feedback_widget)
+        if self._dbc_db is not None:
+            form.addRow('Feedback Signal Source:', fb_msg_combo)
+            form.addRow('Feedback Signal:', fb_signal_combo)
+        else:
+            form.addRow('Feedback Signal (free-text):', feedback_edit)
 
         v.addLayout(form)
+        act_layout_parent = QtWidgets.QFormLayout(act_widget := QtWidgets.QWidget())
+        act_layout_parent.addRow('Digital:', digital_widget)
+        act_layout_parent.addRow('Analog:', analog_widget)
+        v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
+        v.addWidget(act_widget)
+
+        def _on_type_change_edit(txt: str):
+            try:
+                if txt == 'digital':
+                    digital_widget.show(); analog_widget.hide()
+                else:
+                    digital_widget.hide(); analog_widget.show()
+            except Exception:
+                pass
+
+        _on_type_change_edit(type_combo.currentText())
+        type_combo.currentTextChanged.connect(_on_type_change_edit)
+
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         v.addWidget(btns)
 
         def on_accept():
             data['name'] = name_edit.text().strip() or data.get('name')
             data['type'] = type_combo.currentText()
-            if isinstance(feedback_widget, QtWidgets.QComboBox):
-                data['feedback_signal'] = feedback_widget.currentText()
+            # feedback
+            if self._dbc_db is not None:
+                try:
+                    data['feedback_message_id'] = fb_msg_combo.currentData()
+                    data['feedback_signal'] = fb_signal_combo.currentText().strip()
+                except Exception:
+                    data['feedback_message_id'] = None
+                    data['feedback_signal'] = ''
             else:
-                data['feedback_signal'] = feedback_widget.text().strip()
+                data['feedback_signal'] = feedback_edit.text().strip()
+
+            # actuation
+            if self._dbc_db is not None:
+                if data['type'] == 'digital':
+                    can_id = dig_msg_combo.currentData() if 'dig_msg_combo' in locals() else None
+                    sig = dig_signal_combo.currentText().strip() if 'dig_signal_combo' in locals() else ''
+                    low = dig_value_low.text().strip()
+                    high = dig_value_high.text().strip()
+                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':sig,'value_low':low,'value_high':high}
+                else:
+                    try:
+                        mux = int(mux_chan.text().strip(),0) if mux_chan.text().strip() else None
+                    except Exception:
+                        mux = None
+                    dac_id = dac_msg_combo.currentData() if 'dac_msg_combo' in locals() else None
+                    data['actuation'] = {'type':'analog','mux_channel':mux,'dac_can_id':dac_id,'dac_command':dac_cmd.text().strip()}
+            else:
+                if data['type'] == 'digital':
+                    try:
+                        can_id = int(dig_can.text().strip(),0) if dig_can.text().strip() else None
+                    except Exception:
+                        can_id = None
+                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip()}
+                else:
+                    try:
+                        mux = int(mux_chan.text().strip(),0) if mux_chan.text().strip() else None
+                    except Exception:
+                        mux = None
+                    try:
+                        dac_id = int(dac_can.text().strip(),0) if dac_can.text().strip() else None
+                    except Exception:
+                        dac_id = None
+                    data['actuation'] = {'type':'analog','mux_channel':mux,'dac_can_id':dac_id,'dac_command':dac_cmd.text().strip()}
+
             self._tests[idx] = data
             self.test_list.currentItem().setText(data['name'])
             dlg.accept()
@@ -895,7 +1074,8 @@ class BaseGUI(QtWidgets.QMainWindow):
             if act.get('type') == 'digital' and act.get('can_id') is not None:
                 can_id = act.get('can_id')
                 sig = act.get('signal')
-                val = act.get('value')
+                # prefer value_low/value_high; keep backward compat with 'value' if present
+                val = act.get('value_low', act.get('value'))
                 # try using DBC if available
                 sent_bytes = None
                 if self._dbc_db is not None and sig:
