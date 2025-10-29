@@ -8,3 +8,14 @@ pyserial
 pydantic
 pytest
 httpx
+python-multipart
+fastapi
+uvicorn[standard]
+python-can
+python-can-csscan-serial
+canalystii
+cantools
+pyserial
+pydantic
+pytest
+httpx
