@@ -131,6 +131,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.test_list = QtWidgets.QListWidget()
         self.test_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         self.test_list.setDefaultDropAction(QtCore.Qt.MoveAction)
+        self.test_list.model().rowsMoved.connect(self._on_test_list_reordered)
         right_v.addWidget(QtWidgets.QLabel('Tests Sequence (drag to reorder):'))
         right_v.addWidget(self.test_list, 1)
         self.json_preview = QtWidgets.QPlainTextEdit()
@@ -594,17 +595,65 @@ class BaseGUI(QtWidgets.QMainWindow):
             # value inputs (placed in sub-widgets)
             dig_value_low = QtWidgets.QLineEdit()
             dig_value_high = QtWidgets.QLineEdit()
+            # Analog controls: Command Message + several signal dropdowns and numeric params
             mux_chan = QtWidgets.QLineEdit()
             dac_cmd = QtWidgets.QLineEdit()
+            # When DBC present, provide signal dropdowns driven by selected DAC message
+            dac_command_signal_combo = QtWidgets.QComboBox()
+            mux_enable_signal_combo = QtWidgets.QComboBox()
+            mux_channel_signal_combo = QtWidgets.QComboBox()
+            mux_channel_value_spin = QtWidgets.QSpinBox()
+            mux_channel_value_spin.setRange(0, 65535)
+
+            def _update_analog_signals(idx=0):
+                # populate all signal combos based on selected message index
+                for combo in (dac_command_signal_combo, mux_enable_signal_combo, mux_channel_signal_combo, mux_channel_value_spin):
+                    try:
+                        combo.clear()
+                    except Exception:
+                        # spinbox doesn't have clear(), ignore
+                        pass
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    for combo in (dac_command_signal_combo, mux_enable_signal_combo, mux_channel_signal_combo):
+                        combo.addItems(sigs)
+                except Exception:
+                    pass
+
+            if msg_display:
+                _update_analog_signals(0)
+            dac_msg_combo.currentIndexChanged.connect(_update_analog_signals)
+
+            # numeric validators for DAC voltages (mV)
+            mv_validator = QtGui.QIntValidator(0, 5000, self)
+            step_validator = QtGui.QIntValidator(0, 5000, self)
+            dwell_validator = QtGui.QIntValidator(0, 60000, self)
+
+            dac_min_mv = QtWidgets.QLineEdit()
+            dac_min_mv.setValidator(mv_validator)
+            dac_max_mv = QtWidgets.QLineEdit()
+            dac_max_mv.setValidator(mv_validator)
+            dac_step_mv = QtWidgets.QLineEdit()
+            dac_step_mv.setValidator(step_validator)
+            dac_dwell_ms = QtWidgets.QLineEdit()
+            dac_dwell_ms.setValidator(dwell_validator)
+
             # populate digital sub-widget
             digital_layout.addRow('Command Message:', dig_msg_combo)
             digital_layout.addRow('Actuation Signal:', dig_signal_combo)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
-            # populate analog sub-widget
-            analog_layout.addRow('MUX Channel (analog):', mux_chan)
-            analog_layout.addRow('DAC Message:', dac_msg_combo)
-            analog_layout.addRow('DAC Command (hex):', dac_cmd)
+            # populate analog sub-widget in requested order
+            analog_layout.addRow('Command Message:', dac_msg_combo)
+            analog_layout.addRow('DAC Command Signal:', dac_command_signal_combo)
+            analog_layout.addRow('MUX Enable Signal:', mux_enable_signal_combo)
+            analog_layout.addRow('MUX Channel Signal:', mux_channel_signal_combo)
+            analog_layout.addRow('MUX Channel Value:', mux_channel_value_spin)
+            analog_layout.addRow('DAC Min Output (mV):', dac_min_mv)
+            analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
+            analog_layout.addRow('Step Change (mV):', dac_step_mv)
+            analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -620,9 +669,14 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Actuation Signal:', dig_signal)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
-            analog_layout.addRow('MUX Channel (analog):', mux_chan)
+            # fallback analog fields when no DBC
+            analog_layout.addRow('Command Message (free-text):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
             analog_layout.addRow('DAC Command (hex):', dac_cmd)
+            analog_layout.addRow('DAC Min Output (mV):', QtWidgets.QLineEdit())
+            analog_layout.addRow('DAC Max Output (mV):', QtWidgets.QLineEdit())
+            analog_layout.addRow('Step Change (mV):', QtWidgets.QLineEdit())
+            analog_layout.addRow('Dwell Time (ms):', QtWidgets.QLineEdit())
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -694,15 +748,48 @@ class BaseGUI(QtWidgets.QMainWindow):
                     high = dig_value_high.text().strip()
                     act = {'type':'digital', 'can_id': can_id, 'signal': sig, 'value_low': low, 'value_high': high}
                 else:
-                    try:
-                        mux = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
-                    except Exception:
-                        mux = None
+                    # analog: read selected DAC message and related signal selections and numeric params
                     try:
                         dac_id = dac_msg_combo.currentData()
                     except Exception:
                         dac_id = None
-                    act = {'type':'analog', 'mux_channel': mux, 'dac_can_id': dac_id, 'dac_command': dac_cmd.text().strip()}
+                    try:
+                        dac_cmd_sig = dac_command_signal_combo.currentText().strip() if dac_command_signal_combo.count() else ''
+                    except Exception:
+                        dac_cmd_sig = ''
+                    try:
+                        mux_enable = mux_enable_signal_combo.currentText().strip() if mux_enable_signal_combo.count() else ''
+                    except Exception:
+                        mux_enable = ''
+                    try:
+                        mux_chan_sig = mux_channel_signal_combo.currentText().strip() if mux_channel_signal_combo.count() else ''
+                    except Exception:
+                        mux_chan_sig = ''
+                    try:
+                        mux_chan_val = int(mux_channel_value_spin.value())
+                    except Exception:
+                        mux_chan_val = None
+                    def _to_int_or_none(txt):
+                        try:
+                            return int(txt.strip()) if txt and txt.strip() else None
+                        except Exception:
+                            return None
+                    dac_min = _to_int_or_none(dac_min_mv.text() if hasattr(dac_min_mv, 'text') else '')
+                    dac_max = _to_int_or_none(dac_max_mv.text() if hasattr(dac_max_mv, 'text') else '')
+                    dac_step = _to_int_or_none(dac_step_mv.text() if hasattr(dac_step_mv, 'text') else '')
+                    dac_dwell = _to_int_or_none(dac_dwell_ms.text() if hasattr(dac_dwell_ms, 'text') else '')
+                    act = {
+                        'type': 'analog',
+                        'dac_can_id': dac_id,
+                        'dac_command_signal': dac_cmd_sig,
+                        'mux_enable_signal': mux_enable,
+                        'mux_channel_signal': mux_chan_sig,
+                        'mux_channel_value': mux_chan_val,
+                        'dac_min_mv': dac_min,
+                        'dac_max_mv': dac_max,
+                        'dac_step_mv': dac_step,
+                        'dac_dwell_ms': dac_dwell,
+                    }
             else:
                 if t == 'digital':
                     try:
@@ -752,6 +839,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             }
             self._tests.append(entry)
             self.test_list.addItem(entry['name'])
+            # select the newly added test and update JSON preview
+            try:
+                self.test_list.setCurrentRow(self.test_list.count() - 1)
+                self._on_select_test(None, None)
+            except Exception:
+                pass
             dlg.accept()
 
         btns.accepted.connect(on_accept)
@@ -771,31 +864,45 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.json_preview.clear()
 
     def _on_save_tests(self):
-        dest_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
-        os.makedirs(dest_dir, exist_ok=True)
-        path = os.path.join(dest_dir, 'tests.json')
+        default_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
+        os.makedirs(default_dir, exist_ok=True)
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Save Test Profile', os.path.join(default_dir, 'tests.json'), 'JSON Files (*.json);;All Files (*)'
+        )
+        if not file_path:
+            return  # User cancelled
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump({'tests': self._tests}, f, indent=2)
-            QtWidgets.QMessageBox.information(self, 'Saved', f'Saved tests to {path}')
+            QtWidgets.QMessageBox.information(self, 'Saved', f'Saved tests to {file_path}')
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save tests: {e}')
 
     def _on_load_tests(self):
-        src = os.path.join(repo_root, 'backend', 'data', 'tests', 'tests.json')
-        if not os.path.exists(src):
-            QtWidgets.QMessageBox.information(self, 'Load Tests', 'No saved tests found')
+        default_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Load Test Profile', default_dir, 'JSON Files (*.json);;All Files (*)'
+        )
+        if not file_path:
+            return  # User cancelled
+        if not os.path.exists(file_path):
+            QtWidgets.QMessageBox.warning(self, 'Load Tests', 'Selected file does not exist')
             return
         try:
-            with open(src, 'r', encoding='utf-8') as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self._tests = data.get('tests', [])
             self.test_list.clear()
             for t in self._tests:
                 self.test_list.addItem(t.get('name', '<unnamed>'))
-            QtWidgets.QMessageBox.information(self, 'Loaded', f'Loaded {len(self._tests)} tests')
+            QtWidgets.QMessageBox.information(self, 'Loaded', f'Loaded {len(self._tests)} tests from {file_path}')
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load tests: {e}')
+
+    def _on_test_list_reordered(self, parent, start, end, destination, row):
+        # Reorder self._tests to match the new order of the QListWidget
+        tests_dict = {t['name']: t for t in self._tests}
+        self._tests = [tests_dict[self.test_list.item(i).text()] for i in range(self.test_list.count())]
 
     def _on_select_test(self, current, previous=None):
         idx = self.test_list.currentRow()
@@ -908,8 +1015,75 @@ class BaseGUI(QtWidgets.QMainWindow):
 
             dig_value_low = QtWidgets.QLineEdit(str(act.get('value_low','')))
             dig_value_high = QtWidgets.QLineEdit(str(act.get('value_high','')))
+            # analog controls
             mux_chan = QtWidgets.QLineEdit(str(act.get('mux_channel','')))
             dac_cmd = QtWidgets.QLineEdit(str(act.get('dac_command','')))
+            dac_command_signal_combo = QtWidgets.QComboBox()
+            mux_enable_signal_combo = QtWidgets.QComboBox()
+            mux_channel_signal_combo = QtWidgets.QComboBox()
+            mux_channel_value_spin = QtWidgets.QSpinBox()
+            mux_channel_value_spin.setRange(0, 65535)
+            # populate analog signal combos based on selected message
+            def _update_analog_signals_edit(idx=0):
+                for combo in (dac_command_signal_combo, mux_enable_signal_combo, mux_channel_signal_combo):
+                    try:
+                        combo.clear()
+                    except Exception:
+                        pass
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    for combo in (dac_command_signal_combo, mux_enable_signal_combo, mux_channel_signal_combo):
+                        combo.addItems(sigs)
+                except Exception:
+                    pass
+            if msg_display:
+                _update_analog_signals_edit(0)
+            dac_msg_combo.currentIndexChanged.connect(_update_analog_signals_edit)
+            # set current dac message and signal selections from stored actuation
+            try:
+                stored_dac_id = act.get('dac_can_id') or act.get('dac_id')
+                if stored_dac_id is not None:
+                    for i in range(dac_msg_combo.count()):
+                        if dac_msg_combo.itemData(i) == stored_dac_id:
+                            dac_msg_combo.setCurrentIndex(i)
+                            _update_analog_signals_edit(i)
+                            break
+                # set signal selections
+                if act.get('dac_command_signal') and dac_command_signal_combo.count():
+                    try:
+                        dac_command_signal_combo.setCurrentText(str(act.get('dac_command_signal')))
+                    except Exception:
+                        pass
+                if act.get('mux_enable_signal') and mux_enable_signal_combo.count():
+                    try:
+                        mux_enable_signal_combo.setCurrentText(str(act.get('mux_enable_signal')))
+                    except Exception:
+                        pass
+                if act.get('mux_channel_signal') and mux_channel_signal_combo.count():
+                    try:
+                        mux_channel_signal_combo.setCurrentText(str(act.get('mux_channel_signal')))
+                    except Exception:
+                        pass
+                if act.get('mux_channel_value') is not None:
+                    try:
+                        mux_channel_value_spin.setValue(int(act.get('mux_channel_value')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # numeric fields
+            dac_min_mv = QtWidgets.QLineEdit(str(act.get('dac_min_mv','')))
+            dac_max_mv = QtWidgets.QLineEdit(str(act.get('dac_max_mv','')))
+            dac_step_mv = QtWidgets.QLineEdit(str(act.get('dac_step_mv','')))
+            dac_dwell_ms = QtWidgets.QLineEdit(str(act.get('dac_dwell_ms','')))
+            mv_validator = QtGui.QIntValidator(0, 5000, self)
+            step_validator = QtGui.QIntValidator(0, 5000, self)
+            dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            dac_min_mv.setValidator(mv_validator)
+            dac_max_mv.setValidator(mv_validator)
+            dac_step_mv.setValidator(step_validator)
+            dac_dwell_ms.setValidator(dwell_validator)
 
             # set current dig message index from actuation can_id
             try:
@@ -927,14 +1101,20 @@ class BaseGUI(QtWidgets.QMainWindow):
                         pass
             except Exception:
                 pass
-
             digital_layout.addRow('Command Message:', dig_msg_combo)
             digital_layout.addRow('Actuation Signal:', dig_signal_combo)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
-            analog_layout.addRow('MUX Channel (analog):', mux_chan)
-            analog_layout.addRow('DAC Message:', dac_msg_combo)
-            analog_layout.addRow('DAC Command (hex):', dac_cmd)
+            # populate analog sub-widget (DBC-driven)
+            analog_layout.addRow('Command Message:', dac_msg_combo)
+            analog_layout.addRow('DAC Command Signal:', dac_command_signal_combo)
+            analog_layout.addRow('MUX Enable Signal:', mux_enable_signal_combo)
+            analog_layout.addRow('MUX Channel Signal:', mux_channel_signal_combo)
+            analog_layout.addRow('MUX Channel Value:', mux_channel_value_spin)
+            analog_layout.addRow('DAC Min Output (mV):', dac_min_mv)
+            analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
+            analog_layout.addRow('Step Change (mV):', dac_step_mv)
+            analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -947,9 +1127,14 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Actuation Signal:', dig_signal)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
-            analog_layout.addRow('MUX Channel (analog):', mux_chan)
+            # fallback analog layout
+            analog_layout.addRow('Command Message (free-text):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
             analog_layout.addRow('DAC Command (hex):', dac_cmd)
+            analog_layout.addRow('DAC Min Output (mV):', QtWidgets.QLineEdit(str(act.get('dac_min_mv',''))))
+            analog_layout.addRow('DAC Max Output (mV):', QtWidgets.QLineEdit(str(act.get('dac_max_mv',''))))
+            analog_layout.addRow('Step Change (mV):', QtWidgets.QLineEdit(str(act.get('dac_step_mv',''))))
+            analog_layout.addRow('Dwell Time (ms):', QtWidgets.QLineEdit(str(act.get('dac_dwell_ms',''))))
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -1004,12 +1189,48 @@ class BaseGUI(QtWidgets.QMainWindow):
                     high = dig_value_high.text().strip()
                     data['actuation'] = {'type':'digital','can_id':can_id,'signal':sig,'value_low':low,'value_high':high}
                 else:
+                    # analog: capture selected DAC message and signal selections
                     try:
-                        mux = int(mux_chan.text().strip(),0) if mux_chan.text().strip() else None
+                        dac_id = dac_msg_combo.currentData() if 'dac_msg_combo' in locals() else None
                     except Exception:
-                        mux = None
-                    dac_id = dac_msg_combo.currentData() if 'dac_msg_combo' in locals() else None
-                    data['actuation'] = {'type':'analog','mux_channel':mux,'dac_can_id':dac_id,'dac_command':dac_cmd.text().strip()}
+                        dac_id = None
+                    try:
+                        dac_cmd_sig = dac_command_signal_combo.currentText().strip() if 'dac_command_signal_combo' in locals() and dac_command_signal_combo.count() else ''
+                    except Exception:
+                        dac_cmd_sig = ''
+                    try:
+                        mux_enable = mux_enable_signal_combo.currentText().strip() if 'mux_enable_signal_combo' in locals() and mux_enable_signal_combo.count() else ''
+                    except Exception:
+                        mux_enable = ''
+                    try:
+                        mux_chan_sig = mux_channel_signal_combo.currentText().strip() if 'mux_channel_signal_combo' in locals() and mux_channel_signal_combo.count() else ''
+                    except Exception:
+                        mux_chan_sig = ''
+                    try:
+                        mux_chan_val = int(mux_channel_value_spin.value()) if 'mux_channel_value_spin' in locals() else None
+                    except Exception:
+                        mux_chan_val = None
+                    def _to_int_or_none(txt):
+                        try:
+                            return int(txt.strip()) if txt and txt.strip() else None
+                        except Exception:
+                            return None
+                    dac_min = _to_int_or_none(dac_min_mv.text() if 'dac_min_mv' in locals() else '')
+                    dac_max = _to_int_or_none(dac_max_mv.text() if 'dac_max_mv' in locals() else '')
+                    dac_step = _to_int_or_none(dac_step_mv.text() if 'dac_step_mv' in locals() else '')
+                    dac_dwell = _to_int_or_none(dac_dwell_ms.text() if 'dac_dwell_ms' in locals() else '')
+                    data['actuation'] = {
+                        'type':'analog',
+                        'dac_can_id': dac_id,
+                        'dac_command_signal': dac_cmd_sig,
+                        'mux_enable_signal': mux_enable,
+                        'mux_channel_signal': mux_chan_sig,
+                        'mux_channel_value': mux_chan_val,
+                        'dac_min_mv': dac_min,
+                        'dac_max_mv': dac_max,
+                        'dac_step_mv': dac_step,
+                        'dac_dwell_ms': dac_dwell,
+                    }
             else:
                 if data['type'] == 'digital':
                     try:
@@ -1030,6 +1251,11 @@ class BaseGUI(QtWidgets.QMainWindow):
 
             self._tests[idx] = data
             self.test_list.currentItem().setText(data['name'])
+            # refresh JSON preview for current selection
+            try:
+                self._on_select_test(None, None)
+            except Exception:
+                pass
             dlg.accept()
 
         btns.accepted.connect(on_accept)

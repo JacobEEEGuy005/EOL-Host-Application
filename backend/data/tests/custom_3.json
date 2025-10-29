@@ -1,0 +1,70 @@
+{
+  "tests": [
+    {
+      "name": "test-3",
+      "type": "analog",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "analog",
+        "dac_can_id": 256,
+        "dac_command_signal": "DeviceID",
+        "mux_enable_signal": "DeviceID",
+        "mux_channel_signal": "DeviceID",
+        "mux_channel_value": 0,
+        "dac_min_mv": null,
+        "dac_max_mv": null,
+        "dac_step_mv": null,
+        "dac_dwell_ms": null
+      },
+      "created_at": "2025-10-29T13:33:40.697211Z"
+    },
+    {
+      "name": "test-1",
+      "type": "digital",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "digital",
+        "can_id": 256,
+        "signal": "DeviceID",
+        "value_low": "",
+        "value_high": ""
+      },
+      "created_at": "2025-10-29T13:33:34.739311Z"
+    },
+    {
+      "name": "test-4",
+      "type": "analog",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "analog",
+        "dac_can_id": 256,
+        "dac_command_signal": "DeviceID",
+        "mux_enable_signal": "DeviceID",
+        "mux_channel_signal": "DeviceID",
+        "mux_channel_value": 0,
+        "dac_min_mv": null,
+        "dac_max_mv": null,
+        "dac_step_mv": null,
+        "dac_dwell_ms": null
+      },
+      "created_at": "2025-10-29T13:33:45.815123Z"
+    },
+    {
+      "name": "test-2",
+      "type": "digital",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "digital",
+        "can_id": 256,
+        "signal": "DeviceID",
+        "value_low": "",
+        "value_high": ""
+      },
+      "created_at": "2025-10-29T13:33:36.919508Z"
+    }
+  ]
+}
