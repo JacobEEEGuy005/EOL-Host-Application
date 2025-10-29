@@ -80,7 +80,28 @@ async def decode_frame(request: Request, payload: dict):
         else:
             raise HTTPException(status_code=400, detail=f"Decode error: {e}")
 
-    return JSONResponse({"signals": decoded})
+    # Ensure signals are JSON-serializable (cantools may return NamedSignalValue objects)
+    def _serialize_value(v):
+        # If it's already JSON serializable, return as-is
+        try:
+            import json as _json
+
+            _json.dumps(v)
+            return v
+        except Exception:
+            pass
+        # Try common attributes
+        if hasattr(v, "value"):
+            return getattr(v, "value")
+        if hasattr(v, "name"):
+            return getattr(v, "name")
+        if hasattr(v, "to_dict"):
+            return v.to_dict()
+        # Fallback to string representation
+        return str(v)
+
+    serial = {k: _serialize_value(v) for k, v in decoded.items()} if isinstance(decoded, dict) else _serialize_value(decoded)
+    return JSONResponse({"signals": serial})
 
 
 @router.get("/list")
