@@ -26,6 +26,10 @@ try:
         from backend.adapters.pcan import PcanAdapter
     except Exception:
         PcanAdapter = None
+        try:
+            from backend.adapters.python_can_adapter import PythonCanAdapter
+        except Exception:
+            PythonCanAdapter = None
 except Exception as exc:
     SimAdapter = None
     AdapterFrame = None
@@ -514,6 +518,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             import backend.adapters.pcan as _pc
             devices.append('PCAN')
+        except Exception:
+            pass
+        try:
+            import backend.adapters.python_can_adapter as _pycan
+            devices.append('PythonCAN')
         except Exception:
             pass
         try:
@@ -1511,7 +1520,11 @@ class BaseGUI(QtWidgets.QMainWindow):
                                 pass
                             # build dict
                             device_id = act.get('device_id', 0)
-                            enc = {'DeviceID': device_id, 'MessageType': 16, sig: v}
+                            enc = {'DeviceID': device_id, 'MessageType': 16}
+                            # Set all relay signals, target to v, others to 0
+                            relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
+                            for rs in relay_signals:
+                                enc[rs] = v if rs == sig else 0
                             sent_bytes = msg.encode(enc)
                         except Exception:
                             sent_bytes = None
@@ -1532,6 +1545,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 else:
                     class F: pass
                     f = F(); f.can_id = can_id; f.data = sent_bytes; f.timestamp = time.time()
+                print(f"[DEBUG] Sending CAN frame: ID=0x{can_id:X}, Data={sent_bytes.hex()}")
                 self.sim.send(f)
                 if hasattr(self.sim, 'loopback'):
                     try:
@@ -1652,6 +1666,24 @@ class BaseGUI(QtWidgets.QMainWindow):
                         return
                 else:
                     QtWidgets.QMessageBox.information(self, 'Adapter', f'Adapter {selected} not implemented in prototype; using SimAdapter')
+                # Python-can backed adapter
+                if selected == 'PythonCAN' and PythonCanAdapter is not None:
+                    try:
+                        br = None
+                        if str(self._can_bitrate).strip():
+                            try:
+                                br = int(str(self._can_bitrate).strip())
+                            except Exception:
+                                br = None
+                        # channel string from UI; interface can be None to let python-can choose
+                        chan = self._can_channel
+                        self.sim = PythonCanAdapter(channel=chan, bitrate=br, interface=None)
+                        self.sim.open()
+                        self._adapter_name = 'PythonCAN'
+                    except Exception as e:
+                        QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open PythonCAN adapter: {e}')
+                        self.sim = None
+                        return
             if self.sim is None and SimAdapter is None:
                 msg = 'SimAdapter import failed; ensure running from repository root or install dependencies.'
                 if _IMPORT_ERROR is not None:
