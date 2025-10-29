@@ -208,12 +208,27 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.results_table.setHorizontalHeaderLabels(['Test Name', 'Type', 'Status', 'Execution Time', 'Parameters', 'Notes'])
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.setAlternatingRowColors(True)
-        status_layout.addWidget(self.results_table)
 
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
         self.test_log.setReadOnly(True)
-        status_layout.addWidget(self.test_log)
+
+        # Results display with splitter
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        
+        # Results table in a group
+        table_group = QtWidgets.QGroupBox('Test Results Table')
+        table_layout = QtWidgets.QVBoxLayout(table_group)
+        table_layout.addWidget(self.results_table)
+        splitter.addWidget(table_group)
+        
+        # Log in a group
+        log_group = QtWidgets.QGroupBox('Execution Log')
+        log_layout = QtWidgets.QVBoxLayout(log_group)
+        log_layout.addWidget(self.test_log)
+        splitter.addWidget(log_group)
+        
+        status_layout.addWidget(splitter)
 
         layout.addWidget(status_group)
 
