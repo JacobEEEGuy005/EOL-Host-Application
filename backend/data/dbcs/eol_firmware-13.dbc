@@ -59,14 +59,11 @@ BO_ 256 Status_Data: 8 EOL_Hardware
 BO_ 272 Command: 8 Host_PC
  SG_ DeviceID : 0|8@1+ (1,0) [0|255] ""  EOL_Hardware,IPC_Hardware
  SG_ MessageType M : 8|8@1+ (1,0) [0|255] ""  EOL_Hardware,IPC_Hardware
- SG_ CMD_Relay_1 m16 : 16|1@1+ (1,0) [0|1] ""  EOL_Hardware,IPC_Hardware
+ SG_ Relay_State m16 : 16|8@1+ (1,0) [0|15] ""  EOL_Hardware,IPC_Hardware
  SG_ MUX_Channel m17 : 16|8@1+ (1,0) [0|7] ""  EOL_Hardware,IPC_Hardware
  SG_ MUX_Enable m17 : 24|8@1+ (1,0) [0|1] ""  EOL_Hardware,IPC_Hardware
  SG_ DAC_Voltage_mV m18 : 16|16@1+ (1,0) [0|5000] "mV"  EOL_Hardware,IPC_Hardware
  SG_ RequestIPCData m19 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
- SG_ CMD_Relay_2 m16 : 17|1@1+ (1,0) [0|1] "" Vector__XXX
- SG_ CMD_Relay_3 m16 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
- SG_ CMD_Relay_4 m16 : 19|1@1+ (1,0) [0|1] "" Vector__XXX
 
 BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ DeviceID : 0|8@1+ (1,0) [0|255] ""  Host_PC
@@ -130,14 +127,11 @@ CM_ SG_ 256 MUX_Enabled "MUX enable state (1=enabled, 0=disabled)";
 CM_ BO_ 272 "Command messages from Host PC to EOL Hardware (MessageType determines command)";
 CM_ SG_ 272 DeviceID "Target device ID (0x01 for EOL Hardware)";
 CM_ SG_ 272 MessageType "Command type identifier (multiplexor for command parameters)";
-CM_ SG_ 272 CMD_Relay_1 "0 = Relay Off, 1 = Relay On";
+CM_ SG_ 272 Relay_State "Desired relay state bitmap (bit 0=R1, bit 1=R2, bit 2=R3, bit 3=R4)";
 CM_ SG_ 272 MUX_Channel "MUX channel to select (0-7 for Y0-Y7)";
 CM_ SG_ 272 MUX_Enable "MUX enable command (1=enable, 0=disable)";
 CM_ SG_ 272 DAC_Voltage_mV "Desired DAC output voltage in millivolts (0-5000)";
 CM_ SG_ 272 RequestIPCData "Request Data from IPC";
-CM_ SG_ 272 CMD_Relay_2 "0 = Relay Off, 1 = Relay On";
-CM_ SG_ 272 CMD_Relay_3 "0 = Relay Off, 1 = Relay On";
-CM_ SG_ 272 CMD_Relay_4 "0 = Relay Off, 1 = Relay On";
 CM_ BO_ 250 "Status and data messages from IPC Hardware to Host PC (MessageType determines content)";
 CM_ SG_ 250 DeviceID "Device ID (0x03 for IPC Hardware)";
 CM_ SG_ 250 MessageType "Message type identifier (multiplexor for payload interpretation)";

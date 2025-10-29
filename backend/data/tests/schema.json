@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EOL Host Test Sequence",
+  "type": "object",
+  "properties": {
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","type","actuation"],
+        "properties": {
+          "name": {"type":"string"},
+          "type": {"type":"string","enum":["digital","analog"]},
+          "feedback_signal": {"type":["string","null"]},
+          "actuation": {
+            "type": "object",
+            "oneOf": [
+              {"properties": {"type":{"const":"digital"}, "can_id":{"type":"integer"}, "signal":{"type":"string"}, "value":{"type":["string","integer"]}}, "required":["can_id"]},
+              {"properties": {"type":{"const":"analog"}, "mux_channel":{"type":["integer","null"]}, "dac_can_id":{"type":"integer"}, "dac_command":{"type":"string"}}, "required":["dac_can_id"]}
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -18,3 +18,4 @@ AggregateError [ECONNREFUSED]:
     at afterConnectMultiple (node:net:1715:7)
 [2m1:21:55 pm[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/@fs/D:/GitHub Local Repository/EOL-Host-Application/frontend/src/App.jsx, /@fs/D:/GitHub Local Repository/EOL-Host-Application/frontend/src/SendFrame.jsx[22m
 [2m1:22:12 pm[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/@fs/D:/GitHub Local Repository/EOL-Host-Application/frontend/src/App.jsx, /@fs/D:/GitHub Local Repository/EOL-Host-Application/frontend/src/SendFrame.jsx[22m
+^C^C
