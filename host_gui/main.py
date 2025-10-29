@@ -202,6 +202,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.status_label = QtWidgets.QLabel('Ready')
         status_layout.addWidget(self.status_label)
 
+        # Real-time monitoring
+        monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
+        monitor_layout = QtWidgets.QFormLayout(monitor_group)
+        self.current_signal_label = QtWidgets.QLabel('N/A')
+        monitor_layout.addRow('Current Signal Value:', self.current_signal_label)
+        self.feedback_signal_label = QtWidgets.QLabel('N/A')
+        monitor_layout.addRow('Feedback Signal Value:', self.feedback_signal_label)
+        status_layout.addWidget(monitor_group)
+
         # Results table
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(6)
