@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/stage-1-backend-core
+      - main
   pull_request:
     branches:
       - main
