@@ -17,14 +17,15 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          if exist requirements.txt (
-            pip install -r requirements.txt
-          ) else (
-            pip install pytest cantools python-multipart python-can
-          )
+          if (Test-Path 'requirements.txt') {
+            python -m pip install -r requirements.txt
+          } else {
+            python -m pip install pytest cantools python-multipart python-can
+          }
       - name: Run adapter unit tests
+        shell: pwsh
         run: |
           python -m pytest -q backend/tests/test_pcan_adapter.py
-          python -m pytest -q backend/tests/test_dbc_api.py || true
