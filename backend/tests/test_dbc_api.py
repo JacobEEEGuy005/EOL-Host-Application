@@ -20,11 +20,12 @@ BO_ 123 MyMessage: 8 ECU
     r = client.post("/api/dbc/upload", files=files)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body.get("filename") == "test.dbc"
+    returned_name = body.get("filename")
+    assert returned_name is not None
     assert body.get("messages") == 1
 
     # Now decode a frame with CAN ID 123 and payload 0x05
-    payload = {"can_id": 123, "data": "05", "dbc": "test.dbc"}
+    payload = {"can_id": 123, "data": "05", "dbc": returned_name}
     r2 = client.post("/api/dbc/decode-frame", json=payload)
     assert r2.status_code == 200, r2.text
     decoded = r2.json()

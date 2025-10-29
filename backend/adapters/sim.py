@@ -3,6 +3,7 @@ import threading
 import time
 from typing import Optional, Iterable
 from .interface import Adapter, Frame
+from backend import metrics
 
 
 class SimAdapter:
@@ -45,6 +46,10 @@ class SimAdapter:
         # simulate minor latency
         time.sleep(0.001)
         self._q.put(frame)
+        try:
+            metrics.inc("sim_send")
+        except Exception:
+            pass
 
     def loopback(self, frame: Frame) -> None:
         """Explicitly enqueue a frame for loopback/receivers. Use when tests
@@ -61,6 +66,10 @@ class SimAdapter:
             self._loopback_q.put_nowait(frame)
         except Exception:
             self._loopback_q.put(frame)
+        try:
+            metrics.inc("sim_loopback")
+        except Exception:
+            pass
 
     def recv(self, timeout: Optional[float] = None) -> Optional[Frame]:
         # Prefer frames explicitly looped-back for direct recv callers so
@@ -68,11 +77,19 @@ class SimAdapter:
         # a background thread is also consuming from the main queue.
         try:
             f = self._loopback_q.get_nowait()
+            try:
+                metrics.inc("sim_recv")
+            except Exception:
+                pass
             return f
         except queue.Empty:
             pass
         try:
             f = self._q.get(timeout=timeout)
+            try:
+                metrics.inc("sim_recv")
+            except Exception:
+                pass
             return f
         except queue.Empty:
             return None
@@ -91,4 +108,8 @@ class SimAdapter:
             except queue.Empty:
                 f = None
             if f is not None:
+                try:
+                    metrics.inc("sim_recv")
+                except Exception:
+                    pass
                 yield f

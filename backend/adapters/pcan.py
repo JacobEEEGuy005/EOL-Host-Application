@@ -17,6 +17,7 @@ from typing import Optional, Iterable
 import can
 
 from .interface import Adapter, Frame
+from backend import metrics
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,11 @@ class PcanAdapter:
         except Exception:
             logger.exception("Failed to send CAN message")
             raise
+        # metrics: a frame was sent via PCAN
+        try:
+            metrics.inc("pcan_send")
+        except Exception:
+            pass
         # ensure recv() callers can see the frame deterministically
         try:
             self._loopback_q.put_nowait(frame)
@@ -89,12 +95,20 @@ class PcanAdapter:
             self._loopback_q.put_nowait(frame)
         except Exception:
             self._loopback_q.put(frame)
+        try:
+            metrics.inc("pcan_loopback")
+        except Exception:
+            pass
 
     def recv(self, timeout: Optional[float] = None) -> Optional[Frame]:
         # prefer loopback frames for deterministic behavior
         try:
             f = self._loopback_q.get_nowait()
             logger.debug("Recv returning loopback frame id=0x%x", f.can_id)
+            try:
+                metrics.inc("pcan_recv")
+            except Exception:
+                pass
             return f
         except queue.Empty:
             pass
@@ -110,6 +124,10 @@ class PcanAdapter:
             return None
         frame = Frame(can_id=msg.arbitration_id, data=bytes(msg.data or b""), timestamp=getattr(msg, "timestamp", None))
         logger.debug("Recv got frame id=0x%x data=%s", frame.can_id, frame.data.hex())
+        try:
+            metrics.inc("pcan_recv")
+        except Exception:
+            pass
         return frame
 
     def iter_recv(self) -> Iterable[Frame]:
@@ -126,4 +144,8 @@ class PcanAdapter:
                 continue
             frame = Frame(can_id=msg.arbitration_id, data=bytes(msg.data or b""), timestamp=getattr(msg, "timestamp", None))
             logger.debug("iter_recv yielding frame id=0x%x", frame.can_id)
+            try:
+                metrics.inc("pcan_recv")
+            except Exception:
+                pass
             yield frame
