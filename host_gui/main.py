@@ -193,6 +193,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.status_label = QtWidgets.QLabel('Ready')
         status_layout.addWidget(self.status_label)
 
+        # Results table
+        self.results_table = QtWidgets.QTableWidget()
+        self.results_table.setColumnCount(6)
+        self.results_table.setHorizontalHeaderLabels(['Test Name', 'Type', 'Status', 'Execution Time', 'Parameters', 'Notes'])
+        self.results_table.horizontalHeader().setStretchLastSection(True)
+        self.results_table.setAlternatingRowColors(True)
+        status_layout.addWidget(self.results_table)
+
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
         self.test_log.setReadOnly(True)
@@ -205,6 +213,38 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.run_seq_btn.clicked.connect(self._on_run_sequence)
 
         return tab
+
+    def _add_result_to_table(self, test, status, exec_time, notes):
+        row = self.results_table.rowCount()
+        self.results_table.insertRow(row)
+        self.results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(test.get('name', '<unnamed>')))
+        act = test.get('actuation', {})
+        test_type = act.get('type', 'Unknown')
+        self.results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(test_type.capitalize()))
+        self.results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(status))
+        self.results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(exec_time))
+        
+        # Parameters
+        params = []
+        if test_type == 'digital':
+            if act.get('can_id'):
+                params.append(f"CAN ID: {act['can_id']}")
+            if act.get('signal'):
+                params.append(f"Signal: {act['signal']}")
+            if act.get('value'):
+                params.append(f"Value: {act['value']}")
+        elif test_type == 'analog':
+            if act.get('dac_can_id'):
+                params.append(f"DAC CAN ID: {act['dac_can_id']}")
+            if act.get('dac_command'):
+                params.append(f"Command: {act['dac_command']}")
+            if act.get('mux_channel'):
+                params.append(f"MUX Channel: {act['mux_channel']}")
+            if act.get('mux_value'):
+                params.append(f"MUX Value: {act['mux_value']}")
+        param_str = ', '.join(params)
+        self.results_table.setItem(row, 4, QtWidgets.QTableWidgetItem(param_str))
+        self.results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(notes))
 
     def _build_test_report(self):
         """Builds the Test Report tab widget and returns it."""
@@ -1320,14 +1360,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.tabs_main.setCurrentIndex(self.status_tab_index)
         self.status_label.setText(f'Running test: {t.get("name", "<unnamed>")}')
         self.test_log.appendPlainText(f'Starting test: {t.get("name", "<unnamed>")}')
+        start_time = time.time()
         try:
             ok, info = self._run_single_test(t)
+            end_time = time.time()
+            exec_time = f"{end_time - start_time:.2f}s"
             result = 'PASS' if ok else 'FAIL'
             self.status_label.setText(f'Test completed: {result}')
             self.test_log.appendPlainText(f'Result: {result}\n{info}')
+            # Add to table
+            self._add_result_to_table(t, result, exec_time, info)
         except Exception as e:
+            end_time = time.time()
+            exec_time = f"{end_time - start_time:.2f}s"
             self.status_label.setText('Test error')
             self.test_log.appendPlainText(f'Error: {e}')
+            self._add_result_to_table(t, 'ERROR', exec_time, str(e))
 
     def _on_run_sequence(self):
         if not self._tests:
@@ -1344,14 +1392,21 @@ class BaseGUI(QtWidgets.QMainWindow):
         for i, t in enumerate(list(self._tests)):
             self.status_label.setText(f'Running test {i+1}/{len(self._tests)}: {t.get("name","<unnamed>")}')
             self.test_log.appendPlainText(f'Running test: {t.get("name","<unnamed>")}')
+            start_time = time.time()
             try:
                 ok, info = self._run_single_test(t)
+                end_time = time.time()
+                exec_time = f"{end_time - start_time:.2f}s"
                 results.append((t.get('name','<unnamed>'), ok, info))
                 result = 'PASS' if ok else 'FAIL'
                 self.test_log.appendPlainText(f'Result: {result}\n{info}')
+                self._add_result_to_table(t, result, exec_time, info)
             except Exception as e:
+                end_time = time.time()
+                exec_time = f"{end_time - start_time:.2f}s"
                 results.append((t.get('name','<unnamed>'), False, str(e)))
                 self.test_log.appendPlainText(f'Error: {e}')
+                self._add_result_to_table(t, 'ERROR', exec_time, str(e))
             self.progress_bar.setValue(i+1)
         # summarize
         self.progress_bar.setVisible(False)
