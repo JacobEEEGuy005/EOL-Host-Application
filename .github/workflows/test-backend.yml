@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/stage-1-backend-core
+      - feature/ci-add-e2e
       - main
   pull_request:
     branches:
