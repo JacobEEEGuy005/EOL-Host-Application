@@ -1359,7 +1359,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         t = self._tests[idx]
         self.tabs_main.setCurrentIndex(self.status_tab_index)
         self.status_label.setText(f'Running test: {t.get("name", "<unnamed>")}')
-        self.test_log.appendPlainText(f'Starting test: {t.get("name", "<unnamed>")}')
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Starting test: {t.get("name", "<unnamed>")}')
         start_time = time.time()
         try:
             ok, info = self._run_single_test(t)
@@ -1367,14 +1368,16 @@ class BaseGUI(QtWidgets.QMainWindow):
             exec_time = f"{end_time - start_time:.2f}s"
             result = 'PASS' if ok else 'FAIL'
             self.status_label.setText(f'Test completed: {result}')
-            self.test_log.appendPlainText(f'Result: {result}\n{info}')
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
             # Add to table
             self._add_result_to_table(t, result, exec_time, info)
         except Exception as e:
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
             self.status_label.setText('Test error')
-            self.test_log.appendPlainText(f'Error: {e}')
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
             self._add_result_to_table(t, 'ERROR', exec_time, str(e))
 
     def _on_run_sequence(self):
@@ -1387,11 +1390,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.progress_bar.setRange(0, len(self._tests))
         self.progress_bar.setValue(0)
         self.status_label.setText('Running test sequence...')
-        self.test_log.appendPlainText('Starting test sequence')
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Starting test sequence')
         results = []
         for i, t in enumerate(list(self._tests)):
             self.status_label.setText(f'Running test {i+1}/{len(self._tests)}: {t.get("name","<unnamed>")}')
-            self.test_log.appendPlainText(f'Running test: {t.get("name","<unnamed>")}')
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            self.test_log.appendPlainText(f'[{timestamp}] Running test: {t.get("name","<unnamed>")}')
             start_time = time.time()
             try:
                 ok, info = self._run_single_test(t)
@@ -1399,20 +1404,23 @@ class BaseGUI(QtWidgets.QMainWindow):
                 exec_time = f"{end_time - start_time:.2f}s"
                 results.append((t.get('name','<unnamed>'), ok, info))
                 result = 'PASS' if ok else 'FAIL'
-                self.test_log.appendPlainText(f'Result: {result}\n{info}')
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
                 self._add_result_to_table(t, result, exec_time, info)
             except Exception as e:
                 end_time = time.time()
                 exec_time = f"{end_time - start_time:.2f}s"
                 results.append((t.get('name','<unnamed>'), False, str(e)))
-                self.test_log.appendPlainText(f'Error: {e}')
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
                 self._add_result_to_table(t, 'ERROR', exec_time, str(e))
             self.progress_bar.setValue(i+1)
         # summarize
         self.progress_bar.setVisible(False)
         summary = '\n'.join([f"{n}: {'PASS' if ok else 'FAIL'} - {info}" for n,ok,info in results])
         self.status_label.setText('Sequence completed')
-        self.test_log.appendPlainText(f'Sequence summary:\n{summary}')
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}')
 
     def _run_single_test(self, test: dict, timeout: float = 1.0):
         """Execute a single test. Returns (bool, info_str)."""
