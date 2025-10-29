@@ -180,6 +180,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        # Control buttons
+        ctrl_layout = QtWidgets.QHBoxLayout()
+        self.clear_results_btn = QtWidgets.QPushButton('Clear Results')
+        self.repeat_test_btn = QtWidgets.QPushButton('Repeat Last Test')
+        ctrl_layout.addWidget(self.clear_results_btn)
+        ctrl_layout.addWidget(self.repeat_test_btn)
+        ctrl_layout.addStretch()
+        layout.addLayout(ctrl_layout)
+
         # Status display
         status_group = QtWidgets.QGroupBox('Test Execution Status')
         status_layout = QtWidgets.QVBoxLayout(status_group)
@@ -211,6 +220,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Connect buttons
         self.run_test_btn.clicked.connect(self._on_run_selected)
         self.run_seq_btn.clicked.connect(self._on_run_sequence)
+        self.clear_results_btn.clicked.connect(self._on_clear_results)
+        self.repeat_test_btn.clicked.connect(self._on_repeat_test)
 
         return tab
 
@@ -1379,6 +1390,15 @@ class BaseGUI(QtWidgets.QMainWindow):
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
             self._add_result_to_table(t, 'ERROR', exec_time, str(e))
+
+    def _on_clear_results(self):
+        self.results_table.setRowCount(0)
+        self.test_log.clear()
+        self.status_label.setText('Results cleared')
+
+    def _on_repeat_test(self):
+        # Repeat the currently selected test
+        self._on_run_selected()
 
     def _on_run_sequence(self):
         if not self._tests:
