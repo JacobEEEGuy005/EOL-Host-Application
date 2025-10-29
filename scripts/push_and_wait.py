@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """Push current branch and wait for PR/branch CI to finish.
 
 This script wraps a git push and then waits for the corresponding GitHub
@@ -15,7 +17,6 @@ Behavior:
     latest workflow run to complete.
   - Exits with 0 if CI succeeds, non-zero otherwise.
 """
-from __future__ import annotations
 
 import argparse
 import subprocess
@@ -23,9 +24,14 @@ import sys
 import shutil
 import os
 import json
+from typing import Optional
 
 
-def run(cmd: list[str], capture: bool = False) -> subprocess.CompletedProcess:
+def run(cmd, capture: bool = False):
+    """Run a command and optionally capture output.
+
+    Returns subprocess.CompletedProcess.
+    """
     return subprocess.run(cmd, check=False, stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None, text=True)
 
 
@@ -33,7 +39,7 @@ def current_branch() -> str:
     p = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture=True)
     if p.returncode != 0:
         raise SystemExit("Failed to determine current git branch")
-    return p.stdout.strip()
+    return (p.stdout or "").strip()
 
 
 def push(remote: str, branch: str) -> int:
@@ -54,7 +60,7 @@ def gh_wait_for_pr(branch: str) -> int:
         print("gh pr view failed; will fall back to wait_for_pr_ci.py", file=sys.stderr)
         return 2
     try:
-        pr_info = json.loads(p.stdout)
+        pr_info = json.loads(p.stdout or "{}")
     except json.JSONDecodeError:
         print("gh pr view output could not be parsed; falling back", file=sys.stderr)
         return 2
@@ -70,7 +76,7 @@ def gh_wait_for_pr(branch: str) -> int:
         print("gh run list failed; falling back to wait_for_pr_ci.py", file=sys.stderr)
         return 2
     try:
-        runs = json.loads(p2.stdout)
+        runs = json.loads(p2.stdout or "[]")
     except json.JSONDecodeError:
         print("gh run list output could not be parsed; falling back", file=sys.stderr)
         return 2
@@ -98,7 +104,7 @@ def fallback_wait(branch: str) -> int:
     return p.returncode
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--remote", default="origin")
     p.add_argument("--branch", default=None)
@@ -128,3 +134,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    import os
