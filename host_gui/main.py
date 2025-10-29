@@ -1413,6 +1413,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Starting test sequence')
         results = []
+        exec_times = []
         for i, t in enumerate(list(self._tests)):
             self.status_label.setText(f'Running test {i+1}/{len(self._tests)}: {t.get("name","<unnamed>")}')
             timestamp = datetime.now().strftime('%H:%M:%S')
@@ -1421,26 +1422,35 @@ class BaseGUI(QtWidgets.QMainWindow):
             try:
                 ok, info = self._run_single_test(t)
                 end_time = time.time()
-                exec_time = f"{end_time - start_time:.2f}s"
+                exec_time = end_time - start_time
+                exec_times.append(exec_time)
                 results.append((t.get('name','<unnamed>'), ok, info))
                 result = 'PASS' if ok else 'FAIL'
                 timestamp = datetime.now().strftime('%H:%M:%S')
                 self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
-                self._add_result_to_table(t, result, exec_time, info)
+                self._add_result_to_table(t, result, f"{exec_time:.2f}s", info)
             except Exception as e:
                 end_time = time.time()
-                exec_time = f"{end_time - start_time:.2f}s"
+                exec_time = end_time - start_time
+                exec_times.append(exec_time)
                 results.append((t.get('name','<unnamed>'), False, str(e)))
                 timestamp = datetime.now().strftime('%H:%M:%S')
                 self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
-                self._add_result_to_table(t, 'ERROR', exec_time, str(e))
+                self._add_result_to_table(t, 'ERROR', f"{exec_time:.2f}s", str(e))
             self.progress_bar.setValue(i+1)
         # summarize
         self.progress_bar.setVisible(False)
         summary = '\n'.join([f"{n}: {'PASS' if ok else 'FAIL'} - {info}" for n,ok,info in results])
+        # Performance metrics
+        pass_count = sum(1 for _, ok, _ in results if ok)
+        pass_rate = pass_count / len(results) * 100 if results else 0
+        avg_time = sum(exec_times) / len(exec_times) if exec_times else 0
+        failure_reasons = [info for _, ok, info in results if not ok]
+        failure_summary = '\n'.join(set(failure_reasons)) if failure_reasons else 'None'
+        metrics = f"\nPerformance Metrics:\nPass Rate: {pass_rate:.1f}%\nAverage Execution Time: {avg_time:.2f}s\nFailure Reasons: {failure_summary}"
         self.status_label.setText('Sequence completed')
         timestamp = datetime.now().strftime('%H:%M:%S')
-        self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}')
+        self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}{metrics}')
 
     def _run_single_test(self, test: dict, timeout: float = 1.0):
         """Execute a single test. Returns (bool, info_str)."""
