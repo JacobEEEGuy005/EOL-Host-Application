@@ -1,6 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse
 import cantools
+import os
+import pathlib
+from backend.api import dbc_store
 
 router = APIRouter(prefix="/api/dbc", tags=["dbc"])
 
@@ -22,8 +25,13 @@ async def upload_dbc(request: Request, file: UploadFile = File(...)):
     # store parsed DBC in app.state.dbcs as a dict filename -> cantools.Database
     if not hasattr(request.app.state, "dbcs"):
         request.app.state.dbcs = {}
-    request.app.state.dbcs[fname] = db
-    return JSONResponse({"filename": fname, "messages": len(db.messages)})
+    # Persist the uploaded DBC to disk so it survives restarts
+    try:
+        actual_name = dbc_store.save_dbc(fname, contents)
+    except Exception:
+        actual_name = fname
+    request.app.state.dbcs[actual_name] = db
+    return JSONResponse({"filename": actual_name, "messages": len(db.messages)})
 
 
 @router.post("/decode-frame")
@@ -106,5 +114,48 @@ async def decode_frame(request: Request, payload: dict):
 
 @router.get("/list")
 async def list_dbcs(request: Request):
-    dbs = getattr(request.app.state, "dbcs", {})
-    return JSONResponse({"dbcs": list(dbs.keys())})
+    # Return index metadata from the store when available
+    try:
+        idx = dbc_store.get_index()
+        files = list(idx.get("files", {}).values())
+        return JSONResponse({"dbcs": files})
+    except Exception:
+        dbs = getattr(request.app.state, "dbcs", {})
+        return JSONResponse({"dbcs": list(dbs.keys())})
+
+
+
+@router.delete("/{name}")
+async def delete_dbc(request: Request, name: str):
+    try:
+        ok = dbc_store.delete_dbc(name)
+    except Exception:
+        ok = False
+    if not ok:
+        raise HTTPException(status_code=404, detail="DBC not found or could not be deleted")
+    # remove from runtime store if present
+    try:
+        if hasattr(request.app.state, "dbcs"):
+            request.app.state.dbcs.pop(name, None)
+    except Exception:
+        pass
+    return JSONResponse({"deleted": name})
+
+
+@router.post("/{name}/rename")
+async def rename_dbc(request: Request, name: str, payload: dict):
+    new_name = payload.get("new_name")
+    if not new_name:
+        raise HTTPException(status_code=400, detail="new_name is required")
+    ok, msg = dbc_store.rename_dbc(name, new_name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg or "rename failed")
+    # update runtime store
+    try:
+        if hasattr(request.app.state, "dbcs"):
+            db = request.app.state.dbcs.pop(name, None)
+            if db is not None:
+                request.app.state.dbcs[new_name] = db
+    except Exception:
+        pass
+    return JSONResponse({"renamed": {"from": name, "to": new_name}})

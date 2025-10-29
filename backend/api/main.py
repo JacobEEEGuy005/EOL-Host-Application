@@ -10,6 +10,9 @@ from contextlib import asynccontextmanager
 
 from backend.adapters.sim import SimAdapter
 from backend.adapters.interface import Frame as AdapterFrame
+import cantools
+import os
+import logging
 
 
 @asynccontextmanager
@@ -39,6 +42,21 @@ async def lifespan(app: FastAPI):
     app.state.clients = clients
     app.state._reader_thread = reader_thread
     app.state._broadcaster = broadcaster
+
+    # Load persisted DBC files (Stage-2 persistence) using dbc_store helpers
+    try:
+        from backend.api.dbc_store import load_all_dbcs
+
+        try:
+            app.state.dbcs = load_all_dbcs()
+        except Exception:
+            app.state.dbcs = {}
+    except Exception:
+        # If the store helpers aren't available for any reason, fall back to empty dict
+        try:
+            app.state.dbcs = {}
+        except Exception:
+            pass
 
     try:
         yield
@@ -241,5 +259,13 @@ try:
     app.include_router(_dbc_module.router)
 except Exception:
     # If the router isn't present or import fails, don't prevent the app from starting.
+    pass
+
+# metrics router (small and safe to include)
+try:
+    from backend.api import metrics as _metrics_module
+    app.include_router(_metrics_module.router)
+except Exception:
+    # non-fatal: metrics endpoint not required for Stage-1
     pass
 

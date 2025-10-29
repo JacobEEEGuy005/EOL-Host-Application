@@ -25,12 +25,13 @@ def test_dbc_upload_decode_and_ws_loopback():
         r = client.post("/api/dbc/upload", files=files)
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body.get("filename") == "eol_firmware.dbc"
+        returned_name = body.get("filename")
+        assert returned_name is not None
 
         # decode a frame for CAN ID 256 (Status_Data, 8 bytes).
         # The DBC message is multiplexed; set the multiplexer (MessageType) to 5 ("Status")
         # and DeviceID to 1 so the multiplexer selection is valid.
-        payload = {"can_id": 256, "data": "01" + "05" + ("00" * 6), "dbc": "eol_firmware.dbc"}
+        payload = {"can_id": 256, "data": "01" + "05" + ("00" * 6), "dbc": returned_name}
         r2 = client.post("/api/dbc/decode-frame", json=payload)
         assert r2.status_code == 200, r2.text
         signals = r2.json().get("signals", {})
