@@ -22,7 +22,7 @@ import subprocess
 import sys
 import shutil
 import os
-from typing import Optional
+import json
 
 
 def run(cmd: list[str], capture: bool = False) -> subprocess.CompletedProcess:
@@ -49,24 +49,32 @@ def gh_available() -> bool:
 def gh_wait_for_pr(branch: str) -> int:
     # Find PR for branch
     print("Finding PR for branch via gh...")
-    p = run(["gh", "pr", "view", "--json", "number,headRefName", "--jq", ".number, .headRefName"], capture=True)
+    p = run(["gh", "pr", "view", "--json", "number,headRefName"], capture=True)
     if p.returncode != 0:
         print("gh pr view failed; will fall back to wait_for_pr_ci.py", file=sys.stderr)
         return 2
-    out = p.stdout.strip().splitlines()
-    if not out:
+    try:
+        pr_info = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        print("gh pr view output could not be parsed; falling back", file=sys.stderr)
+        return 2
+
+    prnum = pr_info.get("number")
+    if not prnum:
         print("No PR found for branch; falling back to branch-based wait")
         return 2
-    # The above may return multiple fields; we'll just attempt branch wait via gh run list
-    # List recent runs for the branch and watch the most recent in_progress or queued run
-    p2 = run(["gh", "run", "list", "--branch", branch, "--limit", "5", "--json", "databaseId,status,conclusion"], capture=True)
+
+    # List recent runs for the branch and watch the most recent run id
+    p2 = run(["gh", "run", "list", "--branch", branch, "--limit", "5", "--json", "databaseId"], capture=True)
     if p2.returncode != 0:
         print("gh run list failed; falling back to wait_for_pr_ci.py", file=sys.stderr)
         return 2
-    # Use gh to watch the latest run id if found
-    # Try to get the first run id via jq-like approach using gh's --jq isn't reliable here; parse minimal JSON
-    import json
-    runs = json.loads(p2.stdout)
+    try:
+        runs = json.loads(p2.stdout)
+    except json.JSONDecodeError:
+        print("gh run list output could not be parsed; falling back", file=sys.stderr)
+        return 2
+
     if not runs:
         print("No workflow runs found via gh; falling back")
         return 2
@@ -76,7 +84,7 @@ def gh_wait_for_pr(branch: str) -> int:
         print("Could not determine run id; falling back")
         return 2
     print(f"Watching run {run_id} via gh run watch...")
-    p3 = run(["gh", "run", "watch", str(run_id), "--exit-status"])  # this will block until completion
+    p3 = run(["gh", "run", "watch", str(run_id), "--exit-status"])  # blocks until completion
     return p3.returncode
 
 

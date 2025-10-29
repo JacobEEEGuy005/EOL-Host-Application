@@ -32,3 +32,20 @@ Behavior
 - Exit code 2: latest run completed with non-success conclusion
 - Exit code 3: timed out waiting
 - Exit code 4/5: misconfiguration or API error
+
+push_and_wait.py
+----------------
+
+Small wrapper that pushes the current branch and waits for the associated CI
+run to complete. The script prefers the GitHub CLI (`gh`) to find and watch the
+workflow run; if `gh` is not available it falls back to `wait_for_pr_ci.py` and
+requires `GITHUB_TOKEN` in the environment.
+
+Usage examples:
+
+```powershell
+python .\scripts\push_and_wait.py
+python .\scripts\push_and_wait.py --branch feature/serve-ws-test
+```
+
+Exit codes mirror the underlying wait helpers (0 = success, non-zero = failure).
