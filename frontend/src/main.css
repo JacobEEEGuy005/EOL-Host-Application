@@ -1,0 +1,7 @@
+body { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
+.app { padding: 16px; }
+header { background: #0f172a; color: white; padding: 12px; }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-top: 12px; }
+section { background: #f8fafc; padding: 12px; border-radius: 6px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #e2e8f0; padding: 4px 8px; }

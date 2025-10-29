@@ -82,7 +82,13 @@ app = FastAPI(title="EOL Host Backend", lifespan=lifespan)
 if os.environ.get("ENV", "development") in ("development", "test"):
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+        # allow common dev ports used by Vite and other local servers
+        allow_origins=[
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=False,
