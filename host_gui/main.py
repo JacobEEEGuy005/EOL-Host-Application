@@ -162,14 +162,57 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.test_list.currentItemChanged.connect(self._on_select_test)
         self.test_list.itemDoubleClicked.connect(self._on_edit_test)
 
-        # run buttons
+        # run buttons moved to Test Status tab
+
+        return tab
+
+    def _build_test_status(self):
+        """Builds the Test Status tab widget and returns it."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+
+        # Run buttons
+        btn_layout = QtWidgets.QHBoxLayout()
         self.run_test_btn = QtWidgets.QPushButton('Run Selected Test')
         self.run_seq_btn = QtWidgets.QPushButton('Run Sequence')
-        left_v.addWidget(self.run_test_btn)
-        left_v.addWidget(self.run_seq_btn)
+        btn_layout.addWidget(self.run_test_btn)
+        btn_layout.addWidget(self.run_seq_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        # Status display
+        status_group = QtWidgets.QGroupBox('Test Execution Status')
+        status_layout = QtWidgets.QVBoxLayout(status_group)
+
+        # Progress bar for sequence
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setVisible(False)
+        status_layout.addWidget(self.progress_bar)
+
+        # Status label
+        self.status_label = QtWidgets.QLabel('Ready')
+        status_layout.addWidget(self.status_label)
+
+        # Log text area
+        self.test_log = QtWidgets.QPlainTextEdit()
+        self.test_log.setReadOnly(True)
+        status_layout.addWidget(self.test_log)
+
+        layout.addWidget(status_group)
+
+        # Connect buttons
         self.run_test_btn.clicked.connect(self._on_run_selected)
         self.run_seq_btn.clicked.connect(self._on_run_sequence)
 
+        return tab
+
+    def _build_test_report(self):
+        """Builds the Test Report tab widget and returns it."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        label = QtWidgets.QLabel('Test Report - Coming Soon')
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(label)
         return tab
 
     def _build_toolbar(self):
@@ -379,6 +422,11 @@ class BaseGUI(QtWidgets.QMainWindow):
             test_tab = self._build_test_configurator()
             # add as a top-level tab after CAN Data View
             self.tabs_main.addTab(test_tab, 'Test Configurator')
+            # Add placeholder tabs for Test Status and Test Report
+            status_tab = self._build_test_status()
+            self.status_tab_index = self.tabs_main.addTab(status_tab, 'Test Status')
+            report_tab = self._build_test_report()
+            self.tabs_main.addTab(report_tab, 'Test Report')
         except Exception:
             pass
 
@@ -1265,29 +1313,51 @@ class BaseGUI(QtWidgets.QMainWindow):
     def _on_run_selected(self):
         idx = self.test_list.currentRow()
         if idx < 0 or idx >= len(self._tests):
-            QtWidgets.QMessageBox.information(self, 'Run Test', 'No test selected')
+            self.status_label.setText('No test selected')
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
             return
         t = self._tests[idx]
+        self.tabs_main.setCurrentIndex(self.status_tab_index)
+        self.status_label.setText(f'Running test: {t.get("name", "<unnamed>")}')
+        self.test_log.appendPlainText(f'Starting test: {t.get("name", "<unnamed>")}')
         try:
             ok, info = self._run_single_test(t)
-            QtWidgets.QMessageBox.information(self, 'Run Result', f"Result: {'PASS' if ok else 'FAIL'}\n{info}")
+            result = 'PASS' if ok else 'FAIL'
+            self.status_label.setText(f'Test completed: {result}')
+            self.test_log.appendPlainText(f'Result: {result}\n{info}')
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, 'Run Error', f'Error running test: {e}')
+            self.status_label.setText('Test error')
+            self.test_log.appendPlainText(f'Error: {e}')
 
     def _on_run_sequence(self):
         if not self._tests:
-            QtWidgets.QMessageBox.information(self, 'Run Sequence', 'No tests to run')
+            self.status_label.setText('No tests to run')
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
             return
+        self.tabs_main.setCurrentIndex(self.status_tab_index)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, len(self._tests))
+        self.progress_bar.setValue(0)
+        self.status_label.setText('Running test sequence...')
+        self.test_log.appendPlainText('Starting test sequence')
         results = []
-        for t in list(self._tests):
+        for i, t in enumerate(list(self._tests)):
+            self.status_label.setText(f'Running test {i+1}/{len(self._tests)}: {t.get("name","<unnamed>")}')
+            self.test_log.appendPlainText(f'Running test: {t.get("name","<unnamed>")}')
             try:
                 ok, info = self._run_single_test(t)
                 results.append((t.get('name','<unnamed>'), ok, info))
+                result = 'PASS' if ok else 'FAIL'
+                self.test_log.appendPlainText(f'Result: {result}\n{info}')
             except Exception as e:
                 results.append((t.get('name','<unnamed>'), False, str(e)))
+                self.test_log.appendPlainText(f'Error: {e}')
+            self.progress_bar.setValue(i+1)
         # summarize
+        self.progress_bar.setVisible(False)
         summary = '\n'.join([f"{n}: {'PASS' if ok else 'FAIL'} - {info}" for n,ok,info in results])
-        QtWidgets.QMessageBox.information(self, 'Sequence Result', summary)
+        self.status_label.setText('Sequence completed')
+        self.test_log.appendPlainText(f'Sequence summary:\n{summary}')
 
     def _run_single_test(self, test: dict, timeout: float = 1.0):
         """Execute a single test. Returns (bool, info_str)."""
