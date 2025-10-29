@@ -1510,7 +1510,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                             except Exception:
                                 pass
                             # build dict
-                            enc = {'MessageType': 16, sig: v}
+                            device_id = act.get('device_id', 0)
+                            enc = {'DeviceID': device_id, 'MessageType': 16, sig: v}
                             sent_bytes = msg.encode(enc)
                         except Exception:
                             sent_bytes = None
