@@ -47,6 +47,20 @@ class PythonCanAdapter:
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._recv_thread.start()
 
+    def _recv_loop(self) -> None:
+        """Background thread: read from python-can bus and append to internal queue."""
+        while not self._stop.is_set():
+            try:
+                msg = self._bus.recv(timeout=0.5) if self._bus is not None else None
+                if msg is None:
+                    continue
+                f = Frame(can_id=msg.arbitration_id, data=bytes(msg.data or b''), timestamp=getattr(msg, 'timestamp', time.time()))
+                with self._lock:
+                    self._out_queue.append(f)
+            except Exception:
+                time.sleep(0.1)
+                continue
+
     def close(self) -> None:
         self._stop.set()
         if self._recv_thread:
@@ -85,14 +99,13 @@ class PythonCanAdapter:
             return None
 
     def iter_recv(self) -> Iterable[Frame]:
-        # Yield frames from bus.recv in a loop until stopped
+        # Yield frames from internal queue (pop as they arrive)
+        idx = 0
         while not self._stop.is_set():
-            try:
-                msg = self._bus.recv(timeout=0.5) if self._bus is not None else None
-                if msg is None:
+            with self._lock:
+                if idx < len(self._out_queue):
+                    f = self._out_queue[idx]
+                    idx += 1
+                    yield f
                     continue
-                yield Frame(can_id=msg.arbitration_id, data=bytes(msg.data or b''), timestamp=getattr(msg, 'timestamp', time.time()))
-            except Exception:
-                # sleep briefly to avoid busy-loop on persistent errors
-                time.sleep(0.1)
-                continue
+            time.sleep(0.05)
