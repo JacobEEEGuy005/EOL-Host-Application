@@ -487,6 +487,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         inner.addTab(self.signal_widget, 'Signal View')
         # mapping of signal key -> row index in signal_table for fast updates
         self._signal_rows = {}
+        # storage for latest signal values: key -> (timestamp, value)
+        self._signal_values = {}
+        # currently monitored feedback signal during test run: (msg_id, signal_name) or None
+        self._current_feedback = None
         inner.addTab(self.send_widget, 'Send Data')
         inner.addTab(self.settings_widget, 'Settings')
 
@@ -1459,6 +1463,19 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.test_log.appendPlainText(f'[{timestamp}] Starting test: {t.get("name", "<unnamed>")}')
         start_time = time.time()
         try:
+            # set current feedback signal for UI monitoring
+            try:
+                self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
+                if self._current_feedback and self._current_feedback[1]:
+                    ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
+                    if v is not None:
+                        try:
+                            self.feedback_signal_label.setText(str(v))
+                        except Exception:
+                            pass
+            except Exception:
+                self._current_feedback = None
+
             ok, info = self._run_single_test(t)
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
@@ -1475,6 +1492,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
             self._add_result_to_table(t, 'ERROR', exec_time, str(e))
+        finally:
+            # clear current feedback monitor
+            try:
+                self._current_feedback = None
+            except Exception:
+                pass
 
     def _on_clear_results(self):
         self.results_table.setRowCount(0)
@@ -1505,6 +1528,19 @@ class BaseGUI(QtWidgets.QMainWindow):
             self.test_log.appendPlainText(f'[{timestamp}] Running test: {t.get("name","<unnamed>")}')
             start_time = time.time()
             try:
+                # set current feedback signal for this test
+                try:
+                    self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
+                    if self._current_feedback and self._current_feedback[1]:
+                        ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
+                        if v is not None:
+                            try:
+                                self.feedback_signal_label.setText(str(v))
+                            except Exception:
+                                pass
+                except Exception:
+                    self._current_feedback = None
+
                 ok, info = self._run_single_test(t)
                 end_time = time.time()
                 exec_time = end_time - start_time
@@ -1522,6 +1558,12 @@ class BaseGUI(QtWidgets.QMainWindow):
                 timestamp = datetime.now().strftime('%H:%M:%S')
                 self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
                 self._add_result_to_table(t, 'ERROR', f"{exec_time:.2f}s", str(e))
+            finally:
+                # clear current feedback for this test iteration
+                try:
+                    self._current_feedback = None
+                except Exception:
+                    pass
             self.progress_bar.setValue(i+1)
         # summarize
         self.progress_bar.setVisible(False)
@@ -1657,7 +1699,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                     return False, observed_info
 
                 ok = False
-                info = 'no feedback'
+                info = ''
                 # helper: non-blocking sleep that processes Qt events so UI stays responsive
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
@@ -1672,6 +1714,153 @@ class BaseGUI(QtWidgets.QMainWindow):
                         # sleep in short increments to remain responsive
                         time.sleep(min(0.02, remaining))
 
+                def _parse_expected(v):
+                    try:
+                        if isinstance(v, str) and v.startswith('0x'):
+                            return int(v, 16)
+                        if isinstance(v, str):
+                            return int(v)
+                        return int(v)
+                    except Exception:
+                        return v
+
+                def _check_frame_for_feedback():
+                    """Return (value, info_str) for the most recent decoded feedback signal if present, else (None, None).
+                    Prefer numeric value from `self._signal_values` (Signal View) and fall back to decoding frames."""
+                    fb = test.get('feedback_signal')
+                    fb_mid = test.get('feedback_message_id')
+                    # try signal-table-backed storage first
+                    try:
+                        if fb:
+                            # exact can id specified
+                            if fb_mid is not None:
+                                key = f"{fb_mid}:{fb}"
+                                entry = self._signal_values.get(key)
+                                if entry is not None:
+                                    ts, v = entry
+                                    return v, f"{fb}={v} (msg 0x{fb_mid:X})"
+                            else:
+                                # find any matching signal name across can ids; prefer latest timestamp
+                                candidates = []
+                                for k, (ts, v) in self._signal_values.items():
+                                    try:
+                                        _can, sname = k.split(':', 1)
+                                    except Exception:
+                                        continue
+                                    if sname == fb:
+                                        candidates.append((ts, k, v))
+                                if candidates:
+                                    # pick most recent
+                                    candidates.sort(key=lambda x: x[0], reverse=True)
+                                    ts, k, v = candidates[0]
+                                    canid = k.split(':', 1)[0]
+                                    try:
+                                        cid = int(canid)
+                                        return v, f"{fb}={v} (msg 0x{cid:X})"
+                                    except Exception:
+                                        return v, f"{fb}={v} (msg {canid})"
+                    except Exception:
+                        pass
+
+                    # fallback: scan recent rows and decode directly (legacy behavior)
+                    try:
+                        rows = self.frame_table.rowCount()
+                    except Exception:
+                        rows = 0
+                    for r in range(max(0, rows - 50), rows):
+                        try:
+                            can_id_item = self.frame_table.item(r, 1)
+                            data_item = self.frame_table.item(r, 3)
+                            if can_id_item is None or data_item is None:
+                                continue
+                            try:
+                                row_can = int(can_id_item.text())
+                            except Exception:
+                                try:
+                                    row_can = int(can_id_item.text(), 0)
+                                except Exception:
+                                    continue
+                            raw_hex = data_item.text()
+                            raw = bytes.fromhex(raw_hex) if raw_hex else b''
+                            # DBC decoding path
+                            if self._dbc_db is not None and fb:
+                                target_msg = None
+                                for m in getattr(self._dbc_db, 'messages', []):
+                                    for s in getattr(m, 'signals', []):
+                                        if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                            target_msg = m
+                                            break
+                                    if target_msg:
+                                        break
+                                if target_msg is not None:
+                                    try:
+                                        # prefer numeric decoding (no choice label mapping)
+                                        try:
+                                            decoded = target_msg.decode(raw, decode_choices=False)
+                                        except TypeError:
+                                            decoded = target_msg.decode(raw)
+                                        val = decoded.get(fb)
+                                        return val, f"{fb}={val} (msg 0x{row_can:X})"
+                                    except Exception:
+                                        pass
+                            else:
+                                return raw.hex(), f"raw={raw.hex()} (msg 0x{row_can:X})"
+                        except Exception:
+                            continue
+                    return None, None
+
+                def _wait_for_value(expected, duration_ms: int):
+                    # wait up to duration_ms milliseconds, return True if the Signal View reports expected value
+                    end = time.time() + (float(duration_ms) / 1000.0)
+                    fb = test.get('feedback_signal')
+                    fb_mid = test.get('feedback_message_id')
+                    while time.time() < end:
+                        QtCore.QCoreApplication.processEvents()
+                        try:
+                            # prefer the canonical storage of latest signal values
+                            if fb:
+                                if fb_mid is not None:
+                                    ts, val = self.get_latest_signal(fb_mid, fb)
+                                else:
+                                    # find most recent matching signal by name
+                                    candidates = []
+                                    for k, (t, v) in self._signal_values.items():
+                                        try:
+                                            _cid, sname = k.split(':', 1)
+                                        except Exception:
+                                            continue
+                                        if sname == fb:
+                                            candidates.append((t, v))
+                                    if candidates:
+                                        candidates.sort(key=lambda x: x[0], reverse=True)
+                                        ts, val = candidates[0]
+                                    else:
+                                        ts, val = (None, None)
+                            else:
+                                ts, val = (None, None)
+                        except Exception:
+                            ts, val = (None, None)
+
+                        if val is not None:
+                            try:
+                                # numeric comparison when possible
+                                if isinstance(val, (int, float)) and isinstance(expected, (int, float)):
+                                    if val == expected:
+                                        return True, f"{fb}={val}"
+                                else:
+                                    if str(val) == str(expected):
+                                        return True, f"{fb}={val}"
+                            except Exception:
+                                if str(val) == str(expected):
+                                    return True, f"{fb}={val}"
+
+                        time.sleep(0.02)
+                    return False, f"Did not observe expected value {expected} during dwell"
+
+                # prepare expected values
+                expected_high = _parse_expected(high_val)
+                expected_low = _parse_expected(low_val)
+
                 # perform the sequence: ensure LOW, test HIGH, then ensure LOW
                 try:
                     low_bytes = _encode_value_to_bytes(low_val)
@@ -1679,16 +1868,31 @@ class BaseGUI(QtWidgets.QMainWindow):
                     # ensure LOW before starting
                     _send_bytes(low_bytes)
                     _nb_sleep(0.05)
-                    # send HIGH and wait dwell (non-blocking)
+                    # send HIGH and check feedback during dwell
                     _send_bytes(high_bytes)
-                    _nb_sleep(max(0.001, int(dwell_ms) / 1000.0))
-                    ok, info = _wait_for_feedback(timeout)
+                    high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
+                    # after dwell, record
+                    info_parts = []
+                    if high_ok:
+                        info_parts.append(f"HIGH observed: {high_info}")
+                    else:
+                        info_parts.append(f"HIGH missing: expected {expected_high}")
                 finally:
                     try:
                         _send_bytes(low_bytes)
                         _nb_sleep(0.05)
                     except Exception:
                         pass
+
+                # after returning to LOW, check feedback for LOW dwell
+                low_ok, low_info = _wait_for_value(expected_low, int(dwell_ms))
+                if low_ok:
+                    info_parts.append(f"LOW observed: {low_info}")
+                else:
+                    info_parts.append(f"LOW missing: expected {expected_low}")
+
+                ok = bool(high_ok and low_ok)
+                info = '; '.join(info_parts)
             elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
                 can_id = act.get('dac_can_id')
                 cmd = act.get('dac_command','')
@@ -2044,6 +2248,48 @@ class BaseGUI(QtWidgets.QMainWindow):
                 except Exception:
                     self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
                 self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
+                # persist latest value (try to store numeric if possible)
+                try:
+                    num_val = val
+                    # attempt to get numeric form by re-decoding without choice labels
+                    try:
+                        # some cantools versions accept decode_choices=False
+                        nd = target_msg.decode(raw, decode_choices=False)
+                        if sig_name in nd:
+                            num_val = nd.get(sig_name)
+                    except TypeError:
+                        # decode doesn't accept decode_choices; fall back
+                        pass
+                    except Exception:
+                        pass
+                    # attempt numeric coercion if still a string
+                    try:
+                        if isinstance(num_val, str) and num_val.isdigit():
+                            num_val = int(num_val)
+                    except Exception:
+                        pass
+                    self._signal_values[key] = (ts, num_val)
+                    # if this signal is currently being monitored for feedback, update the label
+                    try:
+                        cur = getattr(self, '_current_feedback', None)
+                        if cur and cur[1] and str(cur[1]) == str(sig_name):
+                            try:
+                                cur_id = int(cur[0])
+                            except Exception:
+                                cur_id = None
+                            try:
+                                this_id = int(fid)
+                            except Exception:
+                                this_id = None
+                            if cur_id is not None and this_id is not None and cur_id == this_id:
+                                try:
+                                    self.feedback_signal_label.setText(str(num_val))
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             else:
                 r = self.signal_table.rowCount()
                 self.signal_table.insertRow(r)
@@ -2056,6 +2302,44 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
                 self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
                 self._signal_rows[key] = r
+                # persist latest value (try to store numeric if possible)
+                try:
+                    num_val = val
+                    try:
+                        nd = target_msg.decode(raw, decode_choices=False)
+                        if sig_name in nd:
+                            num_val = nd.get(sig_name)
+                    except TypeError:
+                        pass
+                    except Exception:
+                        pass
+                    try:
+                        if isinstance(num_val, str) and num_val.isdigit():
+                            num_val = int(num_val)
+                    except Exception:
+                        pass
+                    self._signal_values[key] = (ts, num_val)
+                    # if this signal is currently being monitored for feedback, update the label
+                    try:
+                        cur = getattr(self, '_current_feedback', None)
+                        if cur and cur[1] and str(cur[1]) == str(sig_name):
+                            try:
+                                cur_id = int(cur[0])
+                            except Exception:
+                                cur_id = None
+                            try:
+                                this_id = int(fid)
+                            except Exception:
+                                this_id = None
+                            if cur_id is not None and this_id is not None and cur_id == this_id:
+                                try:
+                                    self.feedback_signal_label.setText(str(num_val))
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
         # trim if too many rows: remove oldest (row 0) and update mapping
         try:
             while self.signal_table.rowCount() > self._max_messages:
@@ -2078,6 +2362,12 @@ class BaseGUI(QtWidgets.QMainWindow):
                                 del self._signal_rows[k]
                             except Exception:
                                 pass
+                        # also remove persisted value if present
+                        try:
+                            if k in self._signal_values:
+                                del self._signal_values[k]
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 self.signal_table.removeRow(0)
@@ -2093,6 +2383,17 @@ class BaseGUI(QtWidgets.QMainWindow):
                     pass
         except Exception:
             pass
+
+    def get_latest_signal(self, can_id, signal_name):
+        """Return (timestamp, value) for the latest observed signal, or (None, None) if unknown."""
+        try:
+            key = f"{int(can_id)}:{signal_name}"
+        except Exception:
+            key = f"{can_id}:{signal_name}"
+        try:
+            return self._signal_values.get(key, (None, None))
+        except Exception:
+            return (None, None)
 
     def _send_frame(self):
         if self.sim is None:
