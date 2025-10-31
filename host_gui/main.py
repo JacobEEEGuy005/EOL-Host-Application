@@ -375,6 +375,8 @@ class TestRunner:
                             _send_bytes(high_bytes)
                             # wait for HIGH dwell (may return early on observation)
                             high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
+                            print('HIGH dwell:', high_info)
+                            print('High ok:', high_ok)
                             if high_ok:
                                 info_parts.append(f"HIGH observed: {high_info}")
                             else:
@@ -386,6 +388,8 @@ class TestRunner:
                             state = 'WAIT_LOW_DWELL'
                         elif state == 'WAIT_LOW_DWELL':
                             low_ok, low_info = _wait_for_value(expected_low, int(dwell_ms))
+                            print('LOW dwell:', low_info)
+                            print('Low ok:', low_ok)
                             if low_ok:
                                 info_parts.append(f"LOW observed: {low_info}")
                             else:
@@ -402,7 +406,10 @@ class TestRunner:
                         pass
 
                 ok = bool(high_ok and low_ok)
+                print(ok)
                 info = '; '.join(info_parts)
+                # Return the computed result so callers receive the correct PASS/FAIL
+                return ok, info
             elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
                 can_id = act.get('dac_can_id')
                 cmd = act.get('dac_command','')
