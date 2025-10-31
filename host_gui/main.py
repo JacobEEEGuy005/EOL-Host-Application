@@ -477,6 +477,16 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         inner.addTab(self.dbc_widget, 'DBC Manager')
         inner.addTab(self.live_widget, 'Live Data')
+        # Signal view: decoded signals from DBC (if loaded)
+        self.signal_widget = QtWidgets.QWidget()
+        sig_layout = QtWidgets.QVBoxLayout(self.signal_widget)
+        self.signal_table = QtWidgets.QTableWidget(0, 5)
+        self.signal_table.setHorizontalHeaderLabels(['ts', 'message', 'can_id', 'signal', 'value'])
+        self.signal_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        sig_layout.addWidget(self.signal_table)
+        inner.addTab(self.signal_widget, 'Signal View')
+        # mapping of signal key -> row index in signal_table for fast updates
+        self._signal_rows = {}
         inner.addTab(self.send_widget, 'Send Data')
         inner.addTab(self.settings_widget, 'Settings')
 
@@ -1971,6 +1981,102 @@ class BaseGUI(QtWidgets.QMainWindow):
             item = self.frame_table.item(self.frame_table.rowCount()-1, 0)
             if item is not None:
                 self.frame_table.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtBottom)
+        except Exception:
+            pass
+        # Also attempt to decode signals from DBC and show in Signal View
+        try:
+            self._decode_and_add_signals(frame)
+        except Exception:
+            pass
+
+    def _decode_and_add_signals(self, frame):
+        """Decode a received frame using loaded DBC and append each signal to Signal View."""
+        if cantools is None or getattr(self, '_dbc_db', None) is None:
+            return
+        try:
+            fid = int(getattr(frame, 'can_id', 0))
+        except Exception:
+            return
+        target_msg = None
+        for m in getattr(self._dbc_db, 'messages', []):
+            mid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+            try:
+                if mid is not None and int(mid) == fid:
+                    target_msg = m
+                    break
+            except Exception:
+                continue
+        if target_msg is None:
+            return
+        # get raw bytes
+        raw = getattr(frame, 'data', b'')
+        if isinstance(raw, str):
+            try:
+                raw = bytes.fromhex(raw)
+            except Exception:
+                raw = b''
+        try:
+            decoded = target_msg.decode(raw)
+        except Exception:
+            return
+        ts = getattr(frame, 'timestamp', time.time()) or time.time()
+        # update each signal into a single persistent row (create if missing)
+        for sig_name, val in decoded.items():
+            key = f"{fid}:{sig_name}"
+            if key in self._signal_rows:
+                row = self._signal_rows[key]
+                try:
+                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                except Exception:
+                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
+            else:
+                r = self.signal_table.rowCount()
+                self.signal_table.insertRow(r)
+                try:
+                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                except Exception:
+                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                self.signal_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(getattr(target_msg, 'name', ''))))
+                self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
+                self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
+                self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
+                self._signal_rows[key] = r
+        # trim if too many rows: remove oldest (row 0) and update mapping
+        try:
+            while self.signal_table.rowCount() > self._max_messages:
+                # capture key for row 0
+                try:
+                    cid_item = self.signal_table.item(0, 2)
+                    sig_item = self.signal_table.item(0, 3)
+                    if cid_item is not None and sig_item is not None:
+                        try:
+                            kcid = cid_item.text()
+                        except Exception:
+                            kcid = ''
+                        try:
+                            ksig = sig_item.text()
+                        except Exception:
+                            ksig = ''
+                        k = f"{kcid}:{ksig}"
+                        if k in self._signal_rows:
+                            try:
+                                del self._signal_rows[k]
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                self.signal_table.removeRow(0)
+                # decrement indexes
+                try:
+                    for kk in list(self._signal_rows.keys()):
+                        try:
+                            if self._signal_rows[kk] > 0:
+                                self._signal_rows[kk] = self._signal_rows[kk] - 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         except Exception:
             pass
 
