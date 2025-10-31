@@ -1700,10 +1700,69 @@ class BaseGUI(QtWidgets.QMainWindow):
                     QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open SimAdapter: {e}')
                     self.sim = None
                     return
-            self.worker = AdapterWorker(self.sim, self.frame_q)
-            self.worker.start()
-            print('[host_gui] started AdapterWorker')
-            self.poll_timer.start()
+            # Prompt user to optionally load a DBC when adapter starts
+            try:
+                fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
+            except Exception:
+                fname = ''
+
+            if fname:
+                # update Test Configurator path editor if present
+                try:
+                    self.dbc_path_edit.setText(fname)
+                except Exception:
+                    pass
+
+                if cantools is None:
+                    QtWidgets.QMessageBox.warning(self, 'DBC Load', 'cantools not installed; cannot parse DBC. Adapter will run without filters.')
+                    self._dbc_db = None
+                else:
+                    # attempt to load the DBC using cantools
+                    try:
+                        try:
+                            db = cantools.database.load_file(fname)
+                        except Exception:
+                            db = cantools.db.load_file(fname)
+                    except Exception as e:
+                        self._dbc_db = None
+                        QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to parse DBC: {e}')
+                    else:
+                        self._dbc_db = db
+                        # build filters from DBC messages and apply to adapter
+                        filters = []
+                        for m in getattr(db, 'messages', []):
+                            fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                            if fid is None:
+                                continue
+                            filters.append({'can_id': int(fid), 'extended': False})
+                        try:
+                            if hasattr(self.sim, 'set_filters'):
+                                self.sim.set_filters(filters)
+                            QtWidgets.QMessageBox.information(self, 'DBC Loaded', f'Loaded DBC: {os.path.basename(fname)}; applied {len(filters)} filters')
+                        except Exception as e:
+                            QtWidgets.QMessageBox.warning(self, 'Filters', f'Failed to apply filters to adapter: {e}')
+            # if no DBC was chosen or parse failed, close adapter and do not start reception
+            if not fname or (cantools is not None and getattr(self, '_dbc_db', None) is None):
+                try:
+                    QtWidgets.QMessageBox.information(self, 'Adapter', 'DBC not loaded; adapter will be closed. Select a DBC to start reception.')
+                except Exception:
+                    pass
+                try:
+                    self.sim.close()
+                except Exception:
+                    pass
+                self.sim = None
+                return
+
+            # Start background reception now that DBC is loaded and filters applied
+            try:
+                self.worker = AdapterWorker(self.sim, self.frame_q)
+                self.worker.start()
+                print('[host_gui] started AdapterWorker')
+                self.poll_timer.start()
+            except Exception:
+                pass
+
             # update connect button and status
             if self.start_btn is not None:
                 self.start_btn.setText('Disconnect')

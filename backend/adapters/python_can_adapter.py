@@ -7,6 +7,8 @@ try:
     import can
 except Exception:
     can = None
+import logging
+logger = logging.getLogger(__name__)
 
 from .interface import Adapter, Frame
 
@@ -42,6 +44,14 @@ class PythonCanAdapter:
             self._bus = can.Bus(channel=self.channel, interface=self.interface, **kwargs)
         else:
             self._bus = can.Bus(channel=self.channel, **kwargs)
+
+        # Re-apply any pending filters that were set before the bus was opened
+        try:
+            if getattr(self, '_pending_filters', None) is not None:
+                self.set_filters(self._pending_filters)
+                self._pending_filters = None
+        except Exception:
+            pass
 
         self._stop.clear()
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -86,6 +96,48 @@ class PythonCanAdapter:
         except Exception:
             # best-effort: ignore send errors here and allow caller to handle
             raise
+
+    def set_filters(self, filters) -> None:
+        """Apply CAN filters to the underlying python-can Bus.
+
+        `filters` is expected to be a list of dict-like entries containing at
+        least 'can_id' and optionally 'can_mask' and 'extended'. This method
+        will translate into the python-can expected filter dicts and call
+        Bus.set_filters() when possible. If the Bus doesn't support filters
+        this is a no-op.
+        """
+        if self._bus is None:
+            # store filters locally so future open could reapply if desired
+            self._pending_filters = list(filters) if filters is not None else None
+            return
+        try:
+            can_filters = []
+            if filters is None:
+                can_filters = None
+            else:
+                for f in filters:
+                    if isinstance(f, dict):
+                        fid = int(f.get('can_id', 0))
+                        extended = bool(f.get('extended', False))
+                        # choose a sensible default mask
+                        mask = int(f.get('can_mask')) if f.get('can_mask') is not None else (0x1FFFFFFF if extended else 0x7FF)
+                        can_filters.append({'can_id': fid, 'can_mask': mask, 'extended': extended})
+                    else:
+                        # assume numeric id
+                        try:
+                            fid = int(f)
+                        except Exception:
+                            continue
+                        can_filters.append({'can_id': fid, 'can_mask': 0x7FF, 'extended': False})
+            # python-can accepts None to clear filters
+            try:
+                logger.info('Applying python-can filters: %s', can_filters)
+                self._bus.set_filters(can_filters)
+            except Exception:
+                # some backends may not support set_filters; ignore
+                logger.exception('Failed to apply python-can filters')
+        except Exception:
+            pass
 
     def recv(self, timeout: Optional[float] = None) -> Optional[Frame]:
         if self._bus is None:

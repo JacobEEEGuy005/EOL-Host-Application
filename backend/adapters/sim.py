@@ -81,16 +81,31 @@ class SimAdapter:
                 metrics.inc("sim_recv")
             except Exception:
                 pass
-            return f
+            # ensure loopback frames also honor filters
+            if self._frame_matches_filters(f):
+                return f
+            # otherwise fall through to consume from the main queue
         except queue.Empty:
             pass
         try:
-            f = self._q.get(timeout=timeout)
-            try:
-                metrics.inc("sim_recv")
-            except Exception:
-                pass
-            return f
+            # consume until timeout, skipping frames that don't match filters
+            end = None if timeout is None else (time.time() + float(timeout))
+            while True:
+                remaining = None if end is None else max(0.0, end - time.time())
+                try:
+                    f = self._q.get(timeout=remaining)
+                except queue.Empty:
+                    return None
+                if self._frame_matches_filters(f):
+                    try:
+                        metrics.inc("sim_recv")
+                    except Exception:
+                        pass
+                    return f
+                # else skip and continue until timeout
+                if end is not None and time.time() >= end:
+                    return None
+                continue
         except queue.Empty:
             return None
 
@@ -109,7 +124,45 @@ class SimAdapter:
                 f = None
             if f is not None:
                 try:
+                    # honor filters by skipping non-matching frames
+                    if not self._frame_matches_filters(f):
+                        continue
                     metrics.inc("sim_recv")
                 except Exception:
                     pass
                 yield f
+
+    def set_filters(self, filters):
+        """Store filters for the simulator. Filters are honored by recv/iter_recv."""
+        try:
+            self._filters = list(filters) if filters is not None else None
+        except Exception:
+            self._filters = filters
+
+    def _frame_matches_filters(self, frame: Frame) -> bool:
+        """Return True if the given frame matches the configured filters.
+
+        Filters are expected as dicts containing at least 'can_id' and optionally
+        'can_mask' and 'extended'. If no filters are set, all frames match.
+        """
+        if getattr(self, '_filters', None) is None:
+            return True
+        try:
+            for f in self._filters:
+                try:
+                    fid = int(f.get('can_id', 0)) if isinstance(f, dict) else int(getattr(f, 'can_id', 0))
+                except Exception:
+                    continue
+                extended = bool(f.get('extended', False)) if isinstance(f, dict) else False
+                try:
+                    mask = int(f.get('can_mask')) if isinstance(f, dict) and f.get('can_mask') is not None else (0x1FFFFFFF if extended else 0x7FF)
+                except Exception:
+                    mask = 0x1FFFFFFF if extended else 0x7FF
+                try:
+                    if (int(frame.can_id) & mask) == (fid & mask):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            return True
+        return False

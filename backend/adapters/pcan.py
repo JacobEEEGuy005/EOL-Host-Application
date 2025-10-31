@@ -18,6 +18,8 @@ import can
 
 from .interface import Adapter, Frame
 from backend import metrics
+import logging
+logger = logging.getLogger(__name__)
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,13 @@ class PcanAdapter:
             except Exception:
                 logger.exception("Failed to open PCAN bus")
                 raise
+            # reapply pending filters if present
+            try:
+                if getattr(self, '_pending_filters', None) is not None:
+                    self.set_filters(self._pending_filters)
+                    self._pending_filters = None
+            except Exception:
+                pass
 
     def close(self) -> None:
         with self._lock:
@@ -149,3 +158,33 @@ class PcanAdapter:
             except Exception:
                 pass
             yield frame
+
+    def set_filters(self, filters) -> None:
+        """Apply filters to the underlying PCAN/python-can bus if supported."""
+        if self._bus is None:
+            self._pending_filters = list(filters) if filters is not None else None
+            return
+        try:
+            can_filters = []
+            if filters is None:
+                can_filters = None
+            else:
+                for f in filters:
+                    if isinstance(f, dict):
+                        fid = int(f.get('can_id', 0))
+                        extended = bool(f.get('extended', False))
+                        mask = int(f.get('can_mask')) if f.get('can_mask') is not None else (0x1FFFFFFF if extended else 0x7FF)
+                        can_filters.append({'can_id': fid, 'can_mask': mask, 'extended': extended})
+                    else:
+                        try:
+                            fid = int(f)
+                        except Exception:
+                            continue
+                        can_filters.append({'can_id': fid, 'can_mask': 0x7FF, 'extended': False})
+            try:
+                logger.info('Applying PCAN/python-can filters: %s', can_filters)
+                self._bus.set_filters(can_filters)
+            except Exception:
+                logger.exception('Failed to apply PCAN filters')
+        except Exception:
+            pass
