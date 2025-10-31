@@ -91,7 +91,11 @@ class PythonCanAdapter:
             raise RuntimeError('Bus not open')
         # build can.Message
         try:
-            msg = can.Message(arbitration_id=int(frame.can_id), data=bytes(frame.data), is_extended_id=False)
+            # Ensure classic CAN DLC of 8 bytes by padding with zeros if needed
+            data_bytes = bytes(frame.data) if frame.data is not None else b''
+            if len(data_bytes) < 8:
+                data_bytes = data_bytes + b'\x00' * (8 - len(data_bytes))
+            msg = can.Message(arbitration_id=int(frame.can_id), data=data_bytes, is_extended_id=False)
             self._bus.send(msg)
         except Exception:
             # best-effort: ignore send errors here and allow caller to handle

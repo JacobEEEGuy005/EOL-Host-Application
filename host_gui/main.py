@@ -770,12 +770,16 @@ class BaseGUI(QtWidgets.QMainWindow):
             dac_step_mv.setValidator(step_validator)
             dac_dwell_ms = QtWidgets.QLineEdit()
             dac_dwell_ms.setValidator(dwell_validator)
+            # digital dwell input
+            dig_dwell_ms = QtWidgets.QLineEdit()
+            dig_dwell_ms.setValidator(dwell_validator)
 
             # populate digital sub-widget
             digital_layout.addRow('Command Message:', dig_msg_combo)
             digital_layout.addRow('Actuation Signal:', dig_signal_combo)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
+            digital_layout.addRow('Dwell Time (ms):', dig_dwell_ms)
             # populate analog sub-widget in requested order
             analog_layout.addRow('Command Message:', dac_msg_combo)
             analog_layout.addRow('DAC Command Signal:', dac_command_signal_combo)
@@ -792,6 +796,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             dig_signal = QtWidgets.QLineEdit()
             dig_value_low = QtWidgets.QLineEdit()
             dig_value_high = QtWidgets.QLineEdit()
+            dig_dwell_ms = QtWidgets.QLineEdit()
             # analog actuation
             mux_chan = QtWidgets.QLineEdit()
             dac_can = QtWidgets.QLineEdit()
@@ -801,6 +806,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Actuation Signal:', dig_signal)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
+            digital_layout.addRow('Dwell Time (ms):', dig_dwell_ms)
             # fallback analog fields when no DBC
             analog_layout.addRow('Command Message (free-text):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
@@ -878,7 +884,19 @@ class BaseGUI(QtWidgets.QMainWindow):
                     sig = dig_signal_combo.currentText().strip() if dig_signal_combo.count() else ''
                     low = dig_value_low.text().strip()
                     high = dig_value_high.text().strip()
-                    act = {'type':'digital', 'can_id': can_id, 'signal': sig, 'value_low': low, 'value_high': high}
+                    # optional dwell time for digital in milliseconds
+                    try:
+                        dig_dwell = int(dig_dwell_ms.text().strip()) if hasattr(dig_dwell_ms, 'text') and dig_dwell_ms.text().strip() else None
+                    except Exception:
+                        dig_dwell = None
+                    act = {
+                        'type':'digital',
+                        'can_id': can_id,
+                        'signal': sig,
+                        'value_low': low,
+                        'value_high': high,
+                        'dwell_ms': dig_dwell,
+                    }
                 else:
                     # analog: read selected DAC message and related signal selections and numeric params
                     try:
@@ -928,12 +946,18 @@ class BaseGUI(QtWidgets.QMainWindow):
                         can_id = int(dig_can.text().strip(), 0) if dig_can.text().strip() else None
                     except Exception:
                         can_id = None
+                    # dwell for manual digital entry
+                    try:
+                        dig_dwell = int(dig_dwell_ms.text().strip()) if hasattr(dig_dwell_ms, 'text') and dig_dwell_ms.text().strip() else None
+                    except Exception:
+                        dig_dwell = None
                     act = {
                         'type': 'digital',
                         'can_id': can_id,
                         'signal': dig_signal.text().strip(),
                         'value_low': dig_value_low.text().strip(),
-                        'value_high': dig_value_high.text().strip()
+                        'value_high': dig_value_high.text().strip(),
+                        'dwell_ms': dig_dwell,
                     }
                 else:
                     try:
@@ -1216,6 +1240,9 @@ class BaseGUI(QtWidgets.QMainWindow):
             dac_max_mv.setValidator(mv_validator)
             dac_step_mv.setValidator(step_validator)
             dac_dwell_ms.setValidator(dwell_validator)
+            # digital dwell input (edit)
+            dig_dwell_ms = QtWidgets.QLineEdit(str(act.get('dwell_ms','')))
+            dig_dwell_ms.setValidator(dwell_validator)
 
             # set current dig message index from actuation can_id
             try:
@@ -1237,6 +1264,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Actuation Signal:', dig_signal_combo)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
+            digital_layout.addRow('Dwell Time (ms):', dig_dwell_ms)
             # populate analog sub-widget (DBC-driven)
             analog_layout.addRow('Command Message:', dac_msg_combo)
             analog_layout.addRow('DAC Command Signal:', dac_command_signal_combo)
@@ -1252,6 +1280,10 @@ class BaseGUI(QtWidgets.QMainWindow):
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
             dig_value_low = QtWidgets.QLineEdit(str(act.get('value_low','')))
             dig_value_high = QtWidgets.QLineEdit(str(act.get('value_high','')))
+            # dwell input for fallback (non-DBC)
+            dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            dig_dwell_ms = QtWidgets.QLineEdit(str(act.get('dwell_ms','')))
+            dig_dwell_ms.setValidator(dwell_validator)
             mux_chan = QtWidgets.QLineEdit(str(act.get('mux_channel','')))
             dac_can = QtWidgets.QLineEdit(str(act.get('dac_can_id','')))
             dac_cmd = QtWidgets.QLineEdit(str(act.get('dac_command','')))
@@ -1259,6 +1291,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Actuation Signal:', dig_signal)
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
+            digital_layout.addRow('Dwell Time (ms):', dig_dwell_ms)
             # fallback analog layout
             analog_layout.addRow('Command Message (free-text):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
@@ -1319,7 +1352,12 @@ class BaseGUI(QtWidgets.QMainWindow):
                     sig = dig_signal_combo.currentText().strip() if 'dig_signal_combo' in locals() else ''
                     low = dig_value_low.text().strip()
                     high = dig_value_high.text().strip()
-                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':sig,'value_low':low,'value_high':high}
+                    # optional dwell time
+                    try:
+                        dig_dwell = int(dig_dwell_ms.text().strip()) if hasattr(dig_dwell_ms, 'text') and dig_dwell_ms.text().strip() else None
+                    except Exception:
+                        dig_dwell = None
+                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':sig,'value_low':low,'value_high':high,'dwell_ms':dig_dwell}
                 else:
                     # analog: capture selected DAC message and signal selections
                     try:
@@ -1369,7 +1407,11 @@ class BaseGUI(QtWidgets.QMainWindow):
                         can_id = int(dig_can.text().strip(),0) if dig_can.text().strip() else None
                     except Exception:
                         can_id = None
-                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip()}
+                    try:
+                        dig_dwell = int(dig_dwell_ms.text().strip()) if hasattr(dig_dwell_ms, 'text') and dig_dwell_ms.text().strip() else None
+                    except Exception:
+                        dig_dwell = None
+                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip(),'dwell_ms':dig_dwell}
                 else:
                     try:
                         mux = int(mux_chan.text().strip(),0) if mux_chan.text().strip() else None
@@ -1496,60 +1538,131 @@ class BaseGUI(QtWidgets.QMainWindow):
             if act.get('type') == 'digital' and act.get('can_id') is not None:
                 can_id = act.get('can_id')
                 sig = act.get('signal')
-                # prefer value_low/value_high; keep backward compat with 'value' if present
-                val = act.get('value_low', act.get('value'))
-                # try using DBC if available
-                sent_bytes = None
-                if self._dbc_db is not None and sig:
-                    # find message by frame_id
-                    msg = None
-                    for m in getattr(self._dbc_db, 'messages', []):
-                        if getattr(m, 'frame_id', None) == can_id:
-                            msg = m
-                            break
-                    if msg is not None:
-                        try:
-                            # encode signal by name; if value is numeric string try int
-                            v = val
+                low_val = act.get('value_low', act.get('value'))
+                high_val = act.get('value_high')
+                dwell_ms = act.get('dwell_ms', act.get('dac_dwell_ms')) or 100
+
+                def _encode_value_to_bytes(v):
+                    # Try DBC encoding if available and signal specified
+                    if self._dbc_db is not None and sig:
+                        msg = None
+                        for m in getattr(self._dbc_db, 'messages', []):
+                            if getattr(m, 'frame_id', None) == can_id:
+                                msg = m
+                                break
+                        if msg is not None:
                             try:
-                                if isinstance(v, str) and v.startswith('0x'):
-                                    v = int(v, 16)
-                                elif isinstance(v, str):
-                                    v = int(v)
+                                vv = v
+                                try:
+                                    if isinstance(vv, str) and vv.startswith('0x'):
+                                        vv = int(vv, 16)
+                                    elif isinstance(vv, str):
+                                        vv = int(vv)
+                                except Exception:
+                                    pass
+                                device_id = act.get('device_id', 0)
+                                enc = {'DeviceID': device_id, 'MessageType': 16}
+                                relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
+                                for rs in relay_signals:
+                                    enc[rs] = vv if rs == sig else 0
+                                return msg.encode(enc)
                             except Exception:
                                 pass
-                            # build dict
-                            device_id = act.get('device_id', 0)
-                            enc = {'DeviceID': device_id, 'MessageType': 16}
-                            # Set all relay signals, target to v, others to 0
-                            relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
-                            for rs in relay_signals:
-                                enc[rs] = v if rs == sig else 0
-                            sent_bytes = msg.encode(enc)
-                        except Exception:
-                            sent_bytes = None
-                if sent_bytes is None:
-                    # fallback: construct raw by placing value as single byte if possible
+                    # fallback raw
                     try:
-                        if isinstance(val, str) and val.startswith('0x'):
-                            raw = bytes.fromhex(val[2:])
+                        if isinstance(v, str) and v.startswith('0x'):
+                            return bytes.fromhex(v[2:])
                         else:
-                            ival = int(val)
-                            raw = bytes([ival & 0xFF])
+                            ival = int(v)
+                            return bytes([ival & 0xFF])
                     except Exception:
-                        raw = b''
-                    sent_bytes = raw
-                # create frame object
-                if AdapterFrame is not None:
-                    f = AdapterFrame(can_id=can_id, data=sent_bytes)
-                else:
-                    class F: pass
-                    f = F(); f.can_id = can_id; f.data = sent_bytes; f.timestamp = time.time()
-                print(f"[DEBUG] Sending CAN frame: ID=0x{can_id:X}, Data={sent_bytes.hex()}")
-                self.sim.send(f)
-                if hasattr(self.sim, 'loopback'):
+                        return b''
+
+                def _send_bytes(data_bytes):
+                    if AdapterFrame is not None:
+                        f = AdapterFrame(can_id=can_id, data=data_bytes)
+                    else:
+                        class F: pass
+                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                     try:
-                        self.sim.loopback(f)
+                        self.sim.send(f)
+                    except Exception:
+                        pass
+                    if hasattr(self.sim, 'loopback'):
+                        try:
+                            self.sim.loopback(f)
+                        except Exception:
+                            pass
+
+                def _wait_for_feedback(timeout_sec: float):
+                    # reuse existing feedback scanning logic to look for feedback signal
+                    waited = 0.0
+                    poll_interval = 0.05
+                    fb = test.get('feedback_signal')
+                    observed_info = 'no feedback'
+                    while waited < timeout_sec:
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(poll_interval)
+                        waited += poll_interval
+                        try:
+                            rows = self.frame_table.rowCount()
+                            for r in range(max(0, rows-10), rows):
+                                try:
+                                    can_id_item = self.frame_table.item(r,1)
+                                    data_item = self.frame_table.item(r,3)
+                                    if can_id_item is None or data_item is None:
+                                        continue
+                                    try:
+                                        row_can = int(can_id_item.text())
+                                    except Exception:
+                                        try:
+                                            row_can = int(can_id_item.text(), 0)
+                                        except Exception:
+                                            continue
+                                    raw_hex = data_item.text()
+                                    raw = bytes.fromhex(raw_hex) if raw_hex else b''
+                                    if self._dbc_db is not None and fb:
+                                        target_msg = None
+                                        for m in getattr(self._dbc_db, 'messages', []):
+                                            for s in getattr(m, 'signals', []):
+                                                if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                                    target_msg = m
+                                                    break
+                                            if target_msg:
+                                                break
+                                        if target_msg is not None:
+                                            try:
+                                                decoded = target_msg.decode(raw)
+                                                observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
+                                                return True, observed_info
+                                            except Exception:
+                                                pass
+                                    else:
+                                        observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
+                                        return True, observed_info
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+                    return False, observed_info
+
+                ok = False
+                info = 'no feedback'
+                # perform the sequence: ensure LOW, test HIGH, then ensure LOW
+                try:
+                    low_bytes = _encode_value_to_bytes(low_val)
+                    high_bytes = _encode_value_to_bytes(high_val)
+                    # ensure LOW before starting
+                    _send_bytes(low_bytes)
+                    time.sleep(0.05)
+                    # send HIGH and wait dwell
+                    _send_bytes(high_bytes)
+                    time.sleep(max(0.001, int(dwell_ms) / 1000.0))
+                    ok, info = _wait_for_feedback(timeout)
+                finally:
+                    try:
+                        _send_bytes(low_bytes)
+                        time.sleep(0.05)
                     except Exception:
                         pass
             elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:

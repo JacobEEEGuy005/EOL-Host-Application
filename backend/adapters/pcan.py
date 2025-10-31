@@ -78,7 +78,7 @@ class PcanAdapter:
     def send(self, frame: Frame) -> None:
         if self._bus is None:
             raise RuntimeError("PCAN bus not open")
-        msg = can.Message(arbitration_id=frame.can_id, data=frame.data, is_extended_id=False)
+        msg = can.Message(arbitration_id=frame.can_id, data=data_bytes, is_extended_id=False)
         logger.debug("Sending CAN message: id=0x%x data=%s", frame.can_id, frame.data.hex())
         try:
             self._bus.send(msg)

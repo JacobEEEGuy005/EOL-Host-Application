@@ -45,7 +45,13 @@ class SimAdapter:
         """Enqueue a frame to the receive queue to simulate loopback."""
         # simulate minor latency
         time.sleep(0.001)
-        self._q.put(frame)
+        # Pad data to 8 bytes to mirror classic CAN DLC behavior
+        data_bytes = bytes(frame.data) if frame.data is not None else b''
+        if len(data_bytes) < 8:
+            data_bytes = data_bytes + b'\x00' * (8 - len(data_bytes))
+        # create a new frame object to avoid mutating caller's frame
+        f = Frame(can_id=frame.can_id, data=data_bytes, timestamp=getattr(frame, 'timestamp', None))
+        self._q.put(f)
         try:
             metrics.inc("sim_send")
         except Exception:
