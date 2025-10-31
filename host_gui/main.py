@@ -1658,21 +1658,35 @@ class BaseGUI(QtWidgets.QMainWindow):
 
                 ok = False
                 info = 'no feedback'
+                # helper: non-blocking sleep that processes Qt events so UI stays responsive
+                def _nb_sleep(sec: float):
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        # sleep in short increments to remain responsive
+                        time.sleep(min(0.02, remaining))
+
                 # perform the sequence: ensure LOW, test HIGH, then ensure LOW
                 try:
                     low_bytes = _encode_value_to_bytes(low_val)
                     high_bytes = _encode_value_to_bytes(high_val)
                     # ensure LOW before starting
                     _send_bytes(low_bytes)
-                    time.sleep(0.05)
-                    # send HIGH and wait dwell
+                    _nb_sleep(0.05)
+                    # send HIGH and wait dwell (non-blocking)
                     _send_bytes(high_bytes)
-                    time.sleep(max(0.001, int(dwell_ms) / 1000.0))
+                    _nb_sleep(max(0.001, int(dwell_ms) / 1000.0))
                     ok, info = _wait_for_feedback(timeout)
                 finally:
                     try:
                         _send_bytes(low_bytes)
-                        time.sleep(0.05)
+                        _nb_sleep(0.05)
                     except Exception:
                         pass
             elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
