@@ -78,8 +78,15 @@ class PcanAdapter:
     def send(self, frame: Frame) -> None:
         if self._bus is None:
             raise RuntimeError("PCAN bus not open")
-        msg = can.Message(arbitration_id=frame.can_id, data=data_bytes, is_extended_id=False)
-        logger.debug("Sending CAN message: id=0x%x data=%s", frame.can_id, frame.data.hex())
+        # Ensure classic CAN DLC of 8 bytes by padding with zeros if needed
+        try:
+            data_bytes = bytes(frame.data) if frame.data is not None else b''
+        except Exception:
+            data_bytes = b''
+        if len(data_bytes) < 8:
+            data_bytes = data_bytes + b'\x00' * (8 - len(data_bytes))
+        msg = can.Message(arbitration_id=int(frame.can_id), data=data_bytes, is_extended_id=False)
+        logger.debug("Sending CAN message: id=0x%x data=%s", frame.can_id, data_bytes.hex())
         try:
             self._bus.send(msg)
         except Exception:
