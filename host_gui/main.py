@@ -58,6 +58,429 @@ class AdapterWorker(threading.Thread):
         self._stop.set()
 
 
+class TestRunner:
+    """Lightweight test runner that encapsulates single-test execution logic.
+
+    This keeps the logic separate from the GUI class so it can be migrated to a
+    background thread later without changing semantics. It intentionally calls
+    back into the GUI for adapter/send/lookup operations so behavior remains
+    identical to the previous inline implementation.
+    """
+    def __init__(self, gui):
+        self.gui = gui
+
+    def run_single_test(self, test: dict, timeout: float = 1.0):
+        """Execute a single test using the same behavior as the previous
+        BaseGUI._run_single_test implementation. Returns (bool, info_str).
+        """
+        gui = self.gui
+        # ensure adapter running
+        if gui.sim is None:
+            raise RuntimeError('Adapter not running')
+        act = test.get('actuation', {})
+        try:
+            if act.get('type') == 'digital' and act.get('can_id') is not None:
+                can_id = act.get('can_id')
+                sig = act.get('signal')
+                low_val = act.get('value_low', act.get('value'))
+                high_val = act.get('value_high')
+                dwell_ms = act.get('dwell_ms', act.get('dac_dwell_ms')) or 100
+
+                def _encode_value_to_bytes(v):
+                    # Try DBC encoding if available and signal specified
+                    if gui._dbc_db is not None and sig:
+                        msg = None
+                        for m in getattr(gui._dbc_db, 'messages', []):
+                            if getattr(m, 'frame_id', None) == can_id:
+                                msg = m
+                                break
+                        if msg is not None:
+                            try:
+                                vv = v
+                                try:
+                                    if isinstance(vv, str) and vv.startswith('0x'):
+                                        vv = int(vv, 16)
+                                    elif isinstance(vv, str):
+                                        vv = int(vv)
+                                except Exception:
+                                    pass
+                                device_id = act.get('device_id', 0)
+                                enc = {'DeviceID': device_id, 'MessageType': 16}
+                                relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
+                                for rs in relay_signals:
+                                    enc[rs] = vv if rs == sig else 0
+                                return msg.encode(enc)
+                            except Exception:
+                                pass
+                    # fallback raw
+                    try:
+                        if isinstance(v, str) and v.startswith('0x'):
+                            return bytes.fromhex(v[2:])
+                        else:
+                            ival = int(v)
+                            return bytes([ival & 0xFF])
+                    except Exception:
+                        return b''
+
+                def _send_bytes(data_bytes):
+                    if AdapterFrame is not None:
+                        f = AdapterFrame(can_id=can_id, data=data_bytes)
+                    else:
+                        class F: pass
+                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
+                    try:
+                        gui.sim.send(f)
+                    except Exception:
+                        pass
+                    if hasattr(gui.sim, 'loopback'):
+                        try:
+                            gui.sim.loopback(f)
+                        except Exception:
+                            pass
+
+                def _wait_for_feedback(timeout_sec: float):
+                    # reuse existing feedback scanning logic to look for feedback signal
+                    waited = 0.0
+                    poll_interval = 0.05
+                    fb = test.get('feedback_signal')
+                    observed_info = 'no feedback'
+                    while waited < timeout_sec:
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(poll_interval)
+                        waited += poll_interval
+                        try:
+                            rows = gui.frame_table.rowCount()
+                            for r in range(max(0, rows-10), rows):
+                                try:
+                                    can_id_item = gui.frame_table.item(r,1)
+                                    data_item = gui.frame_table.item(r,3)
+                                    if can_id_item is None or data_item is None:
+                                        continue
+                                    try:
+                                        row_can = int(can_id_item.text())
+                                    except Exception:
+                                        try:
+                                            row_can = int(can_id_item.text(), 0)
+                                        except Exception:
+                                            continue
+                                    raw_hex = data_item.text()
+                                    raw = bytes.fromhex(raw_hex) if raw_hex else b''
+                                    if gui._dbc_db is not None and fb:
+                                        target_msg = None
+                                        for m in getattr(gui._dbc_db, 'messages', []):
+                                            for s in getattr(m, 'signals', []):
+                                                if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                                    target_msg = m
+                                                    break
+                                            if target_msg:
+                                                break
+                                        if target_msg is not None:
+                                            try:
+                                                decoded = target_msg.decode(raw)
+                                                observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
+                                                return True, observed_info
+                                            except Exception:
+                                                pass
+                                    else:
+                                        observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
+                                        return True, observed_info
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+                    return False, observed_info
+
+                ok = False
+                info = ''
+                def _nb_sleep(sec: float):
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(0.02, remaining))
+
+                def _parse_expected(v):
+                    try:
+                        if isinstance(v, str) and v.startswith('0x'):
+                            return int(v, 16)
+                        if isinstance(v, str):
+                            return int(v)
+                        return int(v)
+                    except Exception:
+                        return v
+
+                def _check_frame_for_feedback():
+                    fb = test.get('feedback_signal')
+                    fb_mid = test.get('feedback_message_id')
+                    try:
+                        if fb:
+                            if fb_mid is not None:
+                                key = f"{fb_mid}:{fb}"
+                                entry = gui._signal_values.get(key)
+                                if entry is not None:
+                                    ts, v = entry
+                                    return v, f"{fb}={v} (msg 0x{fb_mid:X})"
+                            else:
+                                candidates = []
+                                for k, (ts, v) in gui._signal_values.items():
+                                    try:
+                                        _can, sname = k.split(':', 1)
+                                    except Exception:
+                                        continue
+                                    if sname == fb:
+                                        candidates.append((ts, k, v))
+                                if candidates:
+                                    candidates.sort(key=lambda x: x[0], reverse=True)
+                                    ts, k, v = candidates[0]
+                                    canid = k.split(':', 1)[0]
+                                    try:
+                                        cid = int(canid)
+                                        return v, f"{fb}={v} (msg 0x{cid:X})"
+                                    except Exception:
+                                        return v, f"{fb}={v} (msg {canid})"
+                    except Exception:
+                        pass
+
+                    try:
+                        rows = gui.frame_table.rowCount()
+                    except Exception:
+                        rows = 0
+                    for r in range(max(0, rows - 50), rows):
+                        try:
+                            can_id_item = gui.frame_table.item(r, 1)
+                            data_item = gui.frame_table.item(r, 3)
+                            if can_id_item is None or data_item is None:
+                                continue
+                            try:
+                                row_can = int(can_id_item.text())
+                            except Exception:
+                                try:
+                                    row_can = int(can_id_item.text(), 0)
+                                except Exception:
+                                    continue
+                            raw_hex = data_item.text()
+                            raw = bytes.fromhex(raw_hex) if raw_hex else b''
+                            if gui._dbc_db is not None and fb:
+                                target_msg = None
+                                for m in getattr(gui._dbc_db, 'messages', []):
+                                    for s in getattr(m, 'signals', []):
+                                        if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                            target_msg = m
+                                            break
+                                    if target_msg:
+                                        break
+                                if target_msg is not None:
+                                    try:
+                                        try:
+                                            decoded = target_msg.decode(raw, decode_choices=False)
+                                        except TypeError:
+                                            decoded = target_msg.decode(raw)
+                                        val = decoded.get(fb)
+                                        return val, f"{fb}={val} (msg 0x{row_can:X})"
+                                    except Exception:
+                                        pass
+                            else:
+                                return raw.hex(), f"raw={raw.hex()} (msg 0x{row_can:X})"
+                        except Exception:
+                            continue
+                    return None, None
+
+                def _wait_for_value(expected, duration_ms: int):
+                    # Require the observed value to remain equal to `expected` for the
+                    # remainder of the dwell window once it is first observed. This
+                    # avoids passing on a single transient sample.
+                    end = time.time() + (float(duration_ms) / 1000.0)
+                    fb = test.get('feedback_signal')
+                    fb_mid = test.get('feedback_message_id')
+                    matched_start = None
+                    poll = 0.02
+                    while time.time() < end:
+                        QtCore.QCoreApplication.processEvents()
+                        try:
+                            if fb:
+                                if fb_mid is not None:
+                                    ts, val = gui.get_latest_signal(fb_mid, fb)
+                                else:
+                                    candidates = []
+                                    for k, (t, v) in gui._signal_values.items():
+                                        try:
+                                            _cid, sname = k.split(':', 1)
+                                        except Exception:
+                                            continue
+                                        if sname == fb:
+                                            candidates.append((t, v))
+                                    if candidates:
+                                        candidates.sort(key=lambda x: x[0], reverse=True)
+                                        ts, val = candidates[0]
+                                    else:
+                                        ts, val = (None, None)
+                            else:
+                                ts, val = (None, None)
+                        except Exception:
+                            ts, val = (None, None)
+
+                        now = time.time()
+                        # compare value to expected
+                        is_match = False
+                        if val is not None:
+                            try:
+                                if isinstance(val, (int, float)) and isinstance(expected, (int, float)):
+                                    is_match = (val == expected)
+                                else:
+                                    is_match = (str(val) == str(expected))
+                            except Exception:
+                                is_match = (str(val) == str(expected))
+
+                        if is_match:
+                            # start or continue matched window
+                            if matched_start is None:
+                                matched_start = now
+                            # if we reach end with matched_start set and no mismatch occurred,
+                            # we'll accept below
+                        else:
+                            # if we've already started matching and now it's gone -> fail
+                            if matched_start is not None:
+                                return False, f"Value changed during dwell (last={val})"
+                            # otherwise keep waiting for first match
+
+                        time.sleep(poll)
+
+                    # finished dwell window: success only if we saw a match that persisted
+                    if matched_start is None:
+                        return False, f"Did not observe expected value {expected} during dwell"
+                    return True, f"{fb} sustained {expected}"
+
+                expected_high = _parse_expected(high_val)
+                expected_low = _parse_expected(low_val)
+
+                # Minimal synchronous state-machine for the LOW->HIGH->LOW sequence.
+                low_bytes = _encode_value_to_bytes(low_val)
+                high_bytes = _encode_value_to_bytes(high_val)
+                info_parts = []
+                high_ok = False
+                low_ok = False
+                state = 'ENSURE_LOW'
+                try:
+                    while True:
+                        if state == 'ENSURE_LOW':
+                            _send_bytes(low_bytes)
+                            _nb_sleep(0.05)
+                            state = 'ACTUATE_HIGH'
+                        elif state == 'ACTUATE_HIGH':
+                            _send_bytes(high_bytes)
+                            # wait for HIGH dwell (may return early on observation)
+                            high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
+                            if high_ok:
+                                info_parts.append(f"HIGH observed: {high_info}")
+                            else:
+                                info_parts.append(f"HIGH missing: expected {expected_high}")
+                            state = 'ENSURE_LOW_AFTER_HIGH'
+                        elif state == 'ENSURE_LOW_AFTER_HIGH':
+                            _send_bytes(low_bytes)
+                            _nb_sleep(0.05)
+                            state = 'WAIT_LOW_DWELL'
+                        elif state == 'WAIT_LOW_DWELL':
+                            low_ok, low_info = _wait_for_value(expected_low, int(dwell_ms))
+                            if low_ok:
+                                info_parts.append(f"LOW observed: {low_info}")
+                            else:
+                                info_parts.append(f"LOW missing: expected {expected_low}")
+                            break
+                        else:
+                            # unknown state -> abort
+                            break
+                finally:
+                    try:
+                        _send_bytes(low_bytes)
+                        _nb_sleep(0.05)
+                    except Exception:
+                        pass
+
+                ok = bool(high_ok and low_ok)
+                info = '; '.join(info_parts)
+            elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
+                can_id = act.get('dac_can_id')
+                cmd = act.get('dac_command','')
+                try:
+                    if isinstance(cmd, str) and cmd.startswith('0x'):
+                        data = bytes.fromhex(cmd[2:])
+                    else:
+                        data = bytes.fromhex(cmd)
+                except Exception:
+                    data = b''
+                if AdapterFrame is not None:
+                    f = AdapterFrame(can_id=can_id, data=data)
+                else:
+                    class F: pass
+                    f = F(); f.can_id = can_id; f.data = data; f.timestamp = time.time()
+                gui.sim.send(f)
+                if hasattr(gui.sim, 'loopback'):
+                    try:
+                        gui.sim.loopback(f)
+                    except Exception:
+                        pass
+            else:
+                pass
+        except Exception as e:
+            return False, f'Failed to send actuation: {e}'
+
+        waited = 0.0
+        poll_interval = 0.05
+        observed_info = 'no feedback'
+        while waited < timeout:
+            QtCore.QCoreApplication.processEvents()
+            time.sleep(poll_interval)
+            waited += poll_interval
+            fb = test.get('feedback_signal')
+            try:
+                rows = gui.frame_table.rowCount()
+                for r in range(max(0, rows-10), rows):
+                    try:
+                        can_id_item = gui.frame_table.item(r,1)
+                        data_item = gui.frame_table.item(r,3)
+                        if can_id_item is None or data_item is None:
+                            continue
+                        try:
+                            row_can = int(can_id_item.text())
+                        except Exception:
+                            try:
+                                row_can = int(can_id_item.text(), 0)
+                            except Exception:
+                                continue
+                        raw_hex = data_item.text()
+                        raw = bytes.fromhex(raw_hex) if raw_hex else b''
+                        if gui._dbc_db is not None and fb:
+                            target_msg = None
+                            for m in getattr(gui._dbc_db, 'messages', []):
+                                for s in getattr(m, 'signals', []):
+                                    if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                        target_msg = m
+                                        break
+                                if target_msg:
+                                    break
+                            if target_msg is not None:
+                                try:
+                                    decoded = target_msg.decode(raw)
+                                    observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
+                                    return True, observed_info
+                                except Exception:
+                                    pass
+                        else:
+                            observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
+                            return True, observed_info
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        return False, observed_info
+
+
 class BaseGUI(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1580,403 +2003,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}{metrics}')
 
     def _run_single_test(self, test: dict, timeout: float = 1.0):
-        """Execute a single test. Returns (bool, info_str)."""
-        # ensure adapter running
-        if self.sim is None:
-            raise RuntimeError('Adapter not running')
-        act = test.get('actuation', {})
-        # send actuation
-        try:
-            if act.get('type') == 'digital' and act.get('can_id') is not None:
-                can_id = act.get('can_id')
-                sig = act.get('signal')
-                low_val = act.get('value_low', act.get('value'))
-                high_val = act.get('value_high')
-                dwell_ms = act.get('dwell_ms', act.get('dac_dwell_ms')) or 100
-
-                def _encode_value_to_bytes(v):
-                    # Try DBC encoding if available and signal specified
-                    if self._dbc_db is not None and sig:
-                        msg = None
-                        for m in getattr(self._dbc_db, 'messages', []):
-                            if getattr(m, 'frame_id', None) == can_id:
-                                msg = m
-                                break
-                        if msg is not None:
-                            try:
-                                vv = v
-                                try:
-                                    if isinstance(vv, str) and vv.startswith('0x'):
-                                        vv = int(vv, 16)
-                                    elif isinstance(vv, str):
-                                        vv = int(vv)
-                                except Exception:
-                                    pass
-                                device_id = act.get('device_id', 0)
-                                enc = {'DeviceID': device_id, 'MessageType': 16}
-                                relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
-                                for rs in relay_signals:
-                                    enc[rs] = vv if rs == sig else 0
-                                return msg.encode(enc)
-                            except Exception:
-                                pass
-                    # fallback raw
-                    try:
-                        if isinstance(v, str) and v.startswith('0x'):
-                            return bytes.fromhex(v[2:])
-                        else:
-                            ival = int(v)
-                            return bytes([ival & 0xFF])
-                    except Exception:
-                        return b''
-
-                def _send_bytes(data_bytes):
-                    if AdapterFrame is not None:
-                        f = AdapterFrame(can_id=can_id, data=data_bytes)
-                    else:
-                        class F: pass
-                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
-                    try:
-                        self.sim.send(f)
-                    except Exception:
-                        pass
-                    if hasattr(self.sim, 'loopback'):
-                        try:
-                            self.sim.loopback(f)
-                        except Exception:
-                            pass
-
-                def _wait_for_feedback(timeout_sec: float):
-                    # reuse existing feedback scanning logic to look for feedback signal
-                    waited = 0.0
-                    poll_interval = 0.05
-                    fb = test.get('feedback_signal')
-                    observed_info = 'no feedback'
-                    while waited < timeout_sec:
-                        QtCore.QCoreApplication.processEvents()
-                        time.sleep(poll_interval)
-                        waited += poll_interval
-                        try:
-                            rows = self.frame_table.rowCount()
-                            for r in range(max(0, rows-10), rows):
-                                try:
-                                    can_id_item = self.frame_table.item(r,1)
-                                    data_item = self.frame_table.item(r,3)
-                                    if can_id_item is None or data_item is None:
-                                        continue
-                                    try:
-                                        row_can = int(can_id_item.text())
-                                    except Exception:
-                                        try:
-                                            row_can = int(can_id_item.text(), 0)
-                                        except Exception:
-                                            continue
-                                    raw_hex = data_item.text()
-                                    raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                                    if self._dbc_db is not None and fb:
-                                        target_msg = None
-                                        for m in getattr(self._dbc_db, 'messages', []):
-                                            for s in getattr(m, 'signals', []):
-                                                if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                                    target_msg = m
-                                                    break
-                                            if target_msg:
-                                                break
-                                        if target_msg is not None:
-                                            try:
-                                                decoded = target_msg.decode(raw)
-                                                observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
-                                                return True, observed_info
-                                            except Exception:
-                                                pass
-                                    else:
-                                        observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
-                                        return True, observed_info
-                                except Exception:
-                                    continue
-                        except Exception:
-                            pass
-                    return False, observed_info
-
-                ok = False
-                info = ''
-                # helper: non-blocking sleep that processes Qt events so UI stays responsive
-                def _nb_sleep(sec: float):
-                    end = time.time() + float(sec)
-                    while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
-                        remaining = end - time.time()
-                        if remaining <= 0:
-                            break
-                        # sleep in short increments to remain responsive
-                        time.sleep(min(0.02, remaining))
-
-                def _parse_expected(v):
-                    try:
-                        if isinstance(v, str) and v.startswith('0x'):
-                            return int(v, 16)
-                        if isinstance(v, str):
-                            return int(v)
-                        return int(v)
-                    except Exception:
-                        return v
-
-                def _check_frame_for_feedback():
-                    """Return (value, info_str) for the most recent decoded feedback signal if present, else (None, None).
-                    Prefer numeric value from `self._signal_values` (Signal View) and fall back to decoding frames."""
-                    fb = test.get('feedback_signal')
-                    fb_mid = test.get('feedback_message_id')
-                    # try signal-table-backed storage first
-                    try:
-                        if fb:
-                            # exact can id specified
-                            if fb_mid is not None:
-                                key = f"{fb_mid}:{fb}"
-                                entry = self._signal_values.get(key)
-                                if entry is not None:
-                                    ts, v = entry
-                                    return v, f"{fb}={v} (msg 0x{fb_mid:X})"
-                            else:
-                                # find any matching signal name across can ids; prefer latest timestamp
-                                candidates = []
-                                for k, (ts, v) in self._signal_values.items():
-                                    try:
-                                        _can, sname = k.split(':', 1)
-                                    except Exception:
-                                        continue
-                                    if sname == fb:
-                                        candidates.append((ts, k, v))
-                                if candidates:
-                                    # pick most recent
-                                    candidates.sort(key=lambda x: x[0], reverse=True)
-                                    ts, k, v = candidates[0]
-                                    canid = k.split(':', 1)[0]
-                                    try:
-                                        cid = int(canid)
-                                        return v, f"{fb}={v} (msg 0x{cid:X})"
-                                    except Exception:
-                                        return v, f"{fb}={v} (msg {canid})"
-                    except Exception:
-                        pass
-
-                    # fallback: scan recent rows and decode directly (legacy behavior)
-                    try:
-                        rows = self.frame_table.rowCount()
-                    except Exception:
-                        rows = 0
-                    for r in range(max(0, rows - 50), rows):
-                        try:
-                            can_id_item = self.frame_table.item(r, 1)
-                            data_item = self.frame_table.item(r, 3)
-                            if can_id_item is None or data_item is None:
-                                continue
-                            try:
-                                row_can = int(can_id_item.text())
-                            except Exception:
-                                try:
-                                    row_can = int(can_id_item.text(), 0)
-                                except Exception:
-                                    continue
-                            raw_hex = data_item.text()
-                            raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                            # DBC decoding path
-                            if self._dbc_db is not None and fb:
-                                target_msg = None
-                                for m in getattr(self._dbc_db, 'messages', []):
-                                    for s in getattr(m, 'signals', []):
-                                        if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                            target_msg = m
-                                            break
-                                    if target_msg:
-                                        break
-                                if target_msg is not None:
-                                    try:
-                                        # prefer numeric decoding (no choice label mapping)
-                                        try:
-                                            decoded = target_msg.decode(raw, decode_choices=False)
-                                        except TypeError:
-                                            decoded = target_msg.decode(raw)
-                                        val = decoded.get(fb)
-                                        return val, f"{fb}={val} (msg 0x{row_can:X})"
-                                    except Exception:
-                                        pass
-                            else:
-                                return raw.hex(), f"raw={raw.hex()} (msg 0x{row_can:X})"
-                        except Exception:
-                            continue
-                    return None, None
-
-                def _wait_for_value(expected, duration_ms: int):
-                    # wait up to duration_ms milliseconds, return True if the Signal View reports expected value
-                    end = time.time() + (float(duration_ms) / 1000.0)
-                    fb = test.get('feedback_signal')
-                    fb_mid = test.get('feedback_message_id')
-                    while time.time() < end:
-                        QtCore.QCoreApplication.processEvents()
-                        try:
-                            # prefer the canonical storage of latest signal values
-                            if fb:
-                                if fb_mid is not None:
-                                    ts, val = self.get_latest_signal(fb_mid, fb)
-                                else:
-                                    # find most recent matching signal by name
-                                    candidates = []
-                                    for k, (t, v) in self._signal_values.items():
-                                        try:
-                                            _cid, sname = k.split(':', 1)
-                                        except Exception:
-                                            continue
-                                        if sname == fb:
-                                            candidates.append((t, v))
-                                    if candidates:
-                                        candidates.sort(key=lambda x: x[0], reverse=True)
-                                        ts, val = candidates[0]
-                                    else:
-                                        ts, val = (None, None)
-                            else:
-                                ts, val = (None, None)
-                        except Exception:
-                            ts, val = (None, None)
-
-                        if val is not None:
-                            try:
-                                # numeric comparison when possible
-                                if isinstance(val, (int, float)) and isinstance(expected, (int, float)):
-                                    if val == expected:
-                                        return True, f"{fb}={val}"
-                                else:
-                                    if str(val) == str(expected):
-                                        return True, f"{fb}={val}"
-                            except Exception:
-                                if str(val) == str(expected):
-                                    return True, f"{fb}={val}"
-
-                        time.sleep(0.02)
-                    return False, f"Did not observe expected value {expected} during dwell"
-
-                # prepare expected values
-                expected_high = _parse_expected(high_val)
-                expected_low = _parse_expected(low_val)
-
-                # perform the sequence: ensure LOW, test HIGH, then ensure LOW
-                try:
-                    low_bytes = _encode_value_to_bytes(low_val)
-                    high_bytes = _encode_value_to_bytes(high_val)
-                    # ensure LOW before starting
-                    _send_bytes(low_bytes)
-                    _nb_sleep(0.05)
-                    # send HIGH and check feedback during dwell
-                    _send_bytes(high_bytes)
-                    high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
-                    # after dwell, record
-                    info_parts = []
-                    if high_ok:
-                        info_parts.append(f"HIGH observed: {high_info}")
-                    else:
-                        info_parts.append(f"HIGH missing: expected {expected_high}")
-                finally:
-                    try:
-                        _send_bytes(low_bytes)
-                        _nb_sleep(0.05)
-                    except Exception:
-                        pass
-
-                # after returning to LOW, check feedback for LOW dwell
-                low_ok, low_info = _wait_for_value(expected_low, int(dwell_ms))
-                if low_ok:
-                    info_parts.append(f"LOW observed: {low_info}")
-                else:
-                    info_parts.append(f"LOW missing: expected {expected_low}")
-
-                ok = bool(high_ok and low_ok)
-                info = '; '.join(info_parts)
-            elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
-                can_id = act.get('dac_can_id')
-                cmd = act.get('dac_command','')
-                # if DBC mapping exists could encode; otherwise send raw hex
-                try:
-                    if isinstance(cmd, str) and cmd.startswith('0x'):
-                        data = bytes.fromhex(cmd[2:])
-                    else:
-                        data = bytes.fromhex(cmd)
-                except Exception:
-                    # fallback empty
-                    data = b''
-                if AdapterFrame is not None:
-                    f = AdapterFrame(can_id=can_id, data=data)
-                else:
-                    class F: pass
-                    f = F(); f.can_id = can_id; f.data = data; f.timestamp = time.time()
-                self.sim.send(f)
-                if hasattr(self.sim, 'loopback'):
-                    try:
-                        self.sim.loopback(f)
-                    except Exception:
-                        pass
-            else:
-                # unsupported actuation type or missing fields
-                pass
-        except Exception as e:
-            return False, f'Failed to send actuation: {e}'
-
-        # wait briefly and inspect recent frame_table rows for feedback
-        waited = 0.0
-        poll_interval = 0.05
-        observed_info = 'no feedback'
-        while waited < timeout:
-            QtCore.QCoreApplication.processEvents()
-            time.sleep(poll_interval)
-            waited += poll_interval
-            # scan last rows
-            fb = test.get('feedback_signal')
-            try:
-                rows = self.frame_table.rowCount()
-                for r in range(max(0, rows-10), rows):
-                    try:
-                        can_id_item = self.frame_table.item(r,1)
-                        data_item = self.frame_table.item(r,3)
-                        if can_id_item is None or data_item is None:
-                            continue
-                        try:
-                            row_can = int(can_id_item.text())
-                        except Exception:
-                            try:
-                                row_can = int(can_id_item.text(), 0)
-                            except Exception:
-                                continue
-                        raw_hex = data_item.text()
-                        raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                        # decode using DBC if available and feedback signal specified
-                        if self._dbc_db is not None and fb:
-                            # find message with the signal
-                            target_msg = None
-                            for m in getattr(self._dbc_db, 'messages', []):
-                                for s in getattr(m, 'signals', []):
-                                    if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                        target_msg = m
-                                        break
-                                if target_msg:
-                                    break
-                            if target_msg is not None:
-                                try:
-                                    decoded = target_msg.decode(raw)
-                                    observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
-                                    return True, observed_info
-                                except Exception:
-                                    pass
-                        else:
-                            # if no DBC, accept any frame as observed
-                            observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
-                            return True, observed_info
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-        return False, observed_info
+        # Delegate execution to TestRunner (keeps behavior identical but isolates logic)
+        runner = TestRunner(self)
+        return runner.run_single_test(test, timeout)
 
     # Adapter control
     def toggle_adapter(self):
