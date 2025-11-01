@@ -168,13 +168,25 @@ class AdapterWorker(threading.Thread):
 
 class TestRunner:
     """Lightweight test runner that encapsulates single-test execution logic.
-
-    This keeps the logic separate from the GUI class so it can be migrated to a
-    background thread later without changing semantics. It intentionally calls
-    back into the GUI for adapter/send/lookup operations so behavior remains
-    identical to the previous inline implementation.
+    
+    This class handles the execution of individual test cases, including:
+    - Digital tests: Setting relay states and verifying feedback
+    - Analog tests: Stepping DAC voltages and monitoring feedback signals
+    
+    The TestRunner is designed to be called from the GUI's main thread,
+    but can be moved to a background thread for non-blocking execution
+    in future refactoring.
+    
+    Attributes:
+        gui: Reference to the BaseGUI instance for UI updates and frame sending
     """
-    def __init__(self, gui):
+    
+    def __init__(self, gui: 'BaseGUI'):
+        """Initialize the TestRunner with a reference to the GUI.
+        
+        Args:
+            gui: BaseGUI instance for sending frames and updating UI
+        """
         self.gui = gui
 
     def run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:

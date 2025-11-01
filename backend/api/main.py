@@ -1,3 +1,16 @@
+"""
+FastAPI backend server for EOL Host Application.
+
+This module provides:
+- REST API endpoints for CAN frame transmission
+- WebSocket streaming of CAN frames from adapters
+- DBC file management and serving
+- Health check endpoints
+- Metrics collection
+
+The backend acts as a bridge between CAN adapters (PCAN, SocketCAN, etc.)
+and frontend clients (GUI or web interfaces).
+"""
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
