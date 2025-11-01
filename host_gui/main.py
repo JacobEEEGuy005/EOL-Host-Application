@@ -270,7 +270,7 @@ class TestRunner:
                                 if self.dbc_service is not None:
                                     return self.dbc_service.encode_message(msg, enc)
                                 else:
-                                return msg.encode(enc)
+                                    return msg.encode(enc)
                             except Exception:
                                 pass
                     # fallback raw
@@ -340,7 +340,7 @@ class TestRunner:
                                                 if self.dbc_service is not None:
                                                     decoded = self.dbc_service.decode_message(target_msg, raw)
                                                 else:
-                                                decoded = target_msg.decode(raw)
+                                                    decoded = target_msg.decode(raw)
                                                 observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
                                                 return True, observed_info
                                             except Exception:
@@ -465,7 +465,7 @@ class TestRunner:
                                     if self.signal_service is not None:
                                         ts, val = self.signal_service.get_latest_signal(fb_mid, fb)
                                     else:
-                                    ts, val = gui.get_latest_signal(fb_mid, fb)
+                                        ts, val = gui.get_latest_signal(fb_mid, fb)
                                 else:
                                     candidates = []
                                     for k, (t, v) in gui._signal_values.items():
@@ -645,6 +645,68 @@ class TestRunner:
                         if remaining <= 0:
                             break
                         time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                def _collect_data_points_during_dwell(dac_voltage: int, dwell_ms: int, dac_cmd_sig: str, fb_signal: str, fb_msg_id: int):
+                    """Collect multiple feedback data points during dwell time, resending DAC command every 50ms.
+                    
+                    Args:
+                        dac_voltage: Current DAC voltage command value (mV)
+                        dwell_ms: Total dwell time in milliseconds
+                        dac_cmd_sig: DAC command signal name
+                        fb_signal: Feedback signal name to monitor
+                        fb_msg_id: CAN ID of feedback message
+                    """
+                    if dwell_ms <= 0:
+                        return
+                    
+                    # Command periodicity: 50ms
+                    COMMAND_PERIOD_MS = 50
+                    command_interval_sec = COMMAND_PERIOD_MS / 1000.0
+                    
+                    # Poll interval for collecting data (smaller for more data points)
+                    DATA_COLLECTION_INTERVAL_MS = 10  # Collect data every 10ms
+                    data_poll_interval_sec = DATA_COLLECTION_INTERVAL_MS / 1000.0
+                    
+                    start_time = time.time()
+                    dwell_end_time = start_time + (dwell_ms / 1000.0)
+                    last_command_time = start_time
+                    last_data_collection_time = start_time
+                    
+                    data_points_collected = 0
+                    
+                    while time.time() < dwell_end_time:
+                        current_time = time.time()
+                        
+                        # Send DAC command every 50ms
+                        if (current_time - last_command_time) >= command_interval_sec:
+                            try:
+                                _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                                last_command_time = current_time
+                            except Exception as e:
+                                logger.debug(f"Error sending DAC command during dwell: {e}")
+                        
+                        # Collect feedback data points as frequently as possible
+                        if (current_time - last_data_collection_time) >= data_poll_interval_sec:
+                            if fb_signal and fb_msg_id:
+                                try:
+                                    ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                    if fb_val is not None:
+                                        gui._update_plot(dac_voltage, fb_val, test_name)
+                                        data_points_collected += 1
+                                except Exception as e:
+                                    logger.debug(f"Error collecting feedback during dwell: {e}")
+                            last_data_collection_time = current_time
+                        
+                        # Process Qt events to keep UI responsive
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        
+                        # Small sleep to prevent busy waiting
+                        time.sleep(min(data_poll_interval_sec, SLEEP_INTERVAL_SHORT))
+                    
+                    logger.debug(f"Collected {data_points_collected} data points during {dwell_ms}ms dwell at {dac_voltage}mV")
 
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
@@ -660,61 +722,62 @@ class TestRunner:
                             target_msg = gui._find_message_by_id(can_id)
                     else:
                         target_msg = None
-                        if target_msg is not None:
-                            for sig_name in signals:
-                                encode_data[sig_name] = signals[sig_name]
-                                # check if this signal is muxed
-                                for sig in target_msg.signals:
-                                    if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                        mux_value = sig.multiplexer_ids[0]
-                                        break
-                            if mux_value is not None:
-                                encode_data['MessageType'] = mux_value
-                            else:
-                                # If this message has a MessageType signal with defined choices,
-                                # try to infer the correct selector for non-muxed commands
-                                # (e.g. DAC commands require MessageType=18).
-                                try:
-                                    mtype_sig = None
-                                    for s in target_msg.signals:
-                                        if getattr(s, 'name', '') == 'MessageType':
-                                            mtype_sig = s
-                                            break
-                                    if mtype_sig is not None and 'MessageType' not in encode_data:
-                                        choices = getattr(mtype_sig, 'choices', None) or {}
-                                        # simple heuristics: match substrings from signal name to choice name
-                                        for sig_name in signals:
-                                            sname_up = str(sig_name).upper()
-                                            for val, cname in (choices.items() if hasattr(choices, 'items') else []):
-                                                try:
-                                                    if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
-                                                        encode_data['MessageType'] = val
-                                                        raise StopIteration
-                                                    if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
-                                                        encode_data['MessageType'] = val
-                                                        raise StopIteration
-                                                    if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
-                                                        encode_data['MessageType'] = val
-                                                        raise StopIteration
-                                                except StopIteration:
-                                                    break
-                                            if 'MessageType' in encode_data:
-                                                break
-                                except Exception:
-                                    pass
+                    
+                    if target_msg is not None:
+                        for sig_name in signals:
+                            encode_data[sig_name] = signals[sig_name]
+                            # check if this signal is muxed
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                    mux_value = sig.multiplexer_ids[0]
+                                    break
+                        if mux_value is not None:
+                            encode_data['MessageType'] = mux_value
+                        else:
+                            # If this message has a MessageType signal with defined choices,
+                            # try to infer the correct selector for non-muxed commands
+                            # (e.g. DAC commands require MessageType=18).
                             try:
+                                mtype_sig = None
+                                for s in target_msg.signals:
+                                    if getattr(s, 'name', '') == 'MessageType':
+                                        mtype_sig = s
+                                        break
+                                if mtype_sig is not None and 'MessageType' not in encode_data:
+                                    choices = getattr(mtype_sig, 'choices', None) or {}
+                                    # simple heuristics: match substrings from signal name to choice name
+                                    for sig_name in signals:
+                                        sname_up = str(sig_name).upper()
+                                        for val, cname in (choices.items() if hasattr(choices, 'items') else []):
+                                            try:
+                                                if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
+                                                    encode_data['MessageType'] = val
+                                                    raise StopIteration
+                                                if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
+                                                    encode_data['MessageType'] = val
+                                                    raise StopIteration
+                                                if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
+                                                    encode_data['MessageType'] = val
+                                                    raise StopIteration
+                                            except StopIteration:
+                                                break
+                                        if 'MessageType' in encode_data:
+                                            break
+                            except Exception:
+                                pass
+                        try:
                             if self.dbc_service is not None:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
                             else:
                                 data_bytes = target_msg.encode(encode_data)
+                        except Exception:
+                            # fallback to single byte
+                            try:
+                                if len(signals) == 1:
+                                    v = list(signals.values())[0]
+                                    data_bytes = bytes([int(v) & 0xFF])
                             except Exception:
-                                # fallback to single byte
-                                try:
-                                    if len(signals) == 1:
-                                        v = list(signals.values())[0]
-                                        data_bytes = bytes([int(v) & 0xFF])
-                                except Exception:
-                                    data_bytes = b''
+                                data_bytes = b''
                     else:
                         try:
                             if len(signals) == 1:
@@ -748,26 +811,17 @@ class TestRunner:
                         except Exception as e:
                             logger.warning(f"Failed to send frame via service: {e}")
                     else:
-                        # Legacy: use direct adapter
-                    if AdapterFrame is not None:
-                        f = AdapterFrame(can_id=can_id, data=data_bytes)
-                            logger.debug(f'Signals: {signals}')
-                            logger.debug(f'Encode data: {encode_data}')
-                            logger.debug(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
-                    else:
-                        class F: pass
-                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
-                    try:
-                            if gui.can_service is not None and gui.can_service.is_connected():
-                                gui.can_service.send_frame(f)
-                    except Exception:
-                        pass
-                        # Loopback handled by adapter if supported
-                        if gui.can_service is not None and gui.can_service.is_connected() and hasattr(gui.can_service.adapter, 'loopback'):
-                        try:
-                                gui.can_service.adapter.loopback(f)
-                        except Exception:
-                            pass
+                        # Legacy: use direct adapter (should not happen - CanService should always be available)
+                        logger.warning("CanService not available for frame sending")
+                        if AdapterFrame is not None:
+                            f = AdapterFrame(can_id=can_id, data=data_bytes)
+                        else:
+                            class F: pass
+                            f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
+                        logger.debug(f'Signals: {signals}')
+                        logger.debug(f'Encode data: {encode_data}')
+                        logger.debug(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
+                        # Note: Legacy path not fully implemented - should use CanService
 
                 success = False
                 info = ''
@@ -900,23 +954,9 @@ class TestRunner:
                                         return True, observed_info
                                     except Exception:
                                         pass
-                            else:
-                                # Legacy fallback
-                            target_msg = None
-                            for m in getattr(gui._dbc_db, 'messages', []):
-                                for s in getattr(m, 'signals', []):
-                                    if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                        target_msg = m
-                                        break
-                                if target_msg:
-                                    break
-                            if target_msg is not None:
-                                try:
-                                    decoded = target_msg.decode(raw)
-                                    observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
-                                    return True, observed_info
-                                except Exception:
-                                    pass
+                            # Legacy fallback removed - should use dbc_service
+                            # Note: _dbc_db was removed, this path should not be reached
+                            pass
                         else:
                             observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
                             return True, observed_info
@@ -1017,7 +1057,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
                 try:
                     can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
-        except Exception:
+                except Exception:
                     can_bitrate = CAN_BITRATE_DEFAULT
             self.can_service = CanService(channel=can_channel, bitrate=can_bitrate)
             # frame_queue accessed via self.can_service.frame_queue
@@ -3214,14 +3254,14 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self.start_btn.setText('Connect')
             self.conn_indicator.setText('Adapter: stopped')
             logger.info('Adapter disconnected via service')
-                return
+            return
         
         # Connect
         try:
             success = self.can_service.connect(selected)
             if not success:
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect to {selected}')
-                    return
+                return
         except (ValueError, RuntimeError) as e:
             logger.error(f"Adapter connection failed: {e}", exc_info=True)
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect: {e}')
@@ -3230,24 +3270,24 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Adapter connected via service
         
         # Prompt for DBC file and load
-            try:
-                fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
+        try:
+            fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
         except Exception as e:
             logger.warning(f"File dialog error: {e}")
-                fname = ''
+            fname = ''
 
         if fname and self.dbc_service is not None:
             # Update Test Configurator path editor if present
-                try:
-                    self.dbc_path_edit.setText(fname)
-                except Exception:
-                    pass
+            try:
+                self.dbc_path_edit.setText(fname)
+            except Exception:
+                pass
 
             try:
                 self.dbc_service.load_dbc_file(fname)
                 
                 # Build filters from DBC messages and apply to adapter
-                        filters = []
+                filters = []
                 for m in self.dbc_service.get_all_messages():
                     msg_id = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
                     if msg_id is not None:
@@ -3263,38 +3303,38 @@ class BaseGUI(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load DBC: {e}')
         
         # Start frame polling
-                self.poll_timer.start()
+        self.poll_timer.start()
 
         # Update UI
-            if self.start_btn is not None:
-                self.start_btn.setText('Disconnect')
+        if self.start_btn is not None:
+            self.start_btn.setText('Disconnect')
         self.conn_indicator.setText(f'Adapter: {self.can_service.adapter_name}')
         logger.info(f'Adapter connected via service: {self.can_service.adapter_name}')
         
         # Switch to Live Data tab
-            try:
-                if hasattr(self, 'stack') and hasattr(self, 'tabs'):
-                    self.stack.setCurrentWidget(self.tabs)
-                    try:
-                        self.tabs.setCurrentWidget(self.live_widget)
-                    except Exception:
-                        for i in range(self.tabs.count()):
-                            if self.tabs.tabText(i).lower() == 'live':
-                                self.tabs.setCurrentIndex(i)
-                                break
-            except Exception:
-                pass
+        try:
+            if hasattr(self, 'stack') and hasattr(self, 'tabs'):
+                self.stack.setCurrentWidget(self.tabs)
+                try:
+                    self.tabs.setCurrentWidget(self.live_widget)
+                except Exception:
+                    for i in range(self.tabs.count()):
+                        if self.tabs.tabText(i).lower() == 'live':
+                            self.tabs.setCurrentIndex(i)
+                            break
+        except Exception:
+            pass
         
         # Optional test frame injection
-            try:
-                if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
+        try:
+            if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
                 from backend.adapters.interface import Frame
                 test_frame = Frame(can_id=0x123, data=b'\x01\x02\x03', timestamp=time.time())
                 logger.debug('[host_gui] injecting deterministic test frame into frame_queue')
                 if self.can_service is not None:
                     self.can_service.frame_queue.put(test_frame)
-            except Exception:
-                pass
+        except Exception:
+            pass
     
     # Adapter control
     def toggle_adapter(self):
