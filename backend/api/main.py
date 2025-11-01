@@ -5,14 +5,16 @@ import os
 import asyncio
 import threading
 import json
+import logging
 from typing import Set
 from contextlib import asynccontextmanager
 
 from backend.adapters.sim import SimAdapter
 from backend.adapters.interface import Frame as AdapterFrame
 import cantools
-import os
-import logging
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -49,10 +51,13 @@ async def lifespan(app: FastAPI):
 
         try:
             app.state.dbcs = load_all_dbcs()
-        except Exception:
+            logger.info(f"Loaded {len(app.state.dbcs)} persisted DBC files")
+        except Exception as e:
+            logger.warning(f"Failed to load persisted DBCs: {e}", exc_info=True)
             app.state.dbcs = {}
-    except Exception:
+    except Exception as e:
         # If the store helpers aren't available for any reason, fall back to empty dict
+        logger.debug(f"DBC store module not available: {e}")
         try:
             app.state.dbcs = {}
         except Exception:
@@ -62,18 +67,19 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # Clean up on shutdown
+        logger.info("Shutting down adapter and cleanup...")
         try:
             sim.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error closing adapter: {e}", exc_info=True)
         try:
             await frame_queue.put(None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error signaling shutdown to frame queue: {e}", exc_info=True)
         try:
             await broadcaster
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error awaiting broadcaster task: {e}", exc_info=True)
 
 
 app = FastAPI(title="EOL Host Backend", lifespan=lifespan)
@@ -150,7 +156,8 @@ async def _broadcaster_task(frame_queue: asyncio.Queue, clients: Set[WebSocket])
         for ws in list(clients):
             try:
                 await ws.send_text(payload)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"WebSocket send error, removing client: {e}")
                 to_remove.append(ws)
         for ws in to_remove:
             try:
@@ -165,12 +172,13 @@ def _sim_reader_loop(loop: asyncio.AbstractEventLoop, frame_queue: asyncio.Queue
         for frame in sim.iter_recv():
             # marshal frame into a simple dict-like object (we enqueue the Frame itself)
             loop.call_soon_threadsafe(frame_queue.put_nowait, frame)
-    except Exception:
+    except Exception as e:
         # on any thread error, signal shutdown
+        logger.error(f"Sim reader loop error: {e}", exc_info=True)
         try:
             loop.call_soon_threadsafe(frame_queue.put_nowait, None)
-        except Exception:
-            pass
+        except Exception as shutdown_err:
+            logger.error(f"Failed to signal shutdown: {shutdown_err}", exc_info=True)
 
 
 # Lifespan handling implemented above; startup/shutdown events removed to
@@ -196,14 +204,16 @@ async def websocket_frames(ws: WebSocket):
                 await ws.receive_text()
             except WebSocketDisconnect:
                 break
-            except Exception:
+            except Exception as e:
                 # ignore non-disconnect errors and continue
+                logger.debug(f"WebSocket receive error (non-fatal): {e}")
                 await asyncio.sleep(0.1)
     finally:
         try:
             clients.remove(ws)
-        except Exception:
-            pass
+            logger.debug("WebSocket client disconnected and removed")
+        except Exception as e:
+            logger.debug(f"Error removing WebSocket client: {e}")
 
 
 
@@ -217,10 +227,32 @@ async def api_send_frame(payload: dict):
     data_hex = payload.get("data")
     if can_id is None or data_hex is None:
         raise HTTPException(status_code=400, detail="can_id and data are required")
+    
+    # Validate CAN ID range (standard CAN: 0-0x7FF, extended: 0-0x1FFFFFFF)
     try:
-        data = bytes.fromhex(data_hex)
-    except Exception:
-        raise HTTPException(status_code=400, detail="data must be a hex string")
+        can_id = int(can_id)
+        if not (0 <= can_id <= 0x1FFFFFFF):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid CAN ID: {can_id}. Must be between 0 and 0x1FFFFFFF"
+            )
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"Invalid CAN ID format: {can_id}")
+    
+    # Validate and parse hex data
+    try:
+        data = bytes.fromhex(data_hex.replace(' ', '').replace('-', ''))
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Invalid hex data format: {data_hex[:50]}")
+        raise HTTPException(status_code=400, detail=f"data must be a valid hex string: {e}")
+    
+    # Validate data length (CAN frame max 8 bytes for classic CAN)
+    if len(data) > 8:
+        logger.warning(f"Data length {len(data)} exceeds CAN max (8 bytes)")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Data length {len(data)} exceeds maximum CAN frame size (8 bytes)"
+        )
 
     sim: SimAdapter = getattr(app.state, "sim", None)
     if sim is None:
@@ -230,7 +262,9 @@ async def api_send_frame(payload: dict):
     f = AdapterFrame(can_id=can_id, data=data)
     try:
         sim.send(f)
+        logger.debug(f"Sent frame: can_id=0x{can_id:X}, data={data.hex()}")
     except Exception as e:
+        logger.error(f"Failed to send frame: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     # ensure a copy is available for direct recv() callers (tests may read sim.recv)
     try:
@@ -240,9 +274,8 @@ async def api_send_frame(payload: dict):
         else:
             # best-effort fallback
             sim.send(f)
-    except Exception:
-        # non-fatal for the API; log could be added here
-        pass
+    except Exception as e:
+        logger.debug(f"Loopback operation failed (non-fatal): {e}")
     # Also enqueue into the async frame_queue if present so tests / websocket
     # broadcaster observers will reliably see the frame even if a reader
     # thread consumes the SimAdapter queue first. This is a low-risk, test-
@@ -252,9 +285,8 @@ async def api_send_frame(payload: dict):
         if frame_queue is not None:
             # frame_queue is an asyncio.Queue; we're in an async handler so await
             await frame_queue.put(f)
-    except Exception:
-        # non-fatal; keep API resilient in CI and production
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to enqueue frame to frame_queue (non-fatal): {e}")
     return {"status": "ok"}
 
 
