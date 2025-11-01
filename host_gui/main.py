@@ -1664,6 +1664,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         Returns:
             Message object from cantools database or None if not found
         """
+        # Phase 1: Use DbcService if available
+        if self.dbc_service is not None:
+            return self.dbc_service.find_message_by_id(can_id)
+        
+        # Legacy implementation (fallback)
         if not hasattr(self, '_dbc_db') or self._dbc_db is None:
             return None
         
@@ -1692,6 +1697,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         Returns:
             Tuple of (message, signal) from cantools database or (None, None) if not found
         """
+        # Phase 1: Use DbcService if available
+        if self.dbc_service is not None:
+            return self.dbc_service.find_message_and_signal(can_id, signal_name)
+        
+        # Legacy implementation (fallback)
         if not signal_name:
             return None, None
         
@@ -2819,6 +2829,111 @@ class BaseGUI(QtWidgets.QMainWindow):
             logger.error(f"Test execution failed: {e}", exc_info=True)
             return False, f"Test execution error: {e}"
 
+    def _toggle_adapter_with_service(self):
+        """Connect or disconnect adapter using CanService (Phase 1 implementation)."""
+        try:
+            selected = self.device_combo.currentText()
+        except Exception:
+            selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
+        
+        logger.info(f"toggle_adapter called (service); connected={self.can_service.is_connected()}; selected={selected}")
+        
+        if self.can_service.is_connected():
+            # Disconnect
+            self.can_service.disconnect()
+            # Update legacy attributes for compatibility
+            self.sim = None
+            self.worker = None
+            self.poll_timer.stop()
+            if self.start_btn is not None:
+                self.start_btn.setText('Connect')
+            self.conn_indicator.setText('Adapter: stopped')
+            logger.info('Adapter disconnected via service')
+            return
+        
+        # Connect
+        try:
+            success = self.can_service.connect(selected)
+            if not success:
+                QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect to {selected}')
+                return
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"Adapter connection failed: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect: {e}')
+            return
+        
+        # Update legacy attributes for compatibility during transition
+        self.sim = self.can_service.adapter
+        self.worker = self.can_service.worker
+        
+        # Prompt for DBC file and load
+        try:
+            fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
+        except Exception as e:
+            logger.warning(f"File dialog error: {e}")
+            fname = ''
+        
+        if fname and self.dbc_service is not None:
+            # Update Test Configurator path editor if present
+            try:
+                self.dbc_path_edit.setText(fname)
+            except Exception:
+                pass
+            
+            try:
+                self.dbc_service.load_dbc_file(fname)
+                # Sync with legacy _dbc_db for compatibility
+                self._dbc_db = self.dbc_service.database
+                
+                # Build filters from DBC messages and apply to adapter
+                filters = []
+                for m in self.dbc_service.get_all_messages():
+                    msg_id = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                    if msg_id is not None:
+                        filters.append({'can_id': int(msg_id), 'extended': False})
+                
+                if filters:
+                    self.can_service.set_filters(filters)
+                
+                message_count = len(self.dbc_service.get_all_messages())
+                QtWidgets.QMessageBox.information(self, 'DBC Loaded', f'Loaded DBC: {os.path.basename(fname)} ({message_count} messages)')
+            except (FileNotFoundError, ValueError, RuntimeError) as e:
+                logger.error(f"Failed to load DBC: {e}", exc_info=True)
+                QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load DBC: {e}')
+        
+        # Start frame polling
+        self.poll_timer.start()
+        
+        # Update UI
+        if self.start_btn is not None:
+            self.start_btn.setText('Disconnect')
+        self.conn_indicator.setText(f'Adapter: {self.can_service.adapter_name}')
+        logger.info(f'Adapter connected via service: {self.can_service.adapter_name}')
+        
+        # Switch to Live Data tab
+        try:
+            if hasattr(self, 'stack') and hasattr(self, 'tabs'):
+                self.stack.setCurrentWidget(self.tabs)
+                try:
+                    self.tabs.setCurrentWidget(self.live_widget)
+                except Exception:
+                    for i in range(self.tabs.count()):
+                        if self.tabs.tabText(i).lower() == 'live':
+                            self.tabs.setCurrentIndex(i)
+                            break
+        except Exception:
+            pass
+        
+        # Optional test frame injection
+        try:
+            if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
+                from backend.adapters.interface import Frame
+                test_frame = Frame(can_id=0x123, data=b'\x01\x02\x03', timestamp=time.time())
+                logger.debug('[host_gui] injecting deterministic test frame into frame_q')
+                self.frame_q.put(test_frame)
+        except Exception:
+            pass
+    
     # Adapter control
     def toggle_adapter(self):
         """Connect or disconnect the CAN adapter.
@@ -2837,12 +2952,17 @@ class BaseGUI(QtWidgets.QMainWindow):
         The adapter selection is taken from the device_combo widget, which
         lists available adapter types based on installed hardware/drivers.
         """
+        # Phase 1: Use CanService if available, fallback to legacy
+        if self.can_service is not None:
+            return self._toggle_adapter_with_service()
+        
+        # Legacy implementation (fallback)
         # If called from welcome connect button, use device_combo if present
         try:
             selected = self.device_combo.currentText()
         except Exception:
             selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
-        logger.info(f"toggle_adapter called; sim is {'set' if self.sim is not None else 'None'}; selected={selected}")
+        logger.info(f"toggle_adapter called (legacy); sim is {'set' if self.sim is not None else 'None'}; selected={selected}")
         if self.sim is None:
             if selected != 'SimAdapter':
                 handled = False
@@ -3126,6 +3246,77 @@ class BaseGUI(QtWidgets.QMainWindow):
         Args:
             frame: CAN frame object with can_id and data attributes
         """
+        # Phase 1: Use SignalService if available
+        if self.signal_service is not None:
+            try:
+                # Convert frame to SignalService format
+                from backend.adapters.interface import Frame as AdapterFrame
+                if not isinstance(frame, AdapterFrame):
+                    # Convert from legacy format
+                    adapter_frame = AdapterFrame(
+                        can_id=getattr(frame, 'can_id', 0),
+                        data=getattr(frame, 'data', b''),
+                        timestamp=getattr(frame, 'timestamp', None)
+                    )
+                else:
+                    adapter_frame = frame
+                
+                # Decode signals
+                signal_values = self.signal_service.decode_frame(adapter_frame)
+                
+                # Update UI table (legacy table handling)
+                for sig_val in signal_values:
+                    key = sig_val.key
+                    fid = sig_val.message_id
+                    sig_name = sig_val.signal_name
+                    val = sig_val.value
+                    ts = sig_val.timestamp or time.time()
+                    
+                    if key in self._signal_rows:
+                        row = self._signal_rows[key]
+                        try:
+                            self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                        except Exception:
+                            self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                        self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
+                        # Sync legacy cache
+                        self._signal_values[key] = (ts, val)
+                    else:
+                        r = self.signal_table.rowCount()
+                        self.signal_table.insertRow(r)
+                        try:
+                            self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                        except Exception:
+                            self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                        self.signal_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(sig_val.message_name or '')))
+                        self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
+                        self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
+                        self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
+                        self._signal_rows[key] = r
+                        # Sync legacy cache
+                        self._signal_values[key] = (ts, val)
+                    
+                    # Update feedback label if this is the current monitored signal
+                    try:
+                        cur = getattr(self, '_current_feedback', None)
+                        if cur and cur[1] and str(cur[1]) == str(sig_name):
+                            try:
+                                cur_id = int(cur[0]) if cur[0] is not None else None
+                                this_id = int(fid)
+                                if cur_id is not None and this_id is not None and cur_id == this_id:
+                                    try:
+                                        self.feedback_signal_label.setText(str(val))
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                logger.debug(f"SignalService decode failed, falling back to legacy: {e}")
+        
+        # Legacy implementation (fallback)
         if cantools is None or getattr(self, '_dbc_db', None) is None:
             return
         try:
