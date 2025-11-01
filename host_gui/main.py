@@ -2888,8 +2888,25 @@ class BaseGUI(QtWidgets.QMainWindow):
             return
         
         if not self._tests:
-            self.status_label.setText('No tests to run')
+            logger.warning("Run Sequence called but _tests is empty")
+            self.status_label.setText('No tests to run - Load tests first')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
+            QtWidgets.QMessageBox.warning(self, 'No Tests', 'No tests loaded. Please load a test profile from Test Configurator tab first.')
+            return
+        
+        # Check if CAN adapter is connected
+        can_connected = False
+        if self.can_service is not None:
+            try:
+                can_connected = self.can_service.is_connected()
+            except Exception:
+                pass
+        
+        if not can_connected:
+            logger.warning("Run Sequence called but CAN adapter not connected")
+            self.status_label.setText('CAN adapter not connected')
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
+            QtWidgets.QMessageBox.warning(self, 'Adapter Not Connected', 'CAN adapter must be connected before running tests.\n\nPlease go to CAN Data View tab and click "Connect".')
             return
         
         # Switch to Test Status tab
@@ -2941,8 +2958,20 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Start thread
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Starting test sequence ({len(self._tests)} tests)')
-        self.test_execution_thread.start()
-        logger.info(f"Started test sequence thread with {len(self._tests)} tests")
+        try:
+            self.test_execution_thread.start()
+            logger.info(f"Started test sequence thread with {len(self._tests)} tests")
+        except Exception as e:
+            logger.error(f"Failed to start test execution thread: {e}", exc_info=True)
+            self.status_label.setText(f'Error starting tests: {e}')
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to start test sequence:\n{e}')
+            # Clean up on failure
+            try:
+                self.run_seq_btn.setText('Run Sequence')
+                self.run_seq_btn.clicked.disconnect()
+                self.run_seq_btn.clicked.connect(self._on_run_sequence)
+            except Exception:
+                pass
     
     def _on_run_sequence_legacy(self) -> None:
         """Legacy synchronous test sequence execution (fallback)."""
