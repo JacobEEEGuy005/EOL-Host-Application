@@ -138,6 +138,16 @@ try:
 except Exception:
     PythonCanAdapter = None
 
+# Import services for Phase 1 refactoring
+try:
+    from host_gui.services import CanService, DbcService, SignalService
+except ImportError:
+    # Fallback if services not available (for backwards compatibility during transition)
+    CanService = None
+    DbcService = None
+    SignalService = None
+    logger.warning("Services not available, using legacy implementation")
+
 
 class AdapterWorker(threading.Thread):
     """Background worker thread that receives CAN frames from adapter and enqueues them.
@@ -885,12 +895,17 @@ class BaseGUI(QtWidgets.QMainWindow):
     - Test Status: Execute tests and view results with plots
     
     Attributes:
-        sim: Current CAN adapter instance (None when disconnected)
-        worker: AdapterWorker thread for frame reception
-        frame_q: Queue for frames from worker thread
-        _dbc_db: Loaded cantools database object
+        sim: Current CAN adapter instance (None when disconnected, deprecated - use can_service)
+        worker: AdapterWorker thread for frame reception (deprecated - use can_service)
+        frame_q: Queue for frames from worker thread (deprecated - use can_service.frame_queue)
+        _dbc_db: Loaded cantools database object (deprecated - use dbc_service)
         _tests: List of configured test profiles
-        _signal_values: Cache of latest signal values (key: "can_id:signal_name")
+        _signal_values: Cache of latest signal values (deprecated - use signal_service)
+        
+        # Phase 1: Service layer (new)
+        can_service: CanService instance for adapter management
+        dbc_service: DbcService instance for DBC operations
+        signal_service: SignalService instance for signal decoding
     """
     
     def __init__(self):
@@ -899,9 +914,32 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.setWindowTitle('EOL Host - Native GUI')
         self.resize(WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT)
 
-        self.sim = None
-        self.worker = None
-        self.frame_q = queue.Queue()
+        self.sim = None  # Legacy - will be replaced by can_service
+        self.worker = None  # Legacy - will be replaced by can_service
+        self.frame_q = queue.Queue()  # Legacy - will use can_service.frame_queue
+        
+        # Initialize services (Phase 1)
+        if CanService is not None:
+            can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
+            try:
+                can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
+            except Exception:
+                can_bitrate = CAN_BITRATE_DEFAULT
+            self.can_service = CanService(channel=can_channel, bitrate=can_bitrate)
+            self.frame_q = self.can_service.frame_queue  # Use service's queue
+        else:
+            self.can_service = None
+        
+        if DbcService is not None:
+            self.dbc_service = DbcService()
+        else:
+            self.dbc_service = None
+        
+        if SignalService is not None and self.dbc_service is not None:
+            self.signal_service = SignalService(self.dbc_service)
+        else:
+            self.signal_service = None
+        
         # limits
         self._max_messages = MAX_MESSAGES_DEFAULT
         self._max_frames = MAX_FRAMES_DEFAULT
