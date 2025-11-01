@@ -2405,10 +2405,15 @@ class BaseGUI(QtWidgets.QMainWindow):
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self._tests = data.get('tests', [])
+            logger.info(f"Loaded {len(self._tests)} tests from {file_path}")
+            if not self._tests:
+                logger.warning(f"JSON file contains no tests: {file_path}")
+                QtWidgets.QMessageBox.warning(self, 'Load Tests', 'JSON file contains no tests. Expected a "tests" array.')
+                return
             self.test_list.clear()
             for t in self._tests:
                 self.test_list.addItem(t.get('name', '<unnamed>'))
-            QtWidgets.QMessageBox.information(self, 'Loaded', f'Loaded {len(self._tests)} tests from {file_path}')
+            QtWidgets.QMessageBox.information(self, 'Loaded', f'Loaded {len(self._tests)} tests from {os.path.basename(file_path)}')
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load tests: {e}')
 
@@ -2894,9 +2899,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         runner = TestRunner(self)
         
         # Phase 3: Get services from container if available
-        can_svc = self.service_container.get_can_service() if self.service_container else self.can_service
-        dbc_svc = self.service_container.get_dbc_service() if self.service_container else self.dbc_service
-        signal_svc = self.service_container.get_signal_service() if self.service_container else self.signal_service
+        # Use getattr for defensive access in case service_container doesn't exist
+        service_container = getattr(self, 'service_container', None)
+        can_svc = service_container.get_can_service() if service_container else getattr(self, 'can_service', None)
+        dbc_svc = service_container.get_dbc_service() if service_container else getattr(self, 'dbc_service', None)
+        signal_svc = service_container.get_signal_service() if service_container else getattr(self, 'signal_service', None)
         
         self.test_execution_thread = self.TestExecutionThread(
             tests=list(self._tests),

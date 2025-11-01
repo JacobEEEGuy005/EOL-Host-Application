@@ -84,10 +84,11 @@ class TestExecutionThread(QtCore.QThread):
     def run(self):
         """Execute all tests in sequence (runs in background thread)."""
         if not self.tests:
-            logger.warning("No tests to execute")
+            logger.warning("TestExecutionThread.run() called but tests list is empty")
             return
         
         total_tests = len(self.tests)
+        logger.info(f"TestExecutionThread.run() starting with {total_tests} tests")
         self.sequence_started.emit(total_tests)
         
         results = []
