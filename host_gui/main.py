@@ -158,48 +158,9 @@ except ImportError:
     logger.warning("Services not available, using legacy implementation")
 
 
-class AdapterWorker(threading.Thread):
-    """Background worker thread that receives CAN frames from adapter and enqueues them.
-    
-    This worker runs in a separate thread to prevent blocking the GUI main thread.
-    Frames received from the adapter are placed into a queue for processing by the
-    GUI's frame polling mechanism.
-    
-    Attributes:
-        sim: CAN adapter instance (must implement iter_recv() method)
-        out_q: Queue for outgoing frames to GUI
-        _stop: Event to signal thread shutdown
-    """
-    
-    def __init__(self, sim, out_q: queue.Queue):
-        """Initialize the adapter worker thread.
-        
-        Args:
-            sim: CAN adapter instance (SimAdapter, PcanAdapter, etc.)
-            out_q: Queue.Queue for frames to be processed by GUI
-        """
-        super().__init__(daemon=True)
-        self.sim = sim
-        self.out_q = out_q
-        self._stop = threading.Event()
-
-    def run(self):
-        """Main thread loop: continuously receive frames and enqueue them."""
-        try:
-            for frame in self.sim.iter_recv():
-                if self._stop.is_set():
-                    logger.debug("AdapterWorker: stop signal received")
-                    break
-                self.out_q.put(frame)
-        except Exception as e:
-            logger.error(f"AdapterWorker error in run loop: {e}", exc_info=True)
-
-    def stop(self):
-        """Signal the worker thread to stop. Thread will exit after current frame."""
-        self._stop.set()
-        logger.debug("AdapterWorker: stop() called")
-
-
+# AdapterWorker class moved to host_gui/services/can_service.py
+# Import from services if needed:
+# from host_gui.services.can_service import AdapterWorker
 class TestRunner:
     """Lightweight test runner that encapsulates single-test execution logic.
     
