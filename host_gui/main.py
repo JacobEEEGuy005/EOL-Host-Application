@@ -681,15 +681,15 @@ class TestRunner:
                         target_msg = None
                     if target_msg is not None:
                         for sig_name in signals:
-                                encode_data[sig_name] = signals[sig_name]
-                                # check if this signal is muxed
-                                for sig in target_msg.signals:
-                                    if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                        mux_value = sig.multiplexer_ids[0]
-                                        break
-                            if mux_value is not None:
-                                encode_data['MessageType'] = mux_value
-                            else:
+                            encode_data[sig_name] = signals[sig_name]
+                            # check if this signal is muxed
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                    mux_value = sig.multiplexer_ids[0]
+                                    break
+                        if mux_value is not None:
+                            encode_data['MessageType'] = mux_value
+                        else:
                                 # If this message has a MessageType signal with defined choices,
                                 # try to infer the correct selector for non-muxed commands
                                 # (e.g. DAC commands require MessageType=18).
