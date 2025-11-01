@@ -32,6 +32,14 @@ except Exception:
 
 from host_gui.constants import CAN_CHANNEL_DEFAULT, CAN_BITRATE_DEFAULT
 
+try:
+    from host_gui.exceptions import CanAdapterError
+    import time as time_module
+except ImportError:
+    # Fallback if exceptions module not available
+    CanAdapterError = RuntimeError
+    import time as time_module
+
 
 class AdapterWorker(threading.Thread):
     """Background worker thread that receives CAN frames from adapter and enqueues them.
@@ -138,61 +146,41 @@ class CanService:
         for attempt in range(max_retries):
             try:
                 # Try to instantiate the selected adapter
-        if adapter_type == 'SimAdapter':
-            if SimAdapter is None:
-                raise RuntimeError("SimAdapter not available")
-            try:
-                self.adapter = SimAdapter()
-                self.adapter.open()
-                self.adapter_name = 'Sim'
-                    except Exception as e:
-                        logger.error(f"Failed to open SimAdapter: {e}", exc_info=True)
-                        raise CanAdapterError(f"Failed to open SimAdapter: {e}", 
-                                             adapter_type='SimAdapter', operation='connect', original_error=e)
-        
-        elif adapter_type == 'PCAN':
-            if PcanAdapter is None:
-                raise ValueError("PCAN adapter not available (PCAN drivers may not be installed)")
-            try:
-                br = self.bitrate if self.bitrate else None
-                self.adapter = PcanAdapter(channel=self.channel, bitrate=br)
-                self.adapter.open()
-                self.adapter_name = 'PCAN'
-                    except Exception as e:
-                        logger.error(f"Failed to open PCAN adapter: {e}", exc_info=True)
-                        raise CanAdapterError(f"Failed to open PCAN adapter: {e}",
-                                             adapter_type='PCAN', operation='connect', original_error=e)
-        
-        elif adapter_type in ('PythonCAN', 'Canalystii'):
-            if PythonCanAdapter is None:
-                raise ValueError("PythonCAN adapter not available (python-can may not be installed)")
-            try:
-                # PythonCAN and Canalystii both use PythonCanAdapter with different interfaces
-                interface_name = 'canalystii' if adapter_type == 'Canalystii' else None
-                br = self.bitrate
-                # Canalystii expects bitrate in bps, convert from kbps
-                if adapter_type == 'Canalystii' and br is not None:
-                    br = br * 1000
-                self.adapter = PythonCanAdapter(channel=self.channel, bitrate=br, interface=interface_name)
-                self.adapter.open()
-                self.adapter_name = adapter_type
-                    except Exception as e:
-                        logger.error(f"Failed to open {adapter_type} adapter: {e}", exc_info=True)
-                        raise CanAdapterError(f"Failed to open {adapter_type} adapter: {e}",
-                                             adapter_type=adapter_type, operation='connect', original_error=e)
-        
-        elif adapter_type == 'SocketCAN':
-            if PythonCanAdapter is None:
-                raise ValueError("SocketCAN adapter not available (python-can may not be installed)")
-            try:
-                self.adapter = PythonCanAdapter(channel=self.channel, bitrate=self.bitrate, interface='socketcan')
-                self.adapter.open()
-                self.adapter_name = 'SocketCAN'
-                    except Exception as e:
-                        logger.error(f"Failed to open SocketCAN adapter: {e}", exc_info=True)
-                        raise CanAdapterError(f"Failed to open SocketCAN adapter: {e}",
-                                             adapter_type='SocketCAN', operation='connect', original_error=e)
-        
+                if adapter_type == 'SimAdapter':
+                    if SimAdapter is None:
+                        raise RuntimeError("SimAdapter not available")
+                    self.adapter = SimAdapter()
+                    self.adapter.open()
+                    self.adapter_name = 'Sim'
+                
+                elif adapter_type == 'PCAN':
+                    if PcanAdapter is None:
+                        raise ValueError("PCAN adapter not available (PCAN drivers may not be installed)")
+                    br = self.bitrate if self.bitrate else None
+                    self.adapter = PcanAdapter(channel=self.channel, bitrate=br)
+                    self.adapter.open()
+                    self.adapter_name = 'PCAN'
+                
+                elif adapter_type in ('PythonCAN', 'Canalystii'):
+                    if PythonCanAdapter is None:
+                        raise ValueError("PythonCAN adapter not available (python-can may not be installed)")
+                    # PythonCAN and Canalystii both use PythonCanAdapter with different interfaces
+                    interface_name = 'canalystii' if adapter_type == 'Canalystii' else None
+                    br = self.bitrate
+                    # Canalystii expects bitrate in bps, convert from kbps
+                    if adapter_type == 'Canalystii' and br is not None:
+                        br = br * 1000
+                    self.adapter = PythonCanAdapter(channel=self.channel, bitrate=br, interface=interface_name)
+                    self.adapter.open()
+                    self.adapter_name = adapter_type
+                
+                elif adapter_type == 'SocketCAN':
+                    if PythonCanAdapter is None:
+                        raise ValueError("SocketCAN adapter not available (python-can may not be installed)")
+                    self.adapter = PythonCanAdapter(channel=self.channel, bitrate=self.bitrate, interface='socketcan')
+                    self.adapter.open()
+                    self.adapter_name = 'SocketCAN'
+                
                 else:
                     raise ValueError(f"Unknown adapter type: {adapter_type}")
                 
@@ -206,8 +194,8 @@ class CanService:
                 # Re-raise CanAdapterError as-is (already has context)
                 raise
             except Exception as e:
-                # Wrap other exceptions
-                if attempt < max_retries:
+                # Wrap exceptions and retry if attempts remain
+                if attempt < max_retries - 1:
                     logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}, retrying...")
                     time_module.sleep(retry_delay)
                     continue
