@@ -857,22 +857,37 @@ class TestRunner:
                 try:
                     # 1) Disable MUX
                     if mux_enable_sig:
-                        _encode_and_send({mux_enable_sig: 0})
-                        _nb_sleep(SLEEP_INTERVAL_SHORT)
+                        try:
+                            _encode_and_send({mux_enable_sig: 0})
+                            _nb_sleep(SLEEP_INTERVAL_SHORT)
+                        except Exception as e:
+                            logger.warning(f"Failed to disable MUX: {e}", exc_info=True)
+                            # Continue anyway - MUX may already be disabled
                     # 2) Set MUX channel
                     if mux_channel_sig and mux_channel_value is not None:
-                        _encode_and_send({mux_channel_sig: int(mux_channel_value)})
-                        _nb_sleep(SLEEP_INTERVAL_SHORT)
-                    # 3) Set DAC to min
-                    if dac_cmd_sig:
+                        try:
+                            _encode_and_send({mux_channel_sig: int(mux_channel_value)})
+                            _nb_sleep(SLEEP_INTERVAL_SHORT)
+                        except Exception as e:
+                            logger.warning(f"Failed to set MUX channel: {e}", exc_info=True)
+                            # Continue - may be optional depending on hardware
+                    # 3) Set DAC to min (CRITICAL - must succeed)
+                    try:
                         _encode_and_send({dac_cmd_sig: int(dac_min)})
                         _nb_sleep(SLEEP_INTERVAL_SHORT)
+                    except Exception as e:
+                        logger.error(f"Failed to set DAC to minimum: {e}", exc_info=True)
+                        raise ValueError(f"Failed to send DAC command: {e}") from e
                     # 4) Enable MUX (send channel + enable together if channel known)
                     if mux_enable_sig:
-                        if mux_channel_sig and mux_channel_value is not None:
-                            _encode_and_send({mux_enable_sig: 1, mux_channel_sig: int(mux_channel_value)})
-                        else:
-                            _encode_and_send({mux_enable_sig: 1})
+                        try:
+                            if mux_channel_sig and mux_channel_value is not None:
+                                _encode_and_send({mux_enable_sig: 1, mux_channel_sig: int(mux_channel_value)})
+                            else:
+                                _encode_and_send({mux_enable_sig: 1})
+                        except Exception as e:
+                            logger.warning(f"Failed to enable MUX: {e}", exc_info=True)
+                            # Continue - test may work without explicit MUX enable
                     # 5) Hold initial dwell and collect multiple feedback data points
                     # Continuously send DAC command (50ms period) and collect data during dwell
                     if dac_cmd_sig:
