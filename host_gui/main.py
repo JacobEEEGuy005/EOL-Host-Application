@@ -546,6 +546,8 @@ class TestRunner:
                         except Exception:
                             pass
 
+                success = False
+                info = ''
                 try:
                     # 1) Disable MUX
                     if mux_enable_sig:
@@ -574,16 +576,30 @@ class TestRunner:
                         if dac_cmd_sig:
                             _encode_and_send({dac_cmd_sig: int(cur)})
                         _nb_sleep(float(dwell_ms) / 1000.0)
-                    # 7) Finish: set DAC to 0 and disable MUX
-                    if dac_cmd_sig:
-                        _encode_and_send({dac_cmd_sig: 0})
-                        _nb_sleep(0.02)
-                    if mux_enable_sig:
-                        _encode_and_send({mux_enable_sig: 0})
-                        _nb_sleep(0.02)
-                    return True, f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
+                    success = True
+                    info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
                 except Exception as e:
-                    return False, f"Analog actuation failed: {e}"
+                    success = False
+                    info = f"Analog actuation failed: {e}"
+                finally:
+                    # Ensure we leave DAC at 0 and MUX disabled even if an exception occurred
+                    try:
+                        if dac_cmd_sig:
+                            _encode_and_send({dac_cmd_sig: 0})
+                            _nb_sleep(0.02)
+                    except Exception:
+                        pass
+                    try:
+                        if mux_enable_sig:
+                            # send disable; include channel if available to be explicit
+                            if mux_channel_sig and mux_channel_value is not None:
+                                _encode_and_send({mux_enable_sig: 0, mux_channel_sig: int(mux_channel_value)})
+                            else:
+                                _encode_and_send({mux_enable_sig: 0})
+                            _nb_sleep(0.02)
+                    except Exception:
+                        pass
+                return success, info
             else:
                 pass
         except Exception as e:
