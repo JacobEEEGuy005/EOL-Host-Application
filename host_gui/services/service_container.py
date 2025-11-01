@@ -156,10 +156,10 @@ class ServiceContainer:
         
         # Register DbcService
         if DbcService is not None:
-            dbc_dir = config.get('dbc_dir')
-            dbc_service = DbcService(dbc_dir=dbc_dir)
+            # DbcService doesn't take dbc_dir parameter in constructor, uses default
+            dbc_service = DbcService()
             self.register('dbc_service', dbc_service)
-            logger.info(f"Registered DbcService with dbc_dir={dbc_dir or 'default'}")
+            logger.info("Registered DbcService with default configuration")
         
         # Register SignalService (depends on DbcService)
         if SignalService is not None:

@@ -3087,7 +3087,52 @@ class BaseGUI(QtWidgets.QMainWindow):
             self.test_execution_thread = None
         
         logger.info("Test sequence cancelled")
-
+    
+    def closeEvent(self, event) -> None:
+        """Handle window close event - cleanup services and resources.
+        
+        Phase 3: Cleanup service container and all registered services
+        when the application is closed.
+        
+        Args:
+            event: QCloseEvent from Qt
+        """
+        logger.info("BaseGUI closing, cleaning up resources...")
+        
+        # Stop test execution thread if running
+        if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+            logger.info("Stopping test execution thread...")
+            self.test_execution_thread.stop()
+            self.test_execution_thread.wait(2000)  # Wait up to 2 seconds
+            self.test_execution_thread = None
+        
+        # Phase 3: Cleanup service container
+        if self.service_container is not None:
+            try:
+                self.service_container.clear()
+                logger.info("ServiceContainer cleaned up")
+            except Exception as e:
+                logger.warning(f"Error cleaning up ServiceContainer: {e}", exc_info=True)
+        
+        # Disconnect adapter if connected
+        if self.can_service is not None:
+            try:
+                if hasattr(self.can_service, 'is_connected') and self.can_service.is_connected():
+                    self.can_service.disconnect()
+                    logger.info("CanService disconnected")
+            except Exception as e:
+                logger.warning(f"Error disconnecting CanService: {e}", exc_info=True)
+        
+        # Stop polling timer
+        try:
+            if hasattr(self, 'poll_timer') and self.poll_timer.isActive():
+                self.poll_timer.stop()
+        except Exception:
+            pass
+        
+        logger.info("BaseGUI cleanup complete")
+        event.accept()  # Accept the close event
+    
     def _run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Run a single test with validation.
         
