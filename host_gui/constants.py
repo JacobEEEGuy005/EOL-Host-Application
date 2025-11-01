@@ -63,3 +63,21 @@ CAN_ID_EOL_STATUS = 0x100  # 256
 CAN_BITRATE_DEFAULT = 500  # kbps
 CAN_CHANNEL_DEFAULT = '0'
 
+# UI constants
+WINDOW_WIDTH_DEFAULT = 1100
+WINDOW_HEIGHT_DEFAULT = 700
+LEFT_PANEL_MIN_WIDTH = 300
+LOGO_WIDTH = 280
+LOGO_HEIGHT = 80
+
+# Sleep intervals (seconds)
+SLEEP_INTERVAL_SHORT = 0.02  # 20ms - used for short non-blocking sleeps
+SLEEP_INTERVAL_MEDIUM = 0.05  # 50ms - used for medium delays
+
+# UI limits
+MUX_CHANNEL_MAX = 65535  # Maximum value for MUX channel
+DWELL_TIME_MAX_MS = 60000  # Maximum dwell time in milliseconds (60 seconds)
+
+# Plot settings
+PLOT_GRID_ALPHA = 0.3  # Grid transparency for matplotlib plots
+

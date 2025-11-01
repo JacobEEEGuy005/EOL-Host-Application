@@ -59,22 +59,17 @@ async def lifespan(app: FastAPI):
     app.state._broadcaster = broadcaster
 
     # Load persisted DBC files (Stage-2 persistence) using dbc_store helpers
+    app.state.dbcs = {}
     try:
         from backend.api.dbc_store import load_all_dbcs
-
-        try:
-            app.state.dbcs = load_all_dbcs()
-            logger.info(f"Loaded {len(app.state.dbcs)} persisted DBC files")
-        except Exception as e:
-            logger.warning(f"Failed to load persisted DBCs: {e}", exc_info=True)
-            app.state.dbcs = {}
-    except Exception as e:
-        # If the store helpers aren't available for any reason, fall back to empty dict
+        app.state.dbcs = load_all_dbcs()
+        logger.info(f"Loaded {len(app.state.dbcs)} persisted DBC files")
+    except ImportError as e:
+        # If the store helpers aren't available, fall back to empty dict
         logger.debug(f"DBC store module not available: {e}")
-        try:
-            app.state.dbcs = {}
-        except Exception:
-            pass
+    except Exception as e:
+        # If loading fails, log warning and use empty dict
+        logger.warning(f"Failed to load persisted DBCs: {e}", exc_info=True)
 
     try:
         yield

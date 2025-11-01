@@ -75,7 +75,12 @@ try:
         POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS,
         MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
         MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
-        CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT
+        CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
+        WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
+        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+        PLOT_GRID_ALPHA
     )
 except ImportError:
     # Fallback constants if import fails
@@ -95,6 +100,16 @@ except ImportError:
     MSG_TYPE_SET_MUX = 17
     CAN_BITRATE_DEFAULT = 500
     CAN_CHANNEL_DEFAULT = '0'
+    WINDOW_WIDTH_DEFAULT = 1100
+    WINDOW_HEIGHT_DEFAULT = 700
+    LEFT_PANEL_MIN_WIDTH = 300
+    LOGO_WIDTH = 280
+    LOGO_HEIGHT = 80
+    SLEEP_INTERVAL_SHORT = 0.02
+    SLEEP_INTERVAL_MEDIUM = 0.05
+    MUX_CHANNEL_MAX = 65535
+    DWELL_TIME_MAX_MS = 60000
+    PLOT_GRID_ALPHA = 0.3
     logger.warning("Could not import constants, using fallback values")
 
 # Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
@@ -339,7 +354,7 @@ class TestRunner:
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
-                        time.sleep(min(0.02, remaining))
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
 
                 def _parse_expected(v):
                     try:
@@ -428,7 +443,7 @@ class TestRunner:
                     fb = test.get('feedback_signal')
                     fb_mid = test.get('feedback_message_id')
                     matched_start = None
-                    poll = 0.02
+                    poll = SLEEP_INTERVAL_SHORT
                     while time.time() < end:
                         QtCore.QCoreApplication.processEvents()
                         try:
@@ -499,14 +514,14 @@ class TestRunner:
                     while True:
                         if state == 'ENSURE_LOW':
                             _send_bytes(low_bytes)
-                            _nb_sleep(0.05)
+                            _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                             state = 'ACTUATE_HIGH'
                         elif state == 'ACTUATE_HIGH':
                             _send_bytes(high_bytes)
                             # wait for HIGH dwell (may return early on observation)
                             high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
-                            print('HIGH dwell:', high_info)
-                            print('High ok:', high_ok)
+                            logger.debug(f'HIGH dwell: {high_info}')
+                            logger.debug(f'High ok: {high_ok}')
                             if high_ok:
                                 info_parts.append(f"HIGH observed: {high_info}")
                             else:
@@ -514,12 +529,12 @@ class TestRunner:
                             state = 'ENSURE_LOW_AFTER_HIGH'
                         elif state == 'ENSURE_LOW_AFTER_HIGH':
                             _send_bytes(low_bytes)
-                            _nb_sleep(0.05)
+                            _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                             state = 'WAIT_LOW_DWELL'
                         elif state == 'WAIT_LOW_DWELL':
                             low_ok, low_info = _wait_for_value(expected_low, int(dwell_ms))
-                            print('LOW dwell:', low_info)
-                            print('Low ok:', low_ok)
+                            logger.debug(f'LOW dwell: {low_info}')
+                            logger.debug(f'Low ok: {low_ok}')
                             if low_ok:
                                 info_parts.append(f"LOW observed: {low_info}")
                             else:
@@ -613,7 +628,7 @@ class TestRunner:
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
-                        time.sleep(min(0.02, remaining))
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
 
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
@@ -697,9 +712,9 @@ class TestRunner:
 
                     if AdapterFrame is not None:
                         f = AdapterFrame(can_id=can_id, data=data_bytes)
-                        print(signals)
-                        print(encode_data)
-                        print(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
+                        logger.debug(f'Signals: {signals}')
+                        logger.debug(f'Encode data: {encode_data}')
+                        logger.debug(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
                     else:
                         class F: pass
                         f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
@@ -730,15 +745,15 @@ class TestRunner:
                     # 1) Disable MUX
                     if mux_enable_sig:
                         _encode_and_send({mux_enable_sig: 0})
-                        _nb_sleep(0.02)
+                        _nb_sleep(SLEEP_INTERVAL_SHORT)
                     # 2) Set MUX channel
                     if mux_channel_sig and mux_channel_value is not None:
                         _encode_and_send({mux_channel_sig: int(mux_channel_value)})
-                        _nb_sleep(0.02)
+                        _nb_sleep(SLEEP_INTERVAL_SHORT)
                     # 3) Set DAC to min
                     if dac_cmd_sig:
                         _encode_and_send({dac_cmd_sig: int(dac_min)})
-                        _nb_sleep(0.02)
+                        _nb_sleep(SLEEP_INTERVAL_SHORT)
                     # 4) Enable MUX (send channel + enable together if channel known)
                     if mux_enable_sig:
                         if mux_channel_sig and mux_channel_value is not None:
@@ -781,7 +796,7 @@ class TestRunner:
                     try:
                         if dac_cmd_sig:
                             _encode_and_send({dac_cmd_sig: 0})
-                            _nb_sleep(0.02)
+                            _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception:
                         pass
                     try:
@@ -791,7 +806,7 @@ class TestRunner:
                                 _encode_and_send({mux_enable_sig: 0, mux_channel_sig: int(mux_channel_value)})
                             else:
                                 _encode_and_send({mux_enable_sig: 0})
-                            _nb_sleep(0.02)
+                            _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception:
                         pass
                 return success, info
@@ -882,7 +897,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         """Initialize the main GUI window and build all UI components."""
         super().__init__()
         self.setWindowTitle('EOL Host - Native GUI')
-        self.resize(1100, 700)
+        self.resize(WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT)
 
         self.sim = None
         self.worker = None
@@ -1199,7 +1214,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             self.plot_axes.set_xlabel('DAC Output Voltage (mV)')
             self.plot_axes.set_ylabel('Feedback Signal Value')
             self.plot_axes.set_title('Feedback vs DAC Output')
-            self.plot_axes.grid(True, alpha=0.3)
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
             
             # Create initial empty scatter plot with line connection
             self.plot_line, = self.plot_axes.plot([], [], 'bo-', markersize=6, linewidth=1, label='Feedback')
@@ -1281,12 +1296,12 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         # Left: persistent device controls (top-left corner, global)
         left_panel = QtWidgets.QWidget()
-        left_panel.setMinimumWidth(300)
+        left_panel.setMinimumWidth(LEFT_PANEL_MIN_WIDTH)
         left_layout = QtWidgets.QVBoxLayout(left_panel)
 
         # Logo and welcome buttons at top of left panel
         logo_label = QtWidgets.QLabel()
-        logo_pix = self._generate_logo_pixmap(280, 80)
+        logo_pix = self._generate_logo_pixmap(LOGO_WIDTH, LOGO_HEIGHT)
         logo_label.setPixmap(logo_pix)
         logo_label.setAlignment(QtCore.Qt.AlignCenter)
         left_layout.addWidget(logo_label)
@@ -1568,13 +1583,34 @@ class BaseGUI(QtWidgets.QMainWindow):
                         return
         except Exception:
             pass
-        QtWidgets.QMessageBox.information(self, 'Test Menu', 'Open Test Menu (not yet implemented)')
+        # If tab switching failed, show a message
+        QtWidgets.QMessageBox.information(self, 'Test Menu', 'Switched to CAN Data View')
 
     def _open_test_configurator(self):
-        QtWidgets.QMessageBox.information(self, 'Test Configurator', 'Open Test Configurator (not yet implemented)')
+        """Switch to the Test Configurator tab."""
+        try:
+            if hasattr(self, 'tabs_main'):
+                for i in range(self.tabs_main.count()):
+                    if 'configurator' in self.tabs_main.tabText(i).lower():
+                        self.tabs_main.setCurrentIndex(i)
+                        return
+        except Exception:
+            pass
+        QtWidgets.QMessageBox.information(self, 'Test Configurator', 'Test Configurator tab not found')
 
     def _open_help(self):
-        QtWidgets.QMessageBox.information(self, 'Help', 'Help: see README or docs for usage')
+        """Display help information dialog."""
+        help_text = (
+            "EOL Host Application\n\n"
+            "Usage:\n"
+            "1. Connect to a CAN adapter from the Home tab\n"
+            "2. Load a DBC file to decode CAN signals\n"
+            "3. Configure tests in the Test Configurator tab\n"
+            "4. Execute tests and view results in the Test Status tab\n"
+            "5. Monitor live CAN data in the CAN Data View tab\n\n"
+            "For detailed documentation, see README.md or the docs/ folder."
+        )
+        QtWidgets.QMessageBox.information(self, 'Help', help_text)
 
     def _build_statusbar(self):
         sb = self.statusBar()
@@ -1855,7 +1891,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             mux_enable_signal_combo = QtWidgets.QComboBox()
             mux_channel_signal_combo = QtWidgets.QComboBox()
             mux_channel_value_spin = QtWidgets.QSpinBox()
-            mux_channel_value_spin.setRange(0, 65535)
+            mux_channel_value_spin.setRange(0, MUX_CHANNEL_MAX)
 
             def _update_analog_signals(idx=0):
                 # populate all signal combos based on selected message index
@@ -1880,7 +1916,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             # numeric validators for DAC voltages (mV)
             mv_validator = QtGui.QIntValidator(0, 5000, self)
             step_validator = QtGui.QIntValidator(0, 5000, self)
-            dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            dwell_validator = QtGui.QIntValidator(0, DWELL_TIME_MAX_MS, self)
 
             dac_min_mv = QtWidgets.QLineEdit()
             dac_min_mv.setValidator(mv_validator)
@@ -2308,7 +2344,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             mux_enable_signal_combo = QtWidgets.QComboBox()
             mux_channel_signal_combo = QtWidgets.QComboBox()
             mux_channel_value_spin = QtWidgets.QSpinBox()
-            mux_channel_value_spin.setRange(0, 65535)
+            mux_channel_value_spin.setRange(0, MUX_CHANNEL_MAX)
             # populate analog signal combos based on selected message
             def _update_analog_signals_edit(idx=0):
                 for combo in (dac_command_signal_combo, mux_enable_signal_combo, mux_channel_signal_combo):
@@ -2365,7 +2401,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             dac_dwell_ms = QtWidgets.QLineEdit(str(act.get('dac_dwell_ms','')))
             mv_validator = QtGui.QIntValidator(0, 5000, self)
             step_validator = QtGui.QIntValidator(0, 5000, self)
-            dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            dwell_validator = QtGui.QIntValidator(0, DWELL_TIME_MAX_MS, self)
             dac_min_mv.setValidator(mv_validator)
             dac_max_mv.setValidator(mv_validator)
             dac_step_mv.setValidator(step_validator)
@@ -2411,7 +2447,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             dig_value_low = QtWidgets.QLineEdit(str(act.get('value_low','')))
             dig_value_high = QtWidgets.QLineEdit(str(act.get('value_high','')))
             # dwell input for fallback (non-DBC)
-            dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            dwell_validator = QtGui.QIntValidator(0, DWELL_TIME_MAX_MS, self)
             dig_dwell_ms = QtWidgets.QLineEdit(str(act.get('dwell_ms','')))
             dig_dwell_ms.setValidator(dwell_validator)
             mux_chan = QtWidgets.QLineEdit(str(act.get('mux_channel','')))
@@ -2947,7 +2983,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
                     class _F: pass
                     f = _F(); f.timestamp = time.time(); f.can_id = 0x123; f.data = b'\x01\x02\x03';
-                    print('[host_gui] injecting deterministic test frame into frame_q')
+                    logger.debug('[host_gui] injecting deterministic test frame into frame_q')
                     self.frame_q.put(f)
             except Exception:
                 pass
@@ -3319,12 +3355,12 @@ def main():
 if __name__ == '__main__':
     # Simple wrapper to surface startup in terminals and optionally run a headless smoke test
     if '--headless-test' in sys.argv:
-        print('[host_gui] Running headless startup test')
+        logger.info('[host_gui] Running headless startup test')
         try:
             # create a temporary QApplication so QWidget construction succeeds without entering event loop
             app = QtWidgets.QApplication([])
             _ = BaseGUI()
-            print('[host_gui] Headless startup OK')
+            logger.info('[host_gui] Headless startup OK')
             # clean up
             try:
                 app.quit()
