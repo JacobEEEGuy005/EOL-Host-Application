@@ -3606,19 +3606,12 @@ class BaseGUI(QtWidgets.QMainWindow):
                     else:
                         adapter_frame = frame
                     
-                    # Decode signals - ensure DBC is available
-                    if not self.dbc_service.is_loaded() and getattr(self, '_dbc_db', None) is not None:
-                        # DBC was loaded via legacy method, try to load it into service
-                        try:
-                            # If we have legacy _dbc_db, we need to ensure service has it too
-                            # This is a sync issue - for now, fall through to legacy code
-                            pass
-                        except Exception:
-                            pass
-                    
                     # Decode signals
                     signal_values = self.signal_service.decode_frame(adapter_frame)
-                    logger.debug(f"SignalService decoded {len(signal_values)} signals from frame 0x{getattr(frame, 'can_id', 0):X}")
+                    if signal_values:
+                        logger.debug(f"SignalService decoded {len(signal_values)} signals from frame 0x{getattr(frame, 'can_id', 0):X}")
+                    else:
+                        logger.debug(f"SignalService returned no signals for frame 0x{getattr(frame, 'can_id', 0):X} (DBC loaded: {self.dbc_service.is_loaded() if self.dbc_service else False})")
                     
                     # Only proceed if we got signal values
                     if signal_values:
