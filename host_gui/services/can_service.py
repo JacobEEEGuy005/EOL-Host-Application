@@ -113,18 +113,20 @@ class CanService:
         except (ValueError, TypeError):
             self.bitrate = CAN_BITRATE_DEFAULT
     
-    def connect(self, adapter_type: str) -> bool:
-        """Connect to a CAN adapter of the specified type.
+    def connect(self, adapter_type: str, max_retries: int = 3, retry_delay: float = 0.5) -> bool:
+        """Connect to a CAN adapter of the specified type with retry logic.
         
         Args:
             adapter_type: Type of adapter ('SimAdapter', 'PCAN', 'PythonCAN', 'Canalystii', 'SocketCAN')
+            max_retries: Maximum number of connection retry attempts (default: 3)
+            retry_delay: Delay between retries in seconds (default: 0.5)
             
         Returns:
             True if connection successful, False otherwise
             
         Raises:
             ValueError: If adapter_type is not supported
-            RuntimeError: If adapter initialization fails
+            CanAdapterError: If adapter initialization fails after retries
         """
         if self.is_connected():
             logger.warning("Attempted to connect when adapter already connected")
@@ -132,7 +134,10 @@ class CanService:
         
         logger.info(f"Connecting to adapter type: {adapter_type}")
         
-        # Try to instantiate the selected adapter
+        # Retry logic for connection attempts
+        for attempt in range(max_retries):
+            try:
+                # Try to instantiate the selected adapter
         if adapter_type == 'SimAdapter':
             if SimAdapter is None:
                 raise RuntimeError("SimAdapter not available")
@@ -188,14 +193,31 @@ class CanService:
                         raise CanAdapterError(f"Failed to open SocketCAN adapter: {e}",
                                              adapter_type='SocketCAN', operation='connect', original_error=e)
         
-        else:
-            raise ValueError(f"Unknown adapter type: {adapter_type}")
+                else:
+                    raise ValueError(f"Unknown adapter type: {adapter_type}")
+                
+                # Start background worker for frame reception
+                self.worker = AdapterWorker(self.adapter, self.frame_queue)
+                self.worker.start()
+                logger.info(f"Successfully connected to {self.adapter_name} adapter")
+                return True
+                
+            except CanAdapterError:
+                # Re-raise CanAdapterError as-is (already has context)
+                raise
+            except Exception as e:
+                # Wrap other exceptions
+                if attempt < max_retries:
+                    logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}, retrying...")
+                    time_module.sleep(retry_delay)
+                    continue
+                else:
+                    # Final attempt failed, raise CanAdapterError
+                    raise CanAdapterError(f"Failed to connect to {adapter_type} after {max_retries} attempts: {e}",
+                                         adapter_type=adapter_type, operation='connect', original_error=e)
         
-        # Start background worker for frame reception
-        self.worker = AdapterWorker(self.adapter, self.frame_queue)
-        self.worker.start()
-        logger.info(f"Successfully connected to {self.adapter_name} adapter")
-        return True
+        # Should not reach here, but return False if all retries exhausted
+        return False
     
     def disconnect(self):
         """Disconnect from the current adapter and clean up resources."""
