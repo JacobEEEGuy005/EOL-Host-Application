@@ -172,7 +172,7 @@ except ImportError:
 # from host_gui.services.can_service import AdapterWorker
 class TestRunner:
     """Lightweight test runner that encapsulates single-test execution logic.
-    
+
     This class handles the execution of individual test cases, including:
     - Digital tests: Setting relay states and verifying feedback
     - Analog tests: Stepping DAC voltages and monitoring feedback signals
@@ -270,7 +270,7 @@ class TestRunner:
                                 if self.dbc_service is not None:
                                     return self.dbc_service.encode_message(msg, enc)
                                 else:
-                                    return msg.encode(enc)
+                                return msg.encode(enc)
                             except Exception:
                                 pass
                     # fallback raw
@@ -340,7 +340,7 @@ class TestRunner:
                                                 if self.dbc_service is not None:
                                                     decoded = self.dbc_service.decode_message(target_msg, raw)
                                                 else:
-                                                    decoded = target_msg.decode(raw)
+                                                decoded = target_msg.decode(raw)
                                                 observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
                                                 return True, observed_info
                                             except Exception:
@@ -465,7 +465,7 @@ class TestRunner:
                                     if self.signal_service is not None:
                                         ts, val = self.signal_service.get_latest_signal(fb_mid, fb)
                                     else:
-                                        ts, val = gui.get_latest_signal(fb_mid, fb)
+                                    ts, val = gui.get_latest_signal(fb_mid, fb)
                                 else:
                                     candidates = []
                                     for k, (t, v) in gui._signal_values.items():
@@ -660,61 +660,61 @@ class TestRunner:
                             target_msg = gui._find_message_by_id(can_id)
                     else:
                         target_msg = None
-                    if target_msg is not None:
-                        for sig_name in signals:
-                            encode_data[sig_name] = signals[sig_name]
-                            # check if this signal is muxed
-                            for sig in target_msg.signals:
-                                if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                    mux_value = sig.multiplexer_ids[0]
-                                    break
-                        if mux_value is not None:
-                            encode_data['MessageType'] = mux_value
-                        else:
-                            # If this message has a MessageType signal with defined choices,
-                            # try to infer the correct selector for non-muxed commands
-                            # (e.g. DAC commands require MessageType=18).
-                            try:
-                                mtype_sig = None
-                                for s in target_msg.signals:
-                                    if getattr(s, 'name', '') == 'MessageType':
-                                        mtype_sig = s
+                        if target_msg is not None:
+                            for sig_name in signals:
+                                encode_data[sig_name] = signals[sig_name]
+                                # check if this signal is muxed
+                                for sig in target_msg.signals:
+                                    if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                        mux_value = sig.multiplexer_ids[0]
                                         break
-                                if mtype_sig is not None and 'MessageType' not in encode_data:
-                                    choices = getattr(mtype_sig, 'choices', None) or {}
-                                    # simple heuristics: match substrings from signal name to choice name
-                                    for sig_name in signals:
-                                        sname_up = str(sig_name).upper()
-                                        for val, cname in (choices.items() if hasattr(choices, 'items') else []):
-                                            try:
-                                                if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
-                                                    encode_data['MessageType'] = val
-                                                    raise StopIteration
-                                                if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
-                                                    encode_data['MessageType'] = val
-                                                    raise StopIteration
-                                                if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
-                                                    encode_data['MessageType'] = val
-                                                    raise StopIteration
-                                            except StopIteration:
-                                                break
-                                        if 'MessageType' in encode_data:
+                            if mux_value is not None:
+                                encode_data['MessageType'] = mux_value
+                            else:
+                                # If this message has a MessageType signal with defined choices,
+                                # try to infer the correct selector for non-muxed commands
+                                # (e.g. DAC commands require MessageType=18).
+                                try:
+                                    mtype_sig = None
+                                    for s in target_msg.signals:
+                                        if getattr(s, 'name', '') == 'MessageType':
+                                            mtype_sig = s
                                             break
-                            except Exception:
-                                pass
-                        try:
+                                    if mtype_sig is not None and 'MessageType' not in encode_data:
+                                        choices = getattr(mtype_sig, 'choices', None) or {}
+                                        # simple heuristics: match substrings from signal name to choice name
+                                        for sig_name in signals:
+                                            sname_up = str(sig_name).upper()
+                                            for val, cname in (choices.items() if hasattr(choices, 'items') else []):
+                                                try:
+                                                    if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
+                                                        encode_data['MessageType'] = val
+                                                        raise StopIteration
+                                                    if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
+                                                        encode_data['MessageType'] = val
+                                                        raise StopIteration
+                                                    if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
+                                                        encode_data['MessageType'] = val
+                                                        raise StopIteration
+                                                except StopIteration:
+                                                    break
+                                            if 'MessageType' in encode_data:
+                                                break
+                                except Exception:
+                                    pass
+                            try:
                             if self.dbc_service is not None:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
                             else:
                                 data_bytes = target_msg.encode(encode_data)
-                        except Exception:
-                            # fallback to single byte
-                            try:
-                                if len(signals) == 1:
-                                    v = list(signals.values())[0]
-                                    data_bytes = bytes([int(v) & 0xFF])
                             except Exception:
-                                data_bytes = b''
+                                # fallback to single byte
+                                try:
+                                    if len(signals) == 1:
+                                        v = list(signals.values())[0]
+                                        data_bytes = bytes([int(v) & 0xFF])
+                                except Exception:
+                                    data_bytes = b''
                     else:
                         try:
                             if len(signals) == 1:
@@ -749,25 +749,25 @@ class TestRunner:
                             logger.warning(f"Failed to send frame via service: {e}")
                     else:
                         # Legacy: use direct adapter
-                        if AdapterFrame is not None:
-                            f = AdapterFrame(can_id=can_id, data=data_bytes)
+                    if AdapterFrame is not None:
+                        f = AdapterFrame(can_id=can_id, data=data_bytes)
                             logger.debug(f'Signals: {signals}')
                             logger.debug(f'Encode data: {encode_data}')
                             logger.debug(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
-                        else:
-                            class F: pass
-                            f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
-                        try:
+                    else:
+                        class F: pass
+                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
+                    try:
                             if gui.can_service is not None and gui.can_service.is_connected():
                                 gui.can_service.send_frame(f)
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
                         # Loopback handled by adapter if supported
                         if gui.can_service is not None and gui.can_service.is_connected() and hasattr(gui.can_service.adapter, 'loopback'):
-                            try:
+                        try:
                                 gui.can_service.adapter.loopback(f)
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
                 success = False
                 info = ''
@@ -801,32 +801,39 @@ class TestRunner:
                             _encode_and_send({mux_enable_sig: 1, mux_channel_sig: int(mux_channel_value)})
                         else:
                             _encode_and_send({mux_enable_sig: 1})
-                    # 5) Hold initial dwell and collect feedback data point
-                    _nb_sleep(float(dwell_ms) / 1000.0)
-                    # Collect feedback value for initial DAC voltage
-                    if fb_signal and fb_msg_id:
-                        try:
-                            ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
-                            if fb_val is not None:
-                                gui._update_plot(dac_min, fb_val, test_name)
-                        except Exception:
-                            pass
-                    
-                    # 6) Ramp DAC up by step, holding for dwell each step
-                    cur = int(dac_min)
-                    while cur < int(dac_max):
-                        cur = min(cur + int(dac_step), int(dac_max))
-                        if dac_cmd_sig:
-                            _encode_and_send({dac_cmd_sig: int(cur)})
+                    # 5) Hold initial dwell and collect multiple feedback data points
+                    # Continuously send DAC command (50ms period) and collect data during dwell
+                    if dac_cmd_sig:
+                        _collect_data_points_during_dwell(dac_min, dwell_ms, dac_cmd_sig, fb_signal, fb_msg_id)
+                    else:
+                        # Fallback if no DAC command signal (shouldn't happen in normal operation)
                         _nb_sleep(float(dwell_ms) / 1000.0)
-                        # Collect feedback value at this DAC voltage step
                         if fb_signal and fb_msg_id:
                             try:
                                 ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                 if fb_val is not None:
-                                    gui._update_plot(cur, fb_val, test_name)
+                                    gui._update_plot(dac_min, fb_val, test_name)
                             except Exception:
                                 pass
+                    
+                    # 6) Ramp DAC up by step, holding for dwell each step
+                    # During each step: continuously send DAC command (50ms period) and collect multiple data points
+                    cur = int(dac_min)
+                    while cur < int(dac_max):
+                        cur = min(cur + int(dac_step), int(dac_max))
+                        # Collect multiple data points during dwell, with periodic DAC command resends
+                        if dac_cmd_sig:
+                            _collect_data_points_during_dwell(cur, dwell_ms, dac_cmd_sig, fb_signal, fb_msg_id)
+                        else:
+                            # Fallback if no DAC command signal (shouldn't happen in normal operation)
+                            _nb_sleep(float(dwell_ms) / 1000.0)
+                            if fb_signal and fb_msg_id:
+                                try:
+                                    ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                    if fb_val is not None:
+                                        gui._update_plot(cur, fb_val, test_name)
+                                except Exception:
+                                    pass
                     success = True
                     info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
                 except Exception as e:
@@ -895,21 +902,21 @@ class TestRunner:
                                         pass
                             else:
                                 # Legacy fallback
-                                target_msg = None
-                                for m in getattr(gui._dbc_db, 'messages', []):
-                                    for s in getattr(m, 'signals', []):
-                                        if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                            target_msg = m
-                                            break
-                                    if target_msg:
+                            target_msg = None
+                            for m in getattr(gui._dbc_db, 'messages', []):
+                                for s in getattr(m, 'signals', []):
+                                    if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                        target_msg = m
                                         break
-                                if target_msg is not None:
-                                    try:
-                                        decoded = target_msg.decode(raw)
-                                        observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
-                                        return True, observed_info
-                                    except Exception:
-                                        pass
+                                if target_msg:
+                                    break
+                            if target_msg is not None:
+                                try:
+                                    decoded = target_msg.decode(raw)
+                                    observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
+                                    return True, observed_info
+                                except Exception:
+                                    pass
                         else:
                             observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
                             return True, observed_info
@@ -1010,7 +1017,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
                 try:
                     can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
-                except Exception:
+        except Exception:
                     can_bitrate = CAN_BITRATE_DEFAULT
             self.can_service = CanService(channel=can_channel, bitrate=can_bitrate)
             # frame_queue accessed via self.can_service.frame_queue
@@ -2905,7 +2912,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         if not can_connected:
             logger.warning("Run Sequence called but CAN adapter not connected")
             self.status_label.setText('CAN adapter not connected')
-            self.tabs_main.setCurrentIndex(self.status_tab_index)
+        self.tabs_main.setCurrentIndex(self.status_tab_index)
             QtWidgets.QMessageBox.warning(self, 'Adapter Not Connected', 'CAN adapter must be connected before running tests.\n\nPlease go to CAN Data View tab and click "Connect".')
             return
         
@@ -3007,22 +3014,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
-                if self._current_feedback and self._current_feedback[1]:
-                    ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
-                    if v is not None:
-                        try:
-                            self.feedback_signal_label.setText(str(v))
-                        except Exception:
-                            pass
-        except Exception:
-            self._current_feedback = None
-    
+                    self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
+                    if self._current_feedback and self._current_feedback[1]:
+                        ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
+                        if v is not None:
+                            try:
+                                self.feedback_signal_label.setText(str(v))
+                            except Exception:
+                                pass
+                except Exception:
+                    self._current_feedback = None
+
     def _on_test_finished(self, test_index: int, success: bool, info: str, exec_time: float) -> None:
         """Handle test finished signal from TestExecutionThread."""
         result = 'PASS' if success else 'FAIL'
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
         
         # Add to results table
         try:
@@ -3040,7 +3047,7 @@ class BaseGUI(QtWidgets.QMainWindow):
     
     def _on_test_failed(self, test_index: int, error: str, exec_time: float) -> None:
         """Handle test failed signal from TestExecutionThread."""
-        timestamp = datetime.now().strftime('%H:%M:%S')
+                timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Error: {error}')
         
         # Add to results table
@@ -3052,10 +3059,10 @@ class BaseGUI(QtWidgets.QMainWindow):
             pass
         
         # Clear current feedback
-        try:
-            self._current_feedback = None
-        except Exception:
-            pass
+                try:
+                    self._current_feedback = None
+                except Exception:
+                    pass
     
     def _on_sequence_finished(self, results: list, summary: str) -> None:
         """Handle sequence finished signal from TestExecutionThread."""
@@ -3142,21 +3149,21 @@ class BaseGUI(QtWidgets.QMainWindow):
                 if hasattr(self.can_service, 'is_connected') and self.can_service.is_connected():
                     self.can_service.disconnect()
                     logger.info("CanService disconnected")
-            except Exception as e:
+                    except Exception as e:
                 logger.warning(f"Error disconnecting CanService: {e}", exc_info=True)
         
         # Stop polling timer
         try:
             if hasattr(self, 'poll_timer') and self.poll_timer.isActive():
                 self.poll_timer.stop()
-        except Exception:
+                            except Exception:
             pass
         
         # Phase 4: Save window geometry and configuration
         if self.config_manager:
             try:
                 self.config_manager.save_window_geometry(self.saveGeometry())
-            except Exception as e:
+                    except Exception as e:
                 logger.debug(f"Failed to save window geometry: {e}")
         
         logger.info("BaseGUI cleanup complete")
@@ -3194,7 +3201,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         """Connect or disconnect adapter using CanService (Phase 1 implementation)."""
         try:
             selected = self.device_combo.currentText()
-        except Exception:
+                            except Exception:
             selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
         
         logger.info(f"toggle_adapter called (service); connected={self.can_service.is_connected()}; selected={selected}")
@@ -3207,14 +3214,14 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self.start_btn.setText('Connect')
             self.conn_indicator.setText('Adapter: stopped')
             logger.info('Adapter disconnected via service')
-            return
+                return
         
         # Connect
         try:
             success = self.can_service.connect(selected)
             if not success:
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect to {selected}')
-                return
+                    return
         except (ValueError, RuntimeError) as e:
             logger.error(f"Adapter connection failed: {e}", exc_info=True)
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect: {e}')
@@ -3223,24 +3230,24 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Adapter connected via service
         
         # Prompt for DBC file and load
-        try:
-            fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
+            try:
+                fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
         except Exception as e:
             logger.warning(f"File dialog error: {e}")
-            fname = ''
-        
+                fname = ''
+
         if fname and self.dbc_service is not None:
             # Update Test Configurator path editor if present
-            try:
-                self.dbc_path_edit.setText(fname)
-            except Exception:
-                pass
-            
+                try:
+                    self.dbc_path_edit.setText(fname)
+                except Exception:
+                    pass
+
             try:
                 self.dbc_service.load_dbc_file(fname)
                 
                 # Build filters from DBC messages and apply to adapter
-                filters = []
+                        filters = []
                 for m in self.dbc_service.get_all_messages():
                     msg_id = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
                     if msg_id is not None:
@@ -3256,38 +3263,38 @@ class BaseGUI(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load DBC: {e}')
         
         # Start frame polling
-        self.poll_timer.start()
-        
+                self.poll_timer.start()
+
         # Update UI
-        if self.start_btn is not None:
-            self.start_btn.setText('Disconnect')
+            if self.start_btn is not None:
+                self.start_btn.setText('Disconnect')
         self.conn_indicator.setText(f'Adapter: {self.can_service.adapter_name}')
         logger.info(f'Adapter connected via service: {self.can_service.adapter_name}')
         
         # Switch to Live Data tab
-        try:
-            if hasattr(self, 'stack') and hasattr(self, 'tabs'):
-                self.stack.setCurrentWidget(self.tabs)
-                try:
-                    self.tabs.setCurrentWidget(self.live_widget)
-                except Exception:
-                    for i in range(self.tabs.count()):
-                        if self.tabs.tabText(i).lower() == 'live':
-                            self.tabs.setCurrentIndex(i)
-                            break
-        except Exception:
-            pass
+            try:
+                if hasattr(self, 'stack') and hasattr(self, 'tabs'):
+                    self.stack.setCurrentWidget(self.tabs)
+                    try:
+                        self.tabs.setCurrentWidget(self.live_widget)
+                    except Exception:
+                        for i in range(self.tabs.count()):
+                            if self.tabs.tabText(i).lower() == 'live':
+                                self.tabs.setCurrentIndex(i)
+                                break
+            except Exception:
+                pass
         
         # Optional test frame injection
-        try:
-            if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
+            try:
+                if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
                 from backend.adapters.interface import Frame
                 test_frame = Frame(can_id=0x123, data=b'\x01\x02\x03', timestamp=time.time())
                 logger.debug('[host_gui] injecting deterministic test frame into frame_queue')
                 if self.can_service is not None:
                     self.can_service.frame_queue.put(test_frame)
-        except Exception:
-            pass
+            except Exception:
+                pass
     
     # Adapter control
     def toggle_adapter(self):
@@ -3347,7 +3354,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             if self.can_service is not None:
                 while not self.can_service.frame_queue.empty():
                     f = self.can_service.frame_queue.get_nowait()
-                    self._add_frame_row(f)
+                self._add_frame_row(f)
         except Exception as e:
             logger.debug(f"Error polling frames: {e}")
 
@@ -3408,7 +3415,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             try:
                 if hasattr(dbc_service, 'is_loaded'):
                     dbc_loaded = dbc_service.is_loaded()
-            except Exception:
+        except Exception:
                 pass
             
             # Also check legacy _dbc_db
@@ -3464,45 +3471,45 @@ class BaseGUI(QtWidgets.QMainWindow):
                             val = sig_val.value
                             ts = sig_val.timestamp or time.time()
                             
-                            if key in self._signal_rows:
-                                row = self._signal_rows[key]
-                                try:
-                                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
-                                except Exception:
-                                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
-                                self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
+            if key in self._signal_rows:
+                row = self._signal_rows[key]
+                try:
+                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                except Exception:
+                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
                                 # Sync legacy cache
                                 self._signal_values[key] = (ts, val)
-                            else:
-                                r = self.signal_table.rowCount()
-                                self.signal_table.insertRow(r)
-                                try:
-                                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
-                                except Exception:
-                                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
+            else:
+                r = self.signal_table.rowCount()
+                self.signal_table.insertRow(r)
+                try:
+                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                except Exception:
+                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
                                 self.signal_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(sig_val.message_name or '')))
-                                self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
-                                self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
-                                self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
-                                self._signal_rows[key] = r
+                self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
+                self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
+                self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
+                self._signal_rows[key] = r
                                 # Signal values stored in signal_service
                             
                             # Update feedback label if this is the current monitored signal
+                    try:
+                        cur = getattr(self, '_current_feedback', None)
+                        if cur and cur[1] and str(cur[1]) == str(sig_name):
                             try:
-                                cur = getattr(self, '_current_feedback', None)
-                                if cur and cur[1] and str(cur[1]) == str(sig_name):
-                                    try:
                                         cur_id = int(cur[0]) if cur[0] is not None else None
-                                        this_id = int(fid)
-                                        if cur_id is not None and this_id is not None and cur_id == this_id:
-                                            try:
+                                this_id = int(fid)
+                            if cur_id is not None and this_id is not None and cur_id == this_id:
+                                try:
                                                 self.feedback_signal_label.setText(str(val))
-                                            except Exception:
-                                                pass
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                         return  # Successfully decoded via service
                 except Exception as e:
                     logger.debug(f"SignalService decode failed: {e}", exc_info=True)
@@ -3528,7 +3535,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Use SignalService if available
         if self.signal_service is not None:
             return self.signal_service.get_latest_signal(can_id, signal_name)
-        return (None, None)
+            return (None, None)
 
     def _send_frame(self):
         """Send a CAN frame manually via the adapter.
@@ -3543,8 +3550,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Phase 1: Check CanService first
         if self.can_service is not None:
             if not self.can_service.is_connected():
-                QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
-                return
+            QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
+            return
             
             try:
                 can_id_text = self.send_id.text()
@@ -3573,7 +3580,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                     # Log message
                     self._append_msg_log('TX', frame)
                     logger.debug(f"Sent frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
-                else:
+            else:
                     QtWidgets.QMessageBox.warning(self, 'Send Failed', 'Failed to send frame')
                 return
             except ValueError as e:
