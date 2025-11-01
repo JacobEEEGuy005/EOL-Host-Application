@@ -49,16 +49,19 @@ class SignalService:
             List of SignalValue objects (empty if decoding fails or no DBC loaded)
         """
         if not self.dbc_service.is_loaded():
+            logger.debug("SignalService.decode_frame: DBC not loaded in service")
             return []
         
         try:
             can_id = int(getattr(frame, 'can_id', 0))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug(f"SignalService.decode_frame: Invalid CAN ID: {e}")
             return []
         
         # Find message
         message = self.dbc_service.find_message_by_id(can_id)
         if message is None:
+            logger.debug(f"SignalService.decode_frame: No message found for CAN ID 0x{can_id:X}")
             return []
         
         # Get frame data
@@ -66,19 +69,34 @@ class SignalService:
         if isinstance(raw_data, str):
             try:
                 raw_data = bytes.fromhex(raw_data)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.debug(f"SignalService.decode_frame: Invalid hex data: {e}")
                 raw_data = b''
+        
+        if not raw_data:
+            logger.debug(f"SignalService.decode_frame: Empty frame data for CAN ID 0x{can_id:X}")
+            return []
         
         # Decode message
         try:
             decoded = self.dbc_service.decode_message(message, raw_data)
-        except ValueError:
+        except ValueError as e:
+            logger.warning(f"SignalService.decode_frame: Failed to decode message 0x{can_id:X}: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"SignalService.decode_frame: Unexpected error decoding 0x{can_id:X}: {e}", exc_info=True)
+            return []
+        
+        if not decoded:
+            logger.warning(f"SignalService.decode_frame: Decoded message 0x{can_id:X} returned empty dict")
             return []
         
         # Create SignalValue objects and update cache
         timestamp = getattr(frame, 'timestamp', None) or time.time()
         signal_values = []
         message_name = getattr(message, 'name', None)
+        
+        logger.debug(f"SignalService.decode_frame: Decoded {len(decoded)} signals from message 0x{can_id:X} ({message_name or 'unknown'})")
         
         for signal_name, value in decoded.items():
             # Try to get numeric value (prefer numeric for test comparisons)
@@ -99,6 +117,7 @@ class SignalService:
             # Update cache
             key = signal_value.key
             self._signal_values[key] = (timestamp, signal_value.value)
+            logger.debug(f"SignalService: Cached signal {key} = {signal_value.value}")
         
         return signal_values
     

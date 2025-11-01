@@ -3616,7 +3616,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             self._decode_and_add_signals(frame)
         except Exception as e:
-            logger.debug(f"Error decoding signals from frame: {e}")
+            logger.error(f"Error decoding signals from frame: {e}", exc_info=True)
 
     def _decode_and_add_signals(self, frame):
         """Decode a received CAN frame using loaded DBC and append each signal to Signal View.
@@ -3658,10 +3658,21 @@ class BaseGUI(QtWidgets.QMainWindow):
                     
                     # Decode signals
                     signal_values = self.signal_service.decode_frame(adapter_frame)
+                    can_id = getattr(frame, 'can_id', 0)
                     if signal_values:
-                        logger.debug(f"SignalService decoded {len(signal_values)} signals from frame 0x{getattr(frame, 'can_id', 0):X}")
+                        logger.info(f"SignalService decoded {len(signal_values)} signals from frame 0x{can_id:X}")
                     else:
-                        logger.debug(f"SignalService returned no signals for frame 0x{getattr(frame, 'can_id', 0):X} (DBC loaded: {self.dbc_service.is_loaded() if self.dbc_service else False})")
+                        # More detailed debug logging
+                        dbc_loaded = self.dbc_service.is_loaded() if self.dbc_service else False
+                        legacy_dbc = getattr(self, '_dbc_db', None) is not None
+                        logger.warning(f"SignalService returned no signals for frame 0x{can_id:X} - DBC service loaded: {dbc_loaded}, Legacy DBC: {legacy_dbc}")
+                        if self.dbc_service:
+                            # Try to find the message
+                            msg = self.dbc_service.find_message_by_id(can_id)
+                            if msg is None:
+                                logger.warning(f"No message found in DBC for CAN ID 0x{can_id:X}")
+                            else:
+                                logger.warning(f"Message found (0x{can_id:X}) but decode returned empty - message: {getattr(msg, 'name', 'unknown')}")
                     
                     # Only proceed if we got signal values
                     if signal_values:
