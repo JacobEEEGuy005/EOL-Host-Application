@@ -2336,6 +2336,14 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         def on_accept():
             nm = name_edit.text().strip() or f"test-{len(self._tests)+1}"
+            # Validate name is not empty and unique
+            if not nm or not nm.strip():
+                QtWidgets.QMessageBox.warning(dlg, 'Invalid Name', 'Test name cannot be empty')
+                return
+            if not self._is_test_name_unique(nm):
+                QtWidgets.QMessageBox.warning(dlg, 'Duplicate Name', f'A test with name "{nm}" already exists. Please choose a different name.')
+                return
+            
             t = type_combo.currentText()
             feedback = feedback_edit.text().strip()
             # build actuation dict depending on type
@@ -2478,6 +2486,13 @@ class BaseGUI(QtWidgets.QMainWindow):
                 'actuation': act,
                 'created_at': datetime.utcnow().isoformat() + 'Z'
             }
+            
+            # Validate test before adding
+            is_valid, error_msg = self._validate_test(entry)
+            if not is_valid:
+                QtWidgets.QMessageBox.warning(dlg, 'Invalid Test Configuration', f'Cannot create test: {error_msg}')
+                return
+            
             self._tests.append(entry)
             self.test_list.addItem(entry['name'])
             # select the newly added test and update JSON preview
@@ -2492,6 +2507,76 @@ class BaseGUI(QtWidgets.QMainWindow):
         btns.rejected.connect(dlg.reject)
         dlg.exec()
 
+    def _is_test_name_unique(self, name: str, exclude_index: int = None) -> bool:
+        """Check if test name is unique, optionally excluding a specific index (for edit).
+        
+        Args:
+            name: Test name to check
+            exclude_index: Index to exclude from check (current test being edited)
+            
+        Returns:
+            True if name is unique, False otherwise
+        """
+        if not name or not name.strip():
+            return False
+        name = name.strip()
+        for i, test in enumerate(self._tests):
+            if i == exclude_index:
+                continue
+            if test.get('name', '').strip() == name:
+                return False
+        return True
+    
+    def _validate_test(self, test_data: dict) -> tuple[bool, str]:
+        """Validate test data.
+        
+        Args:
+            test_data: Dictionary containing test configuration
+            
+        Returns:
+            Tuple of (is_valid, error_message). If valid, error_message is empty.
+        """
+        # Check name
+        name = test_data.get('name', '').strip()
+        if not name:
+            return False, "Test name is required and cannot be empty"
+        
+        # Check type
+        test_type = test_data.get('type')
+        if test_type not in ('digital', 'analog'):
+            return False, f"Invalid test type: {test_type}. Must be 'digital' or 'analog'"
+        
+        # Check actuation
+        actuation = test_data.get('actuation', {})
+        if not actuation:
+            return False, "Test actuation configuration is required"
+        
+        act_type = actuation.get('type')
+        if act_type != test_type:
+            return False, f"Actuation type '{act_type}' does not match test type '{test_type}'"
+        
+        # Type-specific validation
+        if test_type == 'analog':
+            if actuation.get('dac_can_id') is None:
+                return False, "Analog test requires DAC CAN ID"
+            if not actuation.get('dac_command_signal'):
+                return False, "Analog test requires DAC command signal"
+            # Validate DAC voltage ranges
+            dac_min = actuation.get('dac_min_mv')
+            dac_max = actuation.get('dac_max_mv')
+            if dac_min is not None and not (DAC_VOLTAGE_MIN <= dac_min <= DAC_VOLTAGE_MAX):
+                return False, f"DAC min voltage {dac_min} out of range ({DAC_VOLTAGE_MIN}-{DAC_VOLTAGE_MAX} mV)"
+            if dac_max is not None and not (DAC_VOLTAGE_MIN <= dac_max <= DAC_VOLTAGE_MAX):
+                return False, f"DAC max voltage {dac_max} out of range ({DAC_VOLTAGE_MIN}-{DAC_VOLTAGE_MAX} mV)"
+            if dac_min is not None and dac_max is not None and dac_max < dac_min:
+                return False, f"DAC max voltage {dac_max} cannot be less than min voltage {dac_min}"
+        
+        elif test_type == 'digital':
+            if actuation.get('can_id') is None:
+                return False, "Digital test requires CAN ID"
+        
+        return True, ""
+    
     def _on_delete_test(self):
         it = self.test_list.currentRow()
         if it < 0:
@@ -2509,7 +2594,45 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         Saves all configured tests to backend/data/tests/tests.json
         in the format defined by the test profile schema.
+        
+        Validates all tests before saving and creates backup of existing file.
         """
+        # Check if there are tests to save
+        if not self._tests:
+            QtWidgets.QMessageBox.warning(self, 'No Tests', 'No tests to save. Create tests first.')
+            return
+        
+        # Validate all tests before saving
+        validation_errors = []
+        for i, test in enumerate(self._tests):
+            is_valid, error_msg = self._validate_test(test)
+            if not is_valid:
+                validation_errors.append(f"Test {i+1} '{test.get('name', '<unnamed>')}': {error_msg}")
+        
+        if validation_errors:
+            error_text = "Cannot save tests with validation errors:\n\n" + "\n".join(validation_errors)
+            QtWidgets.QMessageBox.warning(self, 'Validation Errors', error_text)
+            return
+        
+        # Check for duplicate names
+        duplicate_names = []
+        seen_names = set()
+        for test in self._tests:
+            name = test.get('name', '').strip()
+            if name in seen_names:
+                duplicate_names.append(name)
+            seen_names.add(name)
+        
+        if duplicate_names:
+            reply = QtWidgets.QMessageBox.warning(
+                self, 'Duplicate Names',
+                f"The following test names appear multiple times: {', '.join(set(duplicate_names))}\n\n"
+                "This may cause issues with test reordering. Continue anyway?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+            )
+            if reply == QtWidgets.QMessageBox.No:
+                return
+        
         default_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
         os.makedirs(default_dir, exist_ok=True)
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -2517,18 +2640,37 @@ class BaseGUI(QtWidgets.QMainWindow):
         )
         if not file_path:
             return  # User cancelled
+        
+        # Check if file exists and create backup
+        if os.path.exists(file_path):
+            backup_path = file_path + '.bak'
+            try:
+                import shutil
+                shutil.copy2(file_path, backup_path)
+                logger.info(f"Created backup: {backup_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create backup: {e}")
+        
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump({'tests': self._tests}, f, indent=2)
-            QtWidgets.QMessageBox.information(self, 'Saved', f'Saved tests to {file_path}')
+            QtWidgets.QMessageBox.information(self, 'Saved', f'Saved {len(self._tests)} test(s) to {file_path}')
+            logger.info(f"Saved {len(self._tests)} tests to {file_path}")
+        except json.JSONEncodeError as e:
+            QtWidgets.QMessageBox.critical(self, 'JSON Error', f'Failed to encode tests as JSON: {e}')
+            logger.error(f"JSON encoding error: {e}", exc_info=True)
+        except IOError as e:
+            QtWidgets.QMessageBox.critical(self, 'File Error', f'Failed to write file: {e}')
+            logger.error(f"File write error: {e}", exc_info=True)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save tests: {e}')
+            logger.error(f"Unexpected error saving tests: {e}", exc_info=True)
 
     def _on_load_tests(self) -> None:
         """Load test configuration from JSON file.
         
         Loads tests from backend/data/tests/tests.json and populates
-        the test list. Validates test structure against schema.
+        the test list. Validates test structure and checks for duplicates.
         """
         default_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -2539,26 +2681,182 @@ class BaseGUI(QtWidgets.QMainWindow):
         if not os.path.exists(file_path):
             QtWidgets.QMessageBox.warning(self, 'Load Tests', 'Selected file does not exist')
             return
+        
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            self._tests = data.get('tests', [])
-            logger.info(f"Loaded {len(self._tests)} tests from {file_path}")
-            if not self._tests:
-                logger.warning(f"JSON file contains no tests: {file_path}")
-                QtWidgets.QMessageBox.warning(self, 'Load Tests', 'JSON file contains no tests. Expected a "tests" array.')
-                return
-            self.test_list.clear()
-            for t in self._tests:
-                self.test_list.addItem(t.get('name', '<unnamed>'))
-            QtWidgets.QMessageBox.information(self, 'Loaded', f'Loaded {len(self._tests)} tests from {os.path.basename(file_path)}')
+        except json.JSONDecodeError as e:
+            QtWidgets.QMessageBox.critical(
+                self, 'JSON Parse Error',
+                f'Failed to parse JSON file:\n{str(e)}\n\nFile may be corrupted or invalid.'
+            )
+            logger.error(f"JSON parse error loading {file_path}: {e}", exc_info=True)
+            return
+        except IOError as e:
+            QtWidgets.QMessageBox.critical(self, 'File Error', f'Failed to read file: {e}')
+            logger.error(f"File read error: {e}", exc_info=True)
+            return
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load tests: {e}')
+            logger.error(f"Unexpected error loading tests: {e}", exc_info=True)
+            return
+        
+        # Validate structure
+        if not isinstance(data, dict):
+            QtWidgets.QMessageBox.warning(self, 'Invalid Format', 'JSON file must contain an object with a "tests" array')
+            return
+        
+        loaded_tests = data.get('tests', [])
+        if not isinstance(loaded_tests, list):
+            QtWidgets.QMessageBox.warning(self, 'Invalid Format', 'JSON file "tests" field must be an array')
+            return
+        
+        if not loaded_tests:
+            QtWidgets.QMessageBox.warning(self, 'Load Tests', 'JSON file contains no tests. Expected a "tests" array.')
+            return
+        
+        # Validate each test and check for duplicates
+        validation_errors = []
+        duplicate_names = []
+        seen_names = set()
+        
+        for i, test in enumerate(loaded_tests):
+            if not isinstance(test, dict):
+                validation_errors.append(f"Test {i+1}: Not a valid object")
+                continue
+            
+            # Check name
+            name = test.get('name', '').strip()
+            if not name:
+                validation_errors.append(f"Test {i+1}: Missing or empty name")
+            
+            # Check for duplicates
+            if name in seen_names:
+                duplicate_names.append(name)
+            seen_names.add(name)
+            
+            # Validate test structure
+            is_valid, error_msg = self._validate_test(test)
+            if not is_valid:
+                validation_errors.append(f"Test {i+1} '{name}': {error_msg}")
+        
+        # Ask user about errors
+        if validation_errors:
+            error_text = "The loaded file contains validation errors:\n\n" + "\n".join(validation_errors[:10])
+            if len(validation_errors) > 10:
+                error_text += f"\n... and {len(validation_errors) - 10} more errors"
+            error_text += "\n\nContinue loading anyway?"
+            reply = QtWidgets.QMessageBox.warning(
+                self, 'Validation Errors', error_text,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+            )
+            if reply == QtWidgets.QMessageBox.No:
+                return
+        
+        if duplicate_names:
+            reply = QtWidgets.QMessageBox.warning(
+                self, 'Duplicate Names',
+                f"The file contains duplicate test names: {', '.join(set(duplicate_names))}\n\n"
+                "This may cause issues with test reordering. Continue loading anyway?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+            )
+            if reply == QtWidgets.QMessageBox.No:
+                return
+        
+        # Ask user if they want to merge or replace
+        if self._tests:
+            reply = QtWidgets.QMessageBox.question(
+                self, 'Merge or Replace?',
+                f'You currently have {len(self._tests)} test(s). How would you like to load the file?\n\n'
+                'Yes = Replace all current tests\n'
+                'No = Merge with current tests\n'
+                'Cancel = Do not load',
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No | QtWidgets.QMessageBox.Cancel
+            )
+            if reply == QtWidgets.QMessageBox.Cancel:
+                return
+            elif reply == QtWidgets.QMessageBox.Yes:
+                # Replace
+                self._tests = loaded_tests
+            else:
+                # Merge - add with renamed duplicates
+                existing_names = {t.get('name', '').strip() for t in self._tests}
+                merged_count = 0
+                for test in loaded_tests:
+                    original_name = test.get('name', '').strip()
+                    name = original_name
+                    counter = 1
+                    while name in existing_names:
+                        name = f"{original_name}_loaded_{counter}"
+                        counter += 1
+                    test['name'] = name
+                    self._tests.append(test)
+                    existing_names.add(name)
+                    merged_count += 1
+                QtWidgets.QMessageBox.information(
+                    self, 'Merged',
+                    f'Merged {merged_count} test(s) from file.\n'
+                    f'{merged_count - len(loaded_tests) + len(set(duplicate_names))} name(s) were renamed to avoid conflicts.'
+                )
+        else:
+            # No existing tests, just load
+            self._tests = loaded_tests
+        
+        # Update UI
+        self.test_list.clear()
+        for t in self._tests:
+            self.test_list.addItem(t.get('name', '<unnamed>'))
+        
+        logger.info(f"Loaded {len(loaded_tests)} tests from {file_path}")
+        QtWidgets.QMessageBox.information(
+            self, 'Loaded',
+            f'Loaded {len(loaded_tests)} test(s) from {os.path.basename(file_path)}\n'
+            f'Total tests now: {len(self._tests)}'
+        )
 
     def _on_test_list_reordered(self, parent, start, end, destination, row):
-        # Reorder self._tests to match the new order of the QListWidget
-        tests_dict = {t['name']: t for t in self._tests}
-        self._tests = [tests_dict[self.test_list.item(i).text()] for i in range(self.test_list.count())]
+        """Handle test list reordering via drag-and-drop.
+        
+        Uses index-based reordering to handle cases where duplicate names might exist.
+        """
+        try:
+            # Build new order based on current list widget order
+            new_order = []
+            for i in range(self.test_list.count()):
+                item = self.test_list.item(i)
+                if item is None:
+                    continue
+                item_text = item.text()
+                
+                # Find the test that matches this position
+                # Try to match by index first (handles duplicates correctly)
+                if i < len(self._tests):
+                    # Check if item text matches current test at this position
+                    current_test = self._tests[i]
+                    if current_test.get('name') == item_text:
+                        new_order.append(current_test)
+                        continue
+                
+                # Fallback: search by name (only if no duplicates)
+                found = False
+                for test in self._tests:
+                    if test.get('name') == item_text and test not in new_order:
+                        new_order.append(test)
+                        found = True
+                        break
+                
+                if not found:
+                    logger.warning(f"Could not find test matching list item '{item_text}' at position {i}")
+            
+            # Update _tests if we successfully matched all items
+            if len(new_order) == self.test_list.count() == len(self._tests):
+                self._tests = new_order
+                logger.debug(f"Reordered {len(new_order)} tests")
+            else:
+                logger.error(f"Reorder failed: expected {self.test_list.count()} items, matched {len(new_order)}, have {len(self._tests)} tests")
+        except Exception as e:
+            logger.error(f"Error during test reorder: {e}", exc_info=True)
+            QtWidgets.QMessageBox.warning(self, 'Reorder Error', f'Failed to reorder tests: {e}')
 
     def _on_select_test(self, current, previous=None):
         idx = self.test_list.currentRow()
@@ -2792,14 +3090,25 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Value - Low:', dig_value_low)
             digital_layout.addRow('Value - High:', dig_value_high)
             digital_layout.addRow('Dwell Time (ms):', dig_dwell_ms)
-            # fallback analog layout
+            # fallback analog layout - create widgets with validators and assign to variables
+            mv_validator = QtGui.QIntValidator(0, 5000, self)
+            step_validator = QtGui.QIntValidator(0, 5000, self)
+            dwell_validator = QtGui.QIntValidator(0, DWELL_TIME_MAX_MS, self)
+            dac_min_mv = QtWidgets.QLineEdit(str(act.get('dac_min_mv','')))
+            dac_min_mv.setValidator(mv_validator)
+            dac_max_mv = QtWidgets.QLineEdit(str(act.get('dac_max_mv','')))
+            dac_max_mv.setValidator(mv_validator)
+            dac_step_mv = QtWidgets.QLineEdit(str(act.get('dac_step_mv','')))
+            dac_step_mv.setValidator(step_validator)
+            dac_dwell_ms = QtWidgets.QLineEdit(str(act.get('dac_dwell_ms','')))
+            dac_dwell_ms.setValidator(dwell_validator)
             analog_layout.addRow('Command Message (free-text):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
             analog_layout.addRow('DAC Command (hex):', dac_cmd)
-            analog_layout.addRow('DAC Min Output (mV):', QtWidgets.QLineEdit(str(act.get('dac_min_mv',''))))
-            analog_layout.addRow('DAC Max Output (mV):', QtWidgets.QLineEdit(str(act.get('dac_max_mv',''))))
-            analog_layout.addRow('Step Change (mV):', QtWidgets.QLineEdit(str(act.get('dac_step_mv',''))))
-            analog_layout.addRow('Dwell Time (ms):', QtWidgets.QLineEdit(str(act.get('dac_dwell_ms',''))))
+            analog_layout.addRow('DAC Min Output (mV):', dac_min_mv)
+            analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
+            analog_layout.addRow('Step Change (mV):', dac_step_mv)
+            analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -2832,7 +3141,16 @@ class BaseGUI(QtWidgets.QMainWindow):
         v.addWidget(btns)
 
         def on_accept():
-            data['name'] = name_edit.text().strip() or data.get('name')
+            new_name = name_edit.text().strip()
+            if not new_name:
+                QtWidgets.QMessageBox.warning(dlg, 'Invalid Name', 'Test name cannot be empty')
+                return
+            # Check for duplicate name (excluding current test index)
+            if not self._is_test_name_unique(new_name, exclude_index=idx):
+                QtWidgets.QMessageBox.warning(dlg, 'Duplicate Name', f'A test with name "{new_name}" already exists. Please choose a different name.')
+                return
+            
+            data['name'] = new_name
             data['type'] = type_combo.currentText()
             # feedback
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -2846,7 +3164,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 data['feedback_signal'] = feedback_edit.text().strip()
 
             # actuation
-            if self._dbc_db is not None:
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
                 if data['type'] == 'digital':
                     can_id = dig_msg_combo.currentData() if 'dig_msg_combo' in locals() else None
                     sig = dig_signal_combo.currentText().strip() if 'dig_signal_combo' in locals() else ''
@@ -2913,16 +3231,47 @@ class BaseGUI(QtWidgets.QMainWindow):
                         dig_dwell = None
                     data['actuation'] = {'type':'digital','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip(),'dwell_ms':dig_dwell}
                 else:
+                    # Non-DBC analog test: read all fields
                     try:
-                        mux = int(mux_chan.text().strip(),0) if mux_chan.text().strip() else None
+                        mux_channel_val = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
                     except Exception:
-                        mux = None
+                        mux_channel_val = None
                     try:
-                        dac_id = int(dac_can.text().strip(),0) if dac_can.text().strip() else None
+                        dac_id = int(dac_can.text().strip(), 0) if dac_can.text().strip() else None
                     except Exception:
                         dac_id = None
-                    data['actuation'] = {'type':'analog','mux_channel':mux,'dac_can_id':dac_id,'dac_command':dac_cmd.text().strip()}
+                    dac_cmd_sig = dac_cmd.text().strip()
+                    
+                    # Read numeric DAC parameters using the assigned variables
+                    def _to_int_or_none(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dac_min = _to_int_or_none(dac_min_mv)
+                    dac_max = _to_int_or_none(dac_max_mv)
+                    dac_step = _to_int_or_none(dac_step_mv)
+                    dac_dwell = _to_int_or_none(dac_dwell_ms)
+                    
+                    data['actuation'] = {
+                        'type': 'analog',
+                        'dac_can_id': dac_id,
+                        'dac_command_signal': dac_cmd_sig,
+                        'mux_channel_value': mux_channel_val,
+                        'dac_min_mv': dac_min,
+                        'dac_max_mv': dac_max,
+                        'dac_step_mv': dac_step,
+                        'dac_dwell_ms': dac_dwell,
+                    }
 
+            # Validate test before saving
+            is_valid, error_msg = self._validate_test(data)
+            if not is_valid:
+                QtWidgets.QMessageBox.warning(dlg, 'Invalid Test Configuration', f'Cannot save test: {error_msg}')
+                return
+            
             self._tests[idx] = data
             self.test_list.currentItem().setText(data['name'])
             # refresh JSON preview for current selection
