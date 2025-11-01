@@ -1011,12 +1011,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         else:
             self.dbc_service = None
         
-            if SignalService is not None and self.dbc_service is not None:
-                self.signal_service = SignalService(self.dbc_service)
-            else:
-                self.signal_service = None
-            
-            self._services_initialized = True
+        if SignalService is not None and self.dbc_service is not None:
+            self.signal_service = SignalService(self.dbc_service)
+        else:
+            self.signal_service = None
+        
+        self._services_initialized = True
         
         # Phase 2: Async test execution thread (initialized when needed)
         try:
@@ -3635,12 +3635,16 @@ class BaseGUI(QtWidgets.QMainWindow):
             frame: CAN frame object with can_id and data attributes
         """
         # Phase 1: Use SignalService if available and DBC is loaded
-        if self.signal_service is not None and self.dbc_service is not None:
+        # Check if services exist (may not be initialized yet)
+        signal_service = getattr(self, 'signal_service', None)
+        dbc_service = getattr(self, 'dbc_service', None)
+        
+        if signal_service is not None and dbc_service is not None:
             # Check if DBC is loaded (either via service or legacy)
             dbc_loaded = False
             try:
-                if hasattr(self.dbc_service, 'is_loaded'):
-                    dbc_loaded = self.dbc_service.is_loaded()
+                if hasattr(dbc_service, 'is_loaded'):
+                    dbc_loaded = dbc_service.is_loaded()
             except Exception:
                 pass
             
@@ -3663,18 +3667,18 @@ class BaseGUI(QtWidgets.QMainWindow):
                         adapter_frame = frame
                     
                     # Decode signals
-                    signal_values = self.signal_service.decode_frame(adapter_frame)
+                    signal_values = signal_service.decode_frame(adapter_frame)
                     can_id = getattr(frame, 'can_id', 0)
                     if signal_values:
                         logger.info(f"SignalService decoded {len(signal_values)} signals from frame 0x{can_id:X}")
                     else:
                         # More detailed debug logging
-                        dbc_loaded = self.dbc_service.is_loaded() if self.dbc_service else False
+                        dbc_loaded_check = dbc_service.is_loaded() if dbc_service else False
                         legacy_dbc = getattr(self, '_dbc_db', None) is not None
-                        logger.warning(f"SignalService returned no signals for frame 0x{can_id:X} - DBC service loaded: {dbc_loaded}, Legacy DBC: {legacy_dbc}")
-                        if self.dbc_service:
+                        logger.warning(f"SignalService returned no signals for frame 0x{can_id:X} - DBC service loaded: {dbc_loaded_check}, Legacy DBC: {legacy_dbc}")
+                        if dbc_service:
                             # Try to find the message
-                            msg = self.dbc_service.find_message_by_id(can_id)
+                            msg = dbc_service.find_message_by_id(can_id)
                             if msg is None:
                                 logger.warning(f"No message found in DBC for CAN ID 0x{can_id:X}")
                             else:
