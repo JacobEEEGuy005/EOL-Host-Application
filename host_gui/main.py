@@ -213,6 +213,10 @@ class TestRunner:
             gui: BaseGUI instance for sending frames and updating UI
         """
         self.gui = gui
+        # Phase 1: Access services through GUI
+        self.can_service = getattr(gui, 'can_service', None)
+        self.dbc_service = getattr(gui, 'dbc_service', None)
+        self.signal_service = getattr(gui, 'signal_service', None)
 
     def run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Execute a single test using the same behavior as the previous
@@ -260,8 +264,13 @@ class TestRunner:
                     dwell_ms = DWELL_TIME_DEFAULT
 
                 def _encode_value_to_bytes(v):
-                    # Try DBC encoding if available and signal specified
-                    if gui._dbc_db is not None and sig:
+                # Try DBC encoding if available and signal specified
+                # Phase 1: Use DbcService if available
+                dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                if dbc_available and sig:
+                    if self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(can_id)
+                    else:
                         msg = gui._find_message_by_id(can_id)
                         if msg is not None:
                             try:
@@ -334,8 +343,13 @@ class TestRunner:
                                             continue
                                     raw_hex = data_item.text()
                                     raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                                    if gui._dbc_db is not None and fb:
-                                        target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
+                                    # Phase 1: Use services if available
+                                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                                    if dbc_available and fb:
+                                        if self.dbc_service is not None:
+                                            target_msg, target_sig = self.dbc_service.find_message_and_signal(row_can, fb)
+                                        else:
+                                            target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
                                         if target_msg is not None:
                                             try:
                                                 decoded = target_msg.decode(raw)
@@ -645,8 +659,13 @@ class TestRunner:
                     encode_data = {'DeviceID': 0}  # always include DeviceID
                     mux_value = None
                     data_bytes = b''
-                    if gui._dbc_db is not None:
-                        target_msg = gui._find_message_by_id(can_id)
+                            # Phase 1: Use DbcService if available
+                            dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                            if dbc_available:
+                                if self.dbc_service is not None:
+                                    target_msg = self.dbc_service.find_message_by_id(can_id)
+                                else:
+                                    target_msg = gui._find_message_by_id(can_id)
                         if target_msg is not None:
                             for sig_name in signals:
                                 encode_data[sig_name] = signals[sig_name]
@@ -720,18 +739,31 @@ class TestRunner:
                     except Exception:
                         pass
 
-                    if AdapterFrame is not None:
-                        f = AdapterFrame(can_id=can_id, data=data_bytes)
+                    # Phase 1: Use CanService if available
+                    if self.can_service is not None and self.can_service.is_connected():
+                        from backend.adapters.interface import Frame as AdapterFrame
+                        f = AdapterFrame(can_id=can_id, data=data_bytes, timestamp=time.time())
                         logger.debug(f'Signals: {signals}')
                         logger.debug(f'Encode data: {encode_data}')
-                        logger.debug(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
+                        logger.debug(f"Sending frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
+                        try:
+                            self.can_service.send_frame(f)
+                        except Exception as e:
+                            logger.warning(f"Failed to send frame via service: {e}")
                     else:
-                        class F: pass
-                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
-                    try:
-                        gui.sim.send(f)
-                    except Exception:
-                        pass
+                        # Legacy: use direct adapter
+                        if AdapterFrame is not None:
+                            f = AdapterFrame(can_id=can_id, data=data_bytes)
+                            logger.debug(f'Signals: {signals}')
+                            logger.debug(f'Encode data: {encode_data}')
+                            logger.debug(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
+                        else:
+                            class F: pass
+                            f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
+                        try:
+                            gui.sim.send(f)
+                        except Exception:
+                            pass
                     if hasattr(gui.sim, 'loopback'):
                         try:
                             gui.sim.loopback(f)
@@ -850,22 +882,35 @@ class TestRunner:
                                 continue
                         raw_hex = data_item.text()
                         raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                        if gui._dbc_db is not None and fb:
-                            target_msg = None
-                            for m in getattr(gui._dbc_db, 'messages', []):
-                                for s in getattr(m, 'signals', []):
-                                    if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                        target_msg = m
+                        # Phase 1: Use services if available
+                        dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                        if dbc_available and fb:
+                            if self.dbc_service is not None:
+                                target_msg, target_sig = self.dbc_service.find_message_and_signal(row_can, fb)
+                                if target_msg is not None and target_sig is not None:
+                                    try:
+                                        decoded = self.dbc_service.decode_message(target_msg, raw)
+                                        observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
+                                        return True, observed_info
+                                    except Exception:
+                                        pass
+                            else:
+                                # Legacy fallback
+                                target_msg = None
+                                for m in getattr(gui._dbc_db, 'messages', []):
+                                    for s in getattr(m, 'signals', []):
+                                        if s.name == fb and getattr(m, 'frame_id', None) == row_can:
+                                            target_msg = m
+                                            break
+                                    if target_msg:
                                         break
-                                if target_msg:
-                                    break
-                            if target_msg is not None:
-                                try:
-                                    decoded = target_msg.decode(raw)
-                                    observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
-                                    return True, observed_info
-                                except Exception:
-                                    pass
+                                if target_msg is not None:
+                                    try:
+                                        decoded = target_msg.decode(raw)
+                                        observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
+                                        return True, observed_info
+                                    except Exception:
+                                        pass
                         else:
                             observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
                             return True, observed_info
