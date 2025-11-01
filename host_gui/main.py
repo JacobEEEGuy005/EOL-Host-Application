@@ -114,10 +114,30 @@ class TestRunner:
         try:
             if act.get('type') == 'digital' and act.get('can_id') is not None:
                 can_id = act.get('can_id')
+                
+                # Validate CAN ID
+                try:
+                    can_id = int(can_id)
+                    if not (0 <= can_id <= 0x1FFFFFFF):
+                        raise ValueError(f"Invalid digital test CAN ID: {can_id}")
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Invalid CAN ID in digital test configuration: {e}")
+                    return False, f"Invalid CAN ID: {can_id}"
+                
                 sig = act.get('signal')
                 low_val = act.get('value_low', act.get('value'))
                 high_val = act.get('value_high')
-                dwell_ms = act.get('dwell_ms', act.get('dac_dwell_ms')) or 100
+                
+                # Validate dwell time
+                try:
+                    dwell_ms = int(act.get('dwell_ms', act.get('dac_dwell_ms', 100)))
+                    if dwell_ms < 0:
+                        raise ValueError(f"Dwell time must be non-negative, got {dwell_ms}")
+                    if dwell_ms == 0:
+                        dwell_ms = 100  # Default minimum
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid dwell time in digital test, using 100ms: {e}")
+                    dwell_ms = 100
 
                 def _encode_value_to_bytes(v):
                     # Try DBC encoding if available and signal specified
@@ -439,7 +459,7 @@ class TestRunner:
                         pass
 
                 ok = bool(high_ok and low_ok)
-                print(ok)
+                logger.debug(f"Digital test result: {ok}")
                 info = '; '.join(info_parts)
                 # Return the computed result so callers receive the correct PASS/FAIL
                 return ok, info
@@ -2926,12 +2946,12 @@ class BaseGUI(QtWidgets.QMainWindow):
 
 
 def main():
-    print(f"[host_gui] Starting host GUI (cwd={os.getcwd()}, python={sys.executable})")
+    logger.info(f"Starting host GUI (cwd={os.getcwd()}, python={sys.executable})")
     # create QApplication and show main window
     app = QtWidgets.QApplication(sys.argv)
     win = BaseGUI()
     win.show()
-    print('[host_gui] GUI shown; entering Qt event loop')
+    logger.info('GUI shown; entering Qt event loop')
     sys.exit(app.exec())
 
 
