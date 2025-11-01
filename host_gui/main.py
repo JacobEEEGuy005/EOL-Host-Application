@@ -690,50 +690,50 @@ class TestRunner:
                         if mux_value is not None:
                             encode_data['MessageType'] = mux_value
                         else:
-                                # If this message has a MessageType signal with defined choices,
-                                # try to infer the correct selector for non-muxed commands
-                                # (e.g. DAC commands require MessageType=18).
-                                try:
-                                    mtype_sig = None
-                                    for s in target_msg.signals:
-                                        if getattr(s, 'name', '') == 'MessageType':
-                                            mtype_sig = s
-                                            break
-                                    if mtype_sig is not None and 'MessageType' not in encode_data:
-                                        choices = getattr(mtype_sig, 'choices', None) or {}
-                                        # simple heuristics: match substrings from signal name to choice name
-                                        for sig_name in signals:
-                                            sname_up = str(sig_name).upper()
-                                            for val, cname in (choices.items() if hasattr(choices, 'items') else []):
-                                                try:
-                                                    if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
-                                                        encode_data['MessageType'] = val
-                                                        raise StopIteration
-                                                    if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
-                                                        encode_data['MessageType'] = val
-                                                        raise StopIteration
-                                                    if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
-                                                        encode_data['MessageType'] = val
-                                                        raise StopIteration
-                                                except StopIteration:
-                                                    break
-                                            if 'MessageType' in encode_data:
-                                                break
-                                except Exception:
-                                    pass
+                            # If this message has a MessageType signal with defined choices,
+                            # try to infer the correct selector for non-muxed commands
+                            # (e.g. DAC commands require MessageType=18).
                             try:
-                                if self.dbc_service is not None:
-                                    data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
-                                else:
-                                    data_bytes = target_msg.encode(encode_data)
+                                mtype_sig = None
+                                for s in target_msg.signals:
+                                    if getattr(s, 'name', '') == 'MessageType':
+                                        mtype_sig = s
+                                        break
+                                if mtype_sig is not None and 'MessageType' not in encode_data:
+                                    choices = getattr(mtype_sig, 'choices', None) or {}
+                                    # simple heuristics: match substrings from signal name to choice name
+                                    for sig_name in signals:
+                                        sname_up = str(sig_name).upper()
+                                        for val, cname in (choices.items() if hasattr(choices, 'items') else []):
+                                            try:
+                                                if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
+                                                    encode_data['MessageType'] = val
+                                                    raise StopIteration
+                                                if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
+                                                    encode_data['MessageType'] = val
+                                                    raise StopIteration
+                                                if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
+                                                    encode_data['MessageType'] = val
+                                                    raise StopIteration
+                                            except StopIteration:
+                                                break
+                                        if 'MessageType' in encode_data:
+                                            break
                             except Exception:
-                                # fallback to single byte
-                                try:
-                                    if len(signals) == 1:
-                                        v = list(signals.values())[0]
-                                        data_bytes = bytes([int(v) & 0xFF])
-                                except Exception:
-                                    data_bytes = b''
+                                pass
+                        try:
+                            if self.dbc_service is not None:
+                                data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
+                            else:
+                                data_bytes = target_msg.encode(encode_data)
+                        except Exception:
+                            # fallback to single byte
+                            try:
+                                if len(signals) == 1:
+                                    v = list(signals.values())[0]
+                                    data_bytes = bytes([int(v) & 0xFF])
+                            except Exception:
+                                data_bytes = b''
                     else:
                         try:
                             if len(signals) == 1:
