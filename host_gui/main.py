@@ -3578,75 +3578,101 @@ class BaseGUI(QtWidgets.QMainWindow):
         Args:
             frame: CAN frame object with can_id and data attributes
         """
-        # Phase 1: Use SignalService if available
-        if self.signal_service is not None:
+        # Phase 1: Use SignalService if available and DBC is loaded
+        if self.signal_service is not None and self.dbc_service is not None:
+            # Check if DBC is loaded (either via service or legacy)
+            dbc_loaded = False
             try:
-                # Convert frame to SignalService format
-                from backend.adapters.interface import Frame as AdapterFrame
-                if not isinstance(frame, AdapterFrame):
-                    # Convert from legacy format
-                    adapter_frame = AdapterFrame(
-                        can_id=getattr(frame, 'can_id', 0),
-                        data=getattr(frame, 'data', b''),
-                        timestamp=getattr(frame, 'timestamp', None)
-                    )
-                else:
-                    adapter_frame = frame
-                
-                # Decode signals
-                signal_values = self.signal_service.decode_frame(adapter_frame)
-                
-                # Update UI table (legacy table handling)
-                for sig_val in signal_values:
-                    key = sig_val.key
-                    fid = sig_val.message_id
-                    sig_name = sig_val.signal_name
-                    val = sig_val.value
-                    ts = sig_val.timestamp or time.time()
-                    
-                    if key in self._signal_rows:
-                        row = self._signal_rows[key]
-                        try:
-                            self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
-                        except Exception:
-                            self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
-                        self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
-                        # Sync legacy cache
-                        self._signal_values[key] = (ts, val)
+                if hasattr(self.dbc_service, 'is_loaded'):
+                    dbc_loaded = self.dbc_service.is_loaded()
+            except Exception:
+                pass
+            
+            # Also check legacy _dbc_db
+            if not dbc_loaded:
+                dbc_loaded = getattr(self, '_dbc_db', None) is not None
+            
+            if dbc_loaded:
+                try:
+                    # Convert frame to SignalService format
+                    from backend.adapters.interface import Frame as AdapterFrame
+                    if not isinstance(frame, AdapterFrame):
+                        # Convert from legacy format
+                        adapter_frame = AdapterFrame(
+                            can_id=getattr(frame, 'can_id', 0),
+                            data=getattr(frame, 'data', b''),
+                            timestamp=getattr(frame, 'timestamp', None)
+                        )
                     else:
-                        r = self.signal_table.rowCount()
-                        self.signal_table.insertRow(r)
-                        try:
-                            self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
-                        except Exception:
-                            self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
-                        self.signal_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(sig_val.message_name or '')))
-                        self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
-                        self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
-                        self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
-                        self._signal_rows[key] = r
-                        # Sync legacy cache
-                        self._signal_values[key] = (ts, val)
+                        adapter_frame = frame
                     
-                    # Update feedback label if this is the current monitored signal
-                    try:
-                        cur = getattr(self, '_current_feedback', None)
-                        if cur and cur[1] and str(cur[1]) == str(sig_name):
+                    # Decode signals - ensure DBC is available
+                    if not self.dbc_service.is_loaded() and getattr(self, '_dbc_db', None) is not None:
+                        # DBC was loaded via legacy method, try to load it into service
+                        try:
+                            # If we have legacy _dbc_db, we need to ensure service has it too
+                            # This is a sync issue - for now, fall through to legacy code
+                            pass
+                        except Exception:
+                            pass
+                    
+                    # Decode signals
+                    signal_values = self.signal_service.decode_frame(adapter_frame)
+                    logger.debug(f"SignalService decoded {len(signal_values)} signals from frame 0x{getattr(frame, 'can_id', 0):X}")
+                    
+                    # Only proceed if we got signal values
+                    if signal_values:
+                        # Update UI table (legacy table handling)
+                        for sig_val in signal_values:
+                            key = sig_val.key
+                            fid = sig_val.message_id
+                            sig_name = sig_val.signal_name
+                            val = sig_val.value
+                            ts = sig_val.timestamp or time.time()
+                            
+                            if key in self._signal_rows:
+                                row = self._signal_rows[key]
+                                try:
+                                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                                except Exception:
+                                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                                self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
+                                # Sync legacy cache
+                                self._signal_values[key] = (ts, val)
+                            else:
+                                r = self.signal_table.rowCount()
+                                self.signal_table.insertRow(r)
+                                try:
+                                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                                except Exception:
+                                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                                self.signal_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(sig_val.message_name or '')))
+                                self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
+                                self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
+                                self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
+                                self._signal_rows[key] = r
+                                # Sync legacy cache
+                                self._signal_values[key] = (ts, val)
+                            
+                            # Update feedback label if this is the current monitored signal
                             try:
-                                cur_id = int(cur[0]) if cur[0] is not None else None
-                                this_id = int(fid)
-                                if cur_id is not None and this_id is not None and cur_id == this_id:
+                                cur = getattr(self, '_current_feedback', None)
+                                if cur and cur[1] and str(cur[1]) == str(sig_name):
                                     try:
-                                        self.feedback_signal_label.setText(str(val))
+                                        cur_id = int(cur[0]) if cur[0] is not None else None
+                                        this_id = int(fid)
+                                        if cur_id is not None and this_id is not None and cur_id == this_id:
+                                            try:
+                                                self.feedback_signal_label.setText(str(val))
+                                            except Exception:
+                                                pass
                                     except Exception:
                                         pass
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
-                return
-            except Exception as e:
-                logger.debug(f"SignalService decode failed, falling back to legacy: {e}")
+                        return  # Successfully decoded via service
+                except Exception as e:
+                    logger.debug(f"SignalService decode failed, falling back to legacy: {e}", exc_info=True)
         
         # Legacy implementation (fallback)
         if cantools is None or getattr(self, '_dbc_db', None) is None:
