@@ -10,9 +10,9 @@ Services:
 - SignalService: Signal decoding, caching, and value retrieval
 """
 
-from host_gui.services.can_service import CanService
+from host_gui.services.can_service import CanService, AdapterWorker
 from host_gui.services.dbc_service import DbcService
 from host_gui.services.signal_service import SignalService
 
-__all__ = ['CanService', 'DbcService', 'SignalService']
+__all__ = ['CanService', 'AdapterWorker', 'DbcService', 'SignalService']
 
