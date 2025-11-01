@@ -1511,6 +1511,44 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._signal_lookup_cache.clear()
         self._message_cache.clear()
         logger.debug("Cleared DBC lookup caches")
+    
+    def _parse_can_id(self, text: str) -> Optional[int]:
+        """Parse CAN ID from text string (supports hex with 0x prefix or decimal).
+        
+        Args:
+            text: String representation of CAN ID
+            
+        Returns:
+            CAN ID as integer or None if invalid
+        """
+        if not text or not text.strip():
+            return None
+        text = text.strip()
+        try:
+            if text.lower().startswith('0x'):
+                return int(text, 16)
+            else:
+                return int(text, 0)
+        except (ValueError, TypeError):
+            return None
+    
+    def _parse_hex_data(self, text: str) -> bytes:
+        """Parse hex string to bytes, handling spaces and dashes.
+        
+        Args:
+            text: Hex string (may contain spaces or dashes)
+            
+        Returns:
+            Bytes object or empty bytes if invalid/empty
+        """
+        if not text or not text.strip():
+            return b''
+        try:
+            cleaned = text.strip().replace(' ', '').replace('-', '')
+            return bytes.fromhex(cleaned)
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Invalid hex data: {e}")
+            return b''
 
     # DBC functions
     def _load_dbcs(self):
@@ -3008,26 +3046,21 @@ class BaseGUI(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
             return
         try:
-            can_id_text = self.send_id.text().strip()
-            if not can_id_text:
-                raise ValueError("CAN ID is required")
-            if can_id_text.lower().startswith('0x'):
-                can_id = int(can_id_text, 16)
-            else:
-                can_id = int(can_id_text, 0)
+            can_id_text = self.send_id.text()
+            can_id = self._parse_can_id(can_id_text)
+            if can_id is None:
+                raise ValueError("CAN ID is required and must be a valid number")
             
             # Validate CAN ID range
             if not (CAN_ID_MIN <= can_id <= CAN_ID_MAX):
                 raise ValueError(f"CAN ID {can_id} out of range ({CAN_ID_MIN}-{CAN_ID_MAX:#X})")
             
-            data_text = self.send_data.text().strip()
-            if not data_text:
-                data = b''
-            else:
-                data = bytes.fromhex(data_text.replace(' ', '').replace('-', ''))
-                # Validate data length
-                if len(data) > CAN_FRAME_MAX_LENGTH:
-                    raise ValueError(f"Data length {len(data)} exceeds CAN frame max ({CAN_FRAME_MAX_LENGTH} bytes)")
+            data_text = self.send_data.text()
+            data = self._parse_hex_data(data_text)
+            
+            # Validate data length
+            if len(data) > CAN_FRAME_MAX_LENGTH:
+                raise ValueError(f"Data length {len(data)} exceeds CAN frame max ({CAN_FRAME_MAX_LENGTH} bytes)")
             if AdapterFrame is not None:
                 f = AdapterFrame(can_id=can_id, data=data)
             else:
