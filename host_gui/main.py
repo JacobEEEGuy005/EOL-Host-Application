@@ -2952,7 +2952,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         if not can_connected:
             logger.warning("Run Sequence called but CAN adapter not connected")
             self.status_label.setText('CAN adapter not connected')
-        self.tabs_main.setCurrentIndex(self.status_tab_index)
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
             QtWidgets.QMessageBox.warning(self, 'Adapter Not Connected', 'CAN adapter must be connected before running tests.\n\nPlease go to CAN Data View tab and click "Connect".')
             return
         
