@@ -102,6 +102,7 @@ except ImportError:
     DWELL_TIME_MIN = 100
     POLL_INTERVAL_MS = 50
     FRAME_POLL_INTERVAL_MS = 150
+    DAC_SETTLING_TIME_MS = 20
     MAX_MESSAGES_DEFAULT = 50
     MAX_FRAMES_DEFAULT = 50
     MSG_TYPE_SET_RELAY = 16
@@ -662,6 +663,9 @@ class TestRunner:
                     This function collects every received data point without any time-based filtering,
                     maximizing the data collection rate for better test characterization.
                     
+                    Data points collected within DAC_SETTLING_TIME_MS after a step change in DAC command
+                    are disregarded to avoid including unstable readings during the transition period.
+                    
                     Args:
                         dac_voltage: Current DAC voltage command value (mV)
                         dwell_ms: Total dwell time in milliseconds
@@ -676,31 +680,55 @@ class TestRunner:
                     COMMAND_PERIOD_MS = 50
                     command_interval_sec = COMMAND_PERIOD_MS / 1000.0
                     
+                    # Settling time after step change (convert to seconds)
+                    settling_time_sec = DAC_SETTLING_TIME_MS / 1000.0
+                    
                     start_time = time.time()
                     dwell_end_time = start_time + (dwell_ms / 1000.0)
                     last_command_time = start_time
                     
+                    # Track the time of the initial step change (first command of this voltage level)
+                    # This is when we transitioned to this new DAC voltage
+                    step_change_time = start_time
+                    
                     data_points_collected = 0
+                    data_points_ignored = 0
+                    
+                    # Send initial DAC command for this voltage level
+                    try:
+                        _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                        step_change_time = time.time()  # Record when step change occurred
+                        last_command_time = step_change_time
+                    except Exception as e:
+                        logger.debug(f"Error sending initial DAC command during dwell: {e}")
                     
                     while time.time() < dwell_end_time:
                         current_time = time.time()
                         
-                        # Send DAC command every 50ms
+                        # Send DAC command every 50ms (periodic resend of same command)
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
                                 _encode_and_send({dac_cmd_sig: int(dac_voltage)})
                                 last_command_time = current_time
+                                # Note: Periodic resends don't reset settling time since voltage hasn't changed
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during dwell: {e}")
                         
-                        # Collect feedback data points on every loop iteration (no time limit)
-                        # This maximizes data collection by capturing every available data point
+                        # Collect feedback data points on every loop iteration
+                        # Ignore data points collected within settling time after step change
                         if fb_signal and fb_msg_id:
                             try:
                                 ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                 if fb_val is not None:
-                                    gui._update_plot(dac_voltage, fb_val, test_name)
-                                    data_points_collected += 1
+                                    # Check if enough time has passed since the step change
+                                    time_since_step_change = current_time - step_change_time
+                                    if time_since_step_change >= settling_time_sec:
+                                        # Stable data point - collect it
+                                        gui._update_plot(dac_voltage, fb_val, test_name)
+                                        data_points_collected += 1
+                                    else:
+                                        # Data point too soon after step change - disregard it
+                                        data_points_ignored += 1
                             except Exception as e:
                                 logger.debug(f"Error collecting feedback during dwell: {e}")
                         
@@ -714,7 +742,7 @@ class TestRunner:
                         # This is minimal to maximize collection rate while maintaining system responsiveness
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
-                    logger.debug(f"Collected {data_points_collected} data points during {dwell_ms}ms dwell at {dac_voltage}mV")
+                    logger.debug(f"Collected {data_points_collected} data points (ignored {data_points_ignored} during settling) during {dwell_ms}ms dwell at {dac_voltage}mV")
 
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
