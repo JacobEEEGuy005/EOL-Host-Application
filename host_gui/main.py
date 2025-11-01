@@ -6,6 +6,7 @@ import time
 import os
 import shutil
 from datetime import datetime
+from typing import Optional, Tuple, Dict, Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
 try:
@@ -40,6 +41,36 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# Import constants
+try:
+    from host_gui.constants import (
+        CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
+        CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
+        POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS,
+        MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
+        MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
+        CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT
+    )
+except ImportError:
+    # Fallback constants if import fails
+    CAN_ID_MIN = 0
+    CAN_ID_MAX = 0x1FFFFFFF
+    DAC_VOLTAGE_MIN = 0
+    DAC_VOLTAGE_MAX = 5000
+    CAN_FRAME_MAX_LENGTH = 8
+    DWELL_TIME_DEFAULT = 100
+    DWELL_TIME_MIN = 100
+    POLL_INTERVAL_MS = 50
+    FRAME_POLL_INTERVAL_MS = 150
+    MAX_MESSAGES_DEFAULT = 50
+    MAX_FRAMES_DEFAULT = 50
+    MSG_TYPE_SET_RELAY = 16
+    MSG_TYPE_SET_DAC = 18
+    MSG_TYPE_SET_MUX = 17
+    CAN_BITRATE_DEFAULT = 500
+    CAN_CHANNEL_DEFAULT = '0'
+    logger.warning("Could not import constants, using fallback values")
 
 # Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -101,9 +132,16 @@ class TestRunner:
     def __init__(self, gui):
         self.gui = gui
 
-    def run_single_test(self, test: dict, timeout: float = 1.0):
+    def run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Execute a single test using the same behavior as the previous
-        BaseGUI._run_single_test implementation. Returns (bool, info_str).
+        BaseGUI._run_single_test implementation. 
+        
+        Args:
+            test: Test configuration dictionary with 'name', 'actuation', etc.
+            timeout: Timeout in seconds for feedback waiting
+            
+        Returns:
+            Tuple of (success: bool, info: str)
         """
         gui = self.gui
         # ensure adapter running
@@ -118,7 +156,7 @@ class TestRunner:
                 # Validate CAN ID
                 try:
                     can_id = int(can_id)
-                    if not (0 <= can_id <= 0x1FFFFFFF):
+                    if not (CAN_ID_MIN <= can_id <= CAN_ID_MAX):
                         raise ValueError(f"Invalid digital test CAN ID: {can_id}")
                 except (ValueError, TypeError) as e:
                     logger.error(f"Invalid CAN ID in digital test configuration: {e}")
@@ -130,23 +168,19 @@ class TestRunner:
                 
                 # Validate dwell time
                 try:
-                    dwell_ms = int(act.get('dwell_ms', act.get('dac_dwell_ms', 100)))
+                    dwell_ms = int(act.get('dwell_ms', act.get('dac_dwell_ms', DWELL_TIME_DEFAULT)))
                     if dwell_ms < 0:
                         raise ValueError(f"Dwell time must be non-negative, got {dwell_ms}")
                     if dwell_ms == 0:
-                        dwell_ms = 100  # Default minimum
+                        dwell_ms = DWELL_TIME_MIN
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid dwell time in digital test, using 100ms: {e}")
-                    dwell_ms = 100
+                    logger.warning(f"Invalid dwell time in digital test, using {DWELL_TIME_DEFAULT}ms: {e}")
+                    dwell_ms = DWELL_TIME_DEFAULT
 
                 def _encode_value_to_bytes(v):
                     # Try DBC encoding if available and signal specified
                     if gui._dbc_db is not None and sig:
-                        msg = None
-                        for m in getattr(gui._dbc_db, 'messages', []):
-                            if getattr(m, 'frame_id', None) == can_id:
-                                msg = m
-                                break
+                        msg = gui._find_message_by_id(can_id)
                         if msg is not None:
                             try:
                                 vv = v
@@ -158,7 +192,7 @@ class TestRunner:
                                 except Exception:
                                     pass
                                 device_id = act.get('device_id', 0)
-                                enc = {'DeviceID': device_id, 'MessageType': 16}
+                                enc = {'DeviceID': device_id, 'MessageType': MSG_TYPE_SET_RELAY}
                                 relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
                                 for rs in relay_signals:
                                     enc[rs] = vv if rs == sig else 0
@@ -194,7 +228,7 @@ class TestRunner:
                 def _wait_for_feedback(timeout_sec: float):
                     # reuse existing feedback scanning logic to look for feedback signal
                     waited = 0.0
-                    poll_interval = 0.05
+                    poll_interval = POLL_INTERVAL_MS / 1000.0  # Convert ms to seconds
                     fb = test.get('feedback_signal')
                     observed_info = 'no feedback'
                     while waited < timeout_sec:
@@ -219,14 +253,7 @@ class TestRunner:
                                     raw_hex = data_item.text()
                                     raw = bytes.fromhex(raw_hex) if raw_hex else b''
                                     if gui._dbc_db is not None and fb:
-                                        target_msg = None
-                                        for m in getattr(gui._dbc_db, 'messages', []):
-                                            for s in getattr(m, 'signals', []):
-                                                if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                                    target_msg = m
-                                                    break
-                                            if target_msg:
-                                                break
+                                        target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
                                         if target_msg is not None:
                                             try:
                                                 decoded = target_msg.decode(raw)
@@ -319,14 +346,7 @@ class TestRunner:
                             raw_hex = data_item.text()
                             raw = bytes.fromhex(raw_hex) if raw_hex else b''
                             if gui._dbc_db is not None and fb:
-                                target_msg = None
-                                for m in getattr(gui._dbc_db, 'messages', []):
-                                    for s in getattr(m, 'signals', []):
-                                        if s.name == fb and getattr(m, 'frame_id', None) == row_can:
-                                            target_msg = m
-                                            break
-                                    if target_msg:
-                                        break
+                                target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
                                 if target_msg is not None:
                                     try:
                                         try:
@@ -477,7 +497,7 @@ class TestRunner:
                 # Validate CAN ID
                 try:
                     can_id = int(can_id)
-                    if not (0 <= can_id <= 0x1FFFFFFF):
+                    if not (CAN_ID_MIN <= can_id <= CAN_ID_MAX):
                         raise ValueError(f"Invalid DAC CAN ID: {can_id}")
                 except (ValueError, TypeError) as e:
                     logger.error(f"Invalid DAC CAN ID in test configuration: {e}")
@@ -490,17 +510,17 @@ class TestRunner:
                 
                 # Validate and parse DAC voltage parameters
                 try:
-                    dac_min = int(act.get('dac_min_mv', act.get('dac_min', 0)))
-                    if not (0 <= dac_min <= 5000):
-                        raise ValueError(f"DAC min {dac_min} out of range (0-5000 mV)")
+                    dac_min = int(act.get('dac_min_mv', act.get('dac_min', DAC_VOLTAGE_MIN)))
+                    if not (DAC_VOLTAGE_MIN <= dac_min <= DAC_VOLTAGE_MAX):
+                        raise ValueError(f"DAC min {dac_min} out of range ({DAC_VOLTAGE_MIN}-{DAC_VOLTAGE_MAX} mV)")
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid DAC min, using 0: {e}")
-                    dac_min = 0
+                    logger.warning(f"Invalid DAC min, using {DAC_VOLTAGE_MIN}: {e}")
+                    dac_min = DAC_VOLTAGE_MIN
                     
                 try:
                     dac_max = int(act.get('dac_max_mv', act.get('dac_max', dac_min)))
-                    if not (0 <= dac_max <= 5000):
-                        raise ValueError(f"DAC max {dac_max} out of range (0-5000 mV)")
+                    if not (DAC_VOLTAGE_MIN <= dac_max <= DAC_VOLTAGE_MAX):
+                        raise ValueError(f"DAC max {dac_max} out of range ({DAC_VOLTAGE_MIN}-{DAC_VOLTAGE_MAX} mV)")
                     if dac_max < dac_min:
                         logger.warning(f"DAC max {dac_max} < min {dac_min}, swapping")
                         dac_max, dac_min = dac_min, dac_max
@@ -517,14 +537,14 @@ class TestRunner:
                     dac_step = max(1, dac_max - dac_min)
                     
                 try:
-                    dwell_ms = int(act.get('dac_dwell_ms', act.get('dwell_ms', 100)))
+                    dwell_ms = int(act.get('dac_dwell_ms', act.get('dwell_ms', DWELL_TIME_DEFAULT)))
                     if dwell_ms < 0:
                         raise ValueError(f"Dwell time must be non-negative, got {dwell_ms}")
                     if dwell_ms == 0:
-                        dwell_ms = 100  # Default minimum
+                        dwell_ms = DWELL_TIME_MIN
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid dwell time, using 100ms: {e}")
-                    dwell_ms = 100
+                    logger.warning(f"Invalid dwell time, using {DWELL_TIME_DEFAULT}ms: {e}")
+                    dwell_ms = DWELL_TIME_DEFAULT
 
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
@@ -544,15 +564,7 @@ class TestRunner:
                     mux_value = None
                     data_bytes = b''
                     if gui._dbc_db is not None:
-                        target_msg = None
-                        for m in getattr(gui._dbc_db, 'messages', []):
-                            mid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
-                            try:
-                                if mid is not None and int(mid) == int(can_id):
-                                    target_msg = m
-                                    break
-                            except Exception:
-                                continue
+                        target_msg = gui._find_message_by_id(can_id)
                         if target_msg is not None:
                             for sig_name in signals:
                                 encode_data[sig_name] = signals[sig_name]
@@ -732,7 +744,7 @@ class TestRunner:
             return False, f'Failed to send actuation: {e}'
 
         waited = 0.0
-        poll_interval = 0.05
+        poll_interval = POLL_INTERVAL_MS / 1000.0  # Convert ms to seconds
         observed_info = 'no feedback'
         while waited < timeout:
             QtCore.QCoreApplication.processEvents()
@@ -793,17 +805,17 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.worker = None
         self.frame_q = queue.Queue()
         # limits
-        self._max_messages = 50
-        self._max_frames = 50
+        self._max_messages = MAX_MESSAGES_DEFAULT
+        self._max_frames = MAX_FRAMES_DEFAULT
         # generic CAN settings defaults (can be overridden by UI)
         # defaults may come from environment variables specific to adapters
         # Use conservative defaults: channel 0 and 500 kbps
-        self._can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', '0'))
+        self._can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
         try:
             # prefer environment-provided bitrate in kbps, otherwise default to 500
-            self._can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', '500')))
+            self._can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
         except Exception:
-            self._can_bitrate = 500
+            self._can_bitrate = CAN_BITRATE_DEFAULT
 
         self._build_menu()
         self._build_toolbar()
@@ -811,10 +823,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._build_statusbar()
 
         self._load_dbcs()
+        
+        # Signal lookup cache: key = f"{can_id}:{signal_name}" -> (message, signal)
+        self._signal_lookup_cache = {}
+        self._message_cache = {}  # key = can_id -> message
 
         # Poll timer for frames
         self.poll_timer = QtCore.QTimer(self)
-        self.poll_timer.setInterval(150)
+        self.poll_timer.setInterval(FRAME_POLL_INTERVAL_MS)
         self.poll_timer.timeout.connect(self._poll_frames)
 
     def _build_menu(self):
@@ -1088,8 +1104,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _update_plot(self, dac_voltage, feedback_value, test_name=None):
-        """Update the plot with a new data point (DAC voltage, feedback value)."""
+    def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
+        """Update the plot with a new data point (DAC voltage, feedback value).
+        
+        Args:
+            dac_voltage: DAC output voltage in millivolts
+            feedback_value: IPC feedback signal value
+            test_name: Optional test name for plot title
+        """
         if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
             return
         try:
@@ -1421,6 +1443,74 @@ class BaseGUI(QtWidgets.QMainWindow):
         sb = self.statusBar()
         self.conn_indicator = QtWidgets.QLabel('Adapter: stopped')
         sb.addPermanentWidget(self.conn_indicator)
+
+    def _find_message_by_id(self, can_id: int) -> Optional[Any]:
+        """Find message by CAN ID in loaded DBC. Uses cache for performance.
+        
+        Args:
+            can_id: CAN identifier (0-0x1FFFFFFF)
+            
+        Returns:
+            Message object from cantools database or None if not found
+        """
+        if not hasattr(self, '_dbc_db') or self._dbc_db is None:
+            return None
+        
+        # Check cache first
+        if can_id in self._message_cache:
+            return self._message_cache[can_id]
+        
+        # Search and cache result
+        for m in getattr(self._dbc_db, 'messages', []):
+            msg_id = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+            if msg_id is not None and int(msg_id) == int(can_id):
+                self._message_cache[can_id] = m
+                return m
+        
+        # Cache None to avoid repeated searches
+        self._message_cache[can_id] = None
+        return None
+    
+    def _find_message_and_signal(self, can_id: int, signal_name: str) -> Tuple[Optional[Any], Optional[Any]]:
+        """Find message and signal by CAN ID and signal name. Uses cache for performance.
+        
+        Args:
+            can_id: CAN identifier (0-0x1FFFFFFF)
+            signal_name: Name of the signal to find
+            
+        Returns:
+            Tuple of (message, signal) from cantools database or (None, None) if not found
+        """
+        if not signal_name:
+            return None, None
+        
+        # Check signal lookup cache first
+        cache_key = f"{int(can_id)}:{signal_name}"
+        if cache_key in self._signal_lookup_cache:
+            return self._signal_lookup_cache[cache_key]
+        
+        # Find message
+        msg = self._find_message_by_id(can_id)
+        if msg is None:
+            self._signal_lookup_cache[cache_key] = (None, None)
+            return None, None
+        
+        # Find signal in message
+        for sig in getattr(msg, 'signals', []):
+            if sig.name == signal_name:
+                result = (msg, sig)
+                self._signal_lookup_cache[cache_key] = result
+                return result
+        
+        # Signal not found in message
+        self._signal_lookup_cache[cache_key] = (None, None)
+        return None, None
+    
+    def _clear_dbcs_cache(self):
+        """Clear DBC-related caches. Call this when DBC is reloaded."""
+        self._signal_lookup_cache.clear()
+        self._message_cache.clear()
+        logger.debug("Cleared DBC lookup caches")
 
     # DBC functions
     def _load_dbcs(self):
@@ -2420,8 +2510,16 @@ class BaseGUI(QtWidgets.QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}{metrics}')
 
-    def _run_single_test(self, test: dict, timeout: float = 1.0):
-        """Run a single test with validation."""
+    def _run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
+        """Run a single test with validation.
+        
+        Args:
+            test: Test configuration dictionary
+            timeout: Timeout in seconds
+            
+        Returns:
+            Tuple of (success: bool, info: str)
+        """
         # Validate test structure
         if not isinstance(test, dict):
             logger.error(f"Invalid test format: {type(test)}")
@@ -2566,6 +2664,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to parse DBC: {e}')
                     else:
                         self._dbc_db = db
+                        # Clear cache when DBC is reloaded
+                        self._clear_dbcs_cache()
                         # build filters from DBC messages and apply to adapter
                         filters = []
                         for m in getattr(db, 'messages', []):
@@ -2884,8 +2984,16 @@ class BaseGUI(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def get_latest_signal(self, can_id, signal_name):
-        """Return (timestamp, value) for the latest observed signal, or (None, None) if unknown."""
+    def get_latest_signal(self, can_id: int, signal_name: str) -> Tuple[Optional[float], Optional[Any]]:
+        """Return (timestamp, value) for the latest observed signal, or (None, None) if unknown.
+        
+        Args:
+            can_id: CAN identifier for the message containing the signal
+            signal_name: Name of the signal
+            
+        Returns:
+            Tuple of (timestamp: float or None, value: signal value or None)
+        """
         try:
             key = f"{int(can_id)}:{signal_name}"
         except Exception:
@@ -2909,8 +3017,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                 can_id = int(can_id_text, 0)
             
             # Validate CAN ID range
-            if not (0 <= can_id <= 0x1FFFFFFF):
-                raise ValueError(f"CAN ID {can_id} out of range (0-0x1FFFFFFF)")
+            if not (CAN_ID_MIN <= can_id <= CAN_ID_MAX):
+                raise ValueError(f"CAN ID {can_id} out of range ({CAN_ID_MIN}-{CAN_ID_MAX:#X})")
             
             data_text = self.send_data.text().strip()
             if not data_text:
@@ -2918,8 +3026,8 @@ class BaseGUI(QtWidgets.QMainWindow):
             else:
                 data = bytes.fromhex(data_text.replace(' ', '').replace('-', ''))
                 # Validate data length
-                if len(data) > 8:
-                    raise ValueError(f"Data length {len(data)} exceeds CAN frame max (8 bytes)")
+                if len(data) > CAN_FRAME_MAX_LENGTH:
+                    raise ValueError(f"Data length {len(data)} exceeds CAN frame max ({CAN_FRAME_MAX_LENGTH} bytes)")
             if AdapterFrame is not None:
                 f = AdapterFrame(can_id=can_id, data=data)
             else:
