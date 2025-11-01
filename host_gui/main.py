@@ -411,26 +411,130 @@ class TestRunner:
                 # Return the computed result so callers receive the correct PASS/FAIL
                 return ok, info
             elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
+                # Analog test sequence:
+                # 1) Disable MUX (mux_enable_signal = 0)
+                # 2) Set MUX channel (mux_channel_signal = mux_channel_value)
+                # 3) Set DAC to dac_min_mv using dac_command_signal
+                # 4) Enable MUX
+                # 5) Hold DAC output for dwell_ms
+                # 6) Increase DAC by dac_step_mv until dac_max_mv, holding for dwell_ms at each step
+                # 7) Set DAC output to 0mV and disable MUX
                 can_id = act.get('dac_can_id')
-                cmd = act.get('dac_command','')
+                mux_enable_sig = act.get('mux_enable_signal') or act.get('mux_enable')
+                mux_channel_sig = act.get('mux_channel_signal') or act.get('mux_channel')
+                mux_channel_value = act.get('mux_channel_value', act.get('mux_channel_value'))
+                dac_cmd_sig = act.get('dac_command_signal') or act.get('dac_command')
                 try:
-                    if isinstance(cmd, str) and cmd.startswith('0x'):
-                        data = bytes.fromhex(cmd[2:])
-                    else:
-                        data = bytes.fromhex(cmd)
+                    dac_min = int(act.get('dac_min_mv', act.get('dac_min', 0)))
                 except Exception:
-                    data = b''
-                if AdapterFrame is not None:
-                    f = AdapterFrame(can_id=can_id, data=data)
-                else:
-                    class F: pass
-                    f = F(); f.can_id = can_id; f.data = data; f.timestamp = time.time()
-                gui.sim.send(f)
-                if hasattr(gui.sim, 'loopback'):
+                    dac_min = 0
+                try:
+                    dac_max = int(act.get('dac_max_mv', act.get('dac_max', dac_min)))
+                except Exception:
+                    dac_max = dac_min
+                try:
+                    dac_step = int(act.get('dac_step_mv', act.get('dac_step', max(1, (dac_max - dac_min)))))
+                except Exception:
+                    dac_step = max(1, dac_max - dac_min)
+                dwell_ms = int(act.get('dac_dwell_ms', act.get('dwell_ms', 100))) or 100
+
+                def _nb_sleep(sec: float):
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(0.02, remaining))
+
+                def _encode_and_send(signals: dict):
+                    # signals: mapping of signal name -> value
+                    data_bytes = b''
+                    if gui._dbc_db is not None:
+                        target_msg = None
+                        for m in getattr(gui._dbc_db, 'messages', []):
+                            mid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                            try:
+                                if mid is not None and int(mid) == int(can_id):
+                                    target_msg = m
+                                    break
+                            except Exception:
+                                continue
+                        if target_msg is not None:
+                            try:
+                                data_bytes = target_msg.encode(signals)
+                            except Exception:
+                                # try converting single value to one byte
+                                try:
+                                    if len(signals) == 1:
+                                        v = list(signals.values())[0]
+                                        data_bytes = bytes([int(v) & 0xFF])
+                                except Exception:
+                                    data_bytes = b''
+                    else:
+                        try:
+                            if len(signals) == 1:
+                                v = list(signals.values())[0]
+                                if isinstance(v, str) and v.startswith('0x'):
+                                    data_bytes = bytes.fromhex(v[2:])
+                                else:
+                                    data_bytes = bytes([int(v) & 0xFF])
+                        except Exception:
+                            data_bytes = b''
+
+                    if AdapterFrame is not None:
+                        f = AdapterFrame(can_id=can_id, data=data_bytes)
+                    else:
+                        class F: pass
+                        f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                     try:
-                        gui.sim.loopback(f)
+                        gui.sim.send(f)
                     except Exception:
                         pass
+                    if hasattr(gui.sim, 'loopback'):
+                        try:
+                            gui.sim.loopback(f)
+                        except Exception:
+                            pass
+
+                try:
+                    # 1) Disable MUX
+                    if mux_enable_sig:
+                        _encode_and_send({mux_enable_sig: 0})
+                        _nb_sleep(0.02)
+                    # 2) Set MUX channel
+                    if mux_channel_sig and mux_channel_value is not None:
+                        _encode_and_send({mux_channel_sig: int(mux_channel_value)})
+                        _nb_sleep(0.02)
+                    # 3) Set DAC to min
+                    if dac_cmd_sig:
+                        _encode_and_send({dac_cmd_sig: int(dac_min)})
+                        _nb_sleep(0.02)
+                    # 4) Enable MUX
+                    if mux_enable_sig:
+                        _encode_and_send({mux_enable_sig: 1})
+                    # 5) Hold initial dwell
+                    _nb_sleep(float(dwell_ms) / 1000.0)
+                    # 6) Ramp DAC up by step, holding for dwell each step
+                    cur = int(dac_min)
+                    while cur < int(dac_max):
+                        cur = min(cur + int(dac_step), int(dac_max))
+                        if dac_cmd_sig:
+                            _encode_and_send({dac_cmd_sig: int(cur)})
+                        _nb_sleep(float(dwell_ms) / 1000.0)
+                    # 7) Finish: set DAC to 0 and disable MUX
+                    if dac_cmd_sig:
+                        _encode_and_send({dac_cmd_sig: 0})
+                        _nb_sleep(0.02)
+                    if mux_enable_sig:
+                        _encode_and_send({mux_enable_sig: 0})
+                        _nb_sleep(0.02)
+                    return True, f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
+                except Exception as e:
+                    return False, f"Analog actuation failed: {e}"
             else:
                 pass
         except Exception as e:
