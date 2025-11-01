@@ -60,6 +60,7 @@ except Exception:
 import logging
 
 # Configure logging for host GUI - respect LOG_LEVEL environment variable
+# (ConfigManager will handle this later, but we need logging setup first)
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
 try:
     log_level = getattr(logging, log_level, logging.INFO)
@@ -72,6 +73,8 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# Note: Log level will be updated by ConfigManager after it's initialized
 
 # Import constants
 try:
@@ -988,19 +991,52 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Phase 3: Track if services need cleanup on shutdown
         self._services_initialized = False
         self.setWindowTitle('EOL Host - Native GUI')
-        self.resize(WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT)
+        
+        # Phase 4: Use window size from ConfigManager if available
+        if self.config_manager:
+            window_width = self.config_manager.ui_settings.window_width
+            window_height = self.config_manager.ui_settings.window_height
+            # Try to restore window geometry from QSettings
+            saved_geometry = self.config_manager.restore_window_geometry()
+            if saved_geometry:
+                self.restoreGeometry(saved_geometry)
+            else:
+                self.resize(window_width, window_height)
+        else:
+            self.resize(WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT)
 
         self.sim = None  # Legacy - will be replaced by can_service
         self.worker = None  # Legacy - will be replaced by can_service
         self.frame_q = queue.Queue()  # Legacy - will use can_service.frame_queue
         
-        # Initialize services (Phase 1)
+        # Phase 4: Initialize ConfigManager (must be early, before services)
+        try:
+            from host_gui.config import ConfigManager
+            self.config_manager = ConfigManager()
+            # Update log level if ConfigManager loaded it
+            if self.config_manager.app_settings.log_level:
+                try:
+                    new_level = getattr(logging, self.config_manager.app_settings.log_level.upper(), logging.INFO)
+                    logging.getLogger().setLevel(new_level)
+                    logger.info(f"Log level set to {self.config_manager.app_settings.log_level} from ConfigManager")
+                except Exception as e:
+                    logger.debug(f"Failed to update log level from ConfigManager: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ConfigManager, using defaults: {e}", exc_info=True)
+            self.config_manager = None
+        
+        # Initialize services (Phase 1) - use ConfigManager if available
         if CanService is not None:
-            can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
-            try:
-                can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
-            except Exception:
-                can_bitrate = CAN_BITRATE_DEFAULT
+            if self.config_manager:
+                can_channel = self.config_manager.can_settings.channel
+                can_bitrate = self.config_manager.can_settings.bitrate
+            else:
+                # Fallback to environment variables (backwards compatibility)
+                can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
+                try:
+                    can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
+                except Exception:
+                    can_bitrate = CAN_BITRATE_DEFAULT
             self.can_service = CanService(channel=can_channel, bitrate=can_bitrate)
             self.frame_q = self.can_service.frame_queue  # Use service's queue
         else:
@@ -1026,18 +1062,21 @@ class BaseGUI(QtWidgets.QMainWindow):
             self.TestExecutionThread = None
         self.test_execution_thread = None
         
-        # limits
-        self._max_messages = MAX_MESSAGES_DEFAULT
-        self._max_frames = MAX_FRAMES_DEFAULT
-        # generic CAN settings defaults (can be overridden by UI)
-        # defaults may come from environment variables specific to adapters
-        # Use conservative defaults: channel 0 and 500 kbps
-        self._can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
-        try:
-            # prefer environment-provided bitrate in kbps, otherwise default to 500
-            self._can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
-        except Exception:
-            self._can_bitrate = CAN_BITRATE_DEFAULT
+        # limits - use ConfigManager if available
+        if self.config_manager:
+            self._max_messages = self.config_manager.ui_settings.max_messages
+            self._max_frames = self.config_manager.ui_settings.max_frames
+            self._can_channel = self.config_manager.can_settings.channel
+            self._can_bitrate = self.config_manager.can_settings.bitrate
+        else:
+            # Fallback to defaults
+            self._max_messages = MAX_MESSAGES_DEFAULT
+            self._max_frames = MAX_FRAMES_DEFAULT
+            self._can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
+            try:
+                self._can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
+            except Exception:
+                self._can_bitrate = CAN_BITRATE_DEFAULT
 
         self._build_menu()
         self._build_toolbar()
@@ -3221,6 +3260,13 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self.poll_timer.stop()
         except Exception:
             pass
+        
+        # Phase 4: Save window geometry and configuration
+        if self.config_manager:
+            try:
+                self.config_manager.save_window_geometry(self.saveGeometry())
+            except Exception as e:
+                logger.debug(f"Failed to save window geometry: {e}")
         
         logger.info("BaseGUI cleanup complete")
         event.accept()  # Accept the close event
