@@ -59,9 +59,15 @@ except Exception:
 
 import logging
 
-# Configure logging for host GUI
+# Configure logging for host GUI - respect LOG_LEVEL environment variable
+log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+try:
+    log_level = getattr(logging, log_level, logging.INFO)
+except (AttributeError, TypeError):
+    log_level = logging.INFO
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
