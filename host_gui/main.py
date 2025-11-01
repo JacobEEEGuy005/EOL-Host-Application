@@ -157,6 +157,15 @@ except ImportError:
     SignalService = None
     logger.warning("Services not available, using legacy implementation")
 
+# Import exceptions for error handling
+try:
+    from host_gui.exceptions import SignalDecodeError, DbcError, CanAdapterError
+except ImportError:
+    # Fallback if exceptions not available
+    SignalDecodeError = ValueError
+    DbcError = ValueError
+    CanAdapterError = RuntimeError
+
 
 # AdapterWorker class moved to host_gui/services/can_service.py
 # Import from services if needed:
@@ -282,11 +291,11 @@ class TestRunner:
                         f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                     try:
                         if gui.can_service is not None and gui.can_service.is_connected():
-                        gui.can_service.send_frame(f)
+                            gui.can_service.send_frame(f)
                     except Exception:
                         pass
                     # Loopback handled by adapter if supported
-                    if hasattr(gui.can_service.adapter, 'loopback'):
+                    if gui.can_service is not None and gui.can_service.is_connected() and hasattr(gui.can_service.adapter, 'loopback'):
                         try:
                             gui.can_service.adapter.loopback(f)
                         except Exception:
@@ -750,15 +759,15 @@ class TestRunner:
                             f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                         try:
                             if gui.can_service is not None and gui.can_service.is_connected():
-                        gui.can_service.send_frame(f)
+                                gui.can_service.send_frame(f)
                         except Exception:
                             pass
-                    # Loopback handled by adapter if supported
-                    if hasattr(gui.can_service.adapter, 'loopback'):
-                        try:
-                            gui.can_service.adapter.loopback(f)
-                        except Exception:
-                            pass
+                        # Loopback handled by adapter if supported
+                        if gui.can_service is not None and gui.can_service.is_connected() and hasattr(gui.can_service.adapter, 'loopback'):
+                            try:
+                                gui.can_service.adapter.loopback(f)
+                            except Exception:
+                                pass
 
                 success = False
                 info = ''
