@@ -970,11 +970,17 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Phase 2: Async test execution
         test_execution_thread: TestExecutionThread instance (None when not running)
+        
+        # Phase 3: Service Container
+        service_container: ServiceContainer instance for dependency injection (None if unavailable)
     """
     
     def __init__(self):
         """Initialize the main GUI window and build all UI components."""
         super().__init__()
+        
+        # Phase 3: Track if services need cleanup on shutdown
+        self._services_initialized = False
         self.setWindowTitle('EOL Host - Native GUI')
         self.resize(WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT)
 
@@ -999,10 +1005,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         else:
             self.dbc_service = None
         
-        if SignalService is not None and self.dbc_service is not None:
-            self.signal_service = SignalService(self.dbc_service)
-        else:
-            self.signal_service = None
+            if SignalService is not None and self.dbc_service is not None:
+                self.signal_service = SignalService(self.dbc_service)
+            else:
+                self.signal_service = None
+            
+            self._services_initialized = True
         
         # Phase 2: Async test execution thread (initialized when needed)
         try:
@@ -2828,12 +2836,18 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Create and configure TestExecutionThread
         runner = TestRunner(self)
+        
+        # Phase 3: Get services from container if available
+        can_svc = self.service_container.get_can_service() if self.service_container else self.can_service
+        dbc_svc = self.service_container.get_dbc_service() if self.service_container else self.dbc_service
+        signal_svc = self.service_container.get_signal_service() if self.service_container else self.signal_service
+        
         self.test_execution_thread = self.TestExecutionThread(
             tests=list(self._tests),
             test_runner=runner,
-            can_service=self.can_service,
-            dbc_service=self.dbc_service,
-            signal_service=self.signal_service,
+            can_service=can_svc,
+            dbc_service=dbc_svc,
+            signal_service=signal_svc,
             timeout=1.0
         )
         

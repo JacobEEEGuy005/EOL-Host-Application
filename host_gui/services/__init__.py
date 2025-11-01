@@ -14,6 +14,7 @@ from host_gui.services.can_service import CanService, AdapterWorker
 from host_gui.services.dbc_service import DbcService
 from host_gui.services.signal_service import SignalService
 from host_gui.services.test_execution_thread import TestExecutionThread
+from host_gui.services.service_container import ServiceContainer
 
-__all__ = ['CanService', 'AdapterWorker', 'DbcService', 'SignalService', 'TestExecutionThread']
+__all__ = ['CanService', 'AdapterWorker', 'DbcService', 'SignalService', 'TestExecutionThread', 'ServiceContainer']
 
