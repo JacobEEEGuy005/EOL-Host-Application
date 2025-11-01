@@ -34,8 +34,8 @@ CAN_FRAME_MAX_LENGTH = 8  # Classic CAN maximum data length
 # Timing constants (milliseconds)
 DWELL_TIME_DEFAULT = 100
 DWELL_TIME_MIN = 100
-POLL_INTERVAL_MS = 50  # 0.05 seconds
-FRAME_POLL_INTERVAL_MS = 150
+POLL_INTERVAL_MS = 25  # 0.05 seconds
+FRAME_POLL_INTERVAL_MS = 10
 # DAC settling time after command change (milliseconds)
 # Data points collected within this time after a DAC command step change will be disregarded
 DAC_SETTLING_TIME_MS = 20
@@ -74,8 +74,8 @@ LOGO_WIDTH = 280
 LOGO_HEIGHT = 80
 
 # Sleep intervals (seconds)
-SLEEP_INTERVAL_SHORT = 0.02  # 20ms - used for short non-blocking sleeps
-SLEEP_INTERVAL_MEDIUM = 0.05  # 50ms - used for medium delays
+SLEEP_INTERVAL_SHORT = 0.005  # 20ms - used for short non-blocking sleeps
+SLEEP_INTERVAL_MEDIUM = 0.01  # 50ms - used for medium delays
 
 # UI limits
 MUX_CHANNEL_MAX = 65535  # Maximum value for MUX channel

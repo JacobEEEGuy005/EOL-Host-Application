@@ -3829,16 +3829,45 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         This method is called periodically by a QTimer to process frames
         that have been received by the AdapterWorker thread and placed
-        into frame_q. It processes all available frames in the queue
-        during each poll interval.
+        into frame_queue. It processes frames in batches to prevent UI blocking
+        while ensuring all frames are eventually processed.
+        
+        Rate limiting is applied to prevent processing too many frames in a single
+        poll interval, which could cause UI freezing.
         """
         try:
-            if self.can_service is not None:
-                while not self.can_service.frame_queue.empty():
+            if self.can_service is None:
+                return
+            
+            frames_processed = 0
+            queue_size_before = self.can_service.frame_queue.qsize()
+            # Limit frames processed per poll to prevent UI blocking
+            # Higher limit for better throughput while maintaining responsiveness
+            MAX_FRAMES_PER_POLL = 100
+            
+            # Process frames in batch, but limit to prevent UI freeze
+            while not self.can_service.frame_queue.empty() and frames_processed < MAX_FRAMES_PER_POLL:
+                try:
                     f = self.can_service.frame_queue.get_nowait()
-                self._add_frame_row(f)
+                    self._add_frame_row(f)  # Process each frame - CRITICAL: must be inside loop
+                    frames_processed += 1
+                except Exception as frame_error:
+                    logger.debug(f"Error processing frame in poll: {frame_error}")
+                    # Continue with next frame even if one fails
+                    continue
+            
+            # Log if we hit the rate limit (indicates high traffic)
+            if frames_processed >= MAX_FRAMES_PER_POLL:
+                remaining = self.can_service.frame_queue.qsize()
+                if remaining > 0:
+                    logger.debug(f"Frame rate limit reached: processed {frames_processed}, {remaining} remaining in queue")
+            
+            # Log queue size periodically for monitoring
+            if queue_size_before > 50 or frames_processed > 10:
+                logger.debug(f"Poll processed {frames_processed} frames (queue had {queue_size_before}, now {self.can_service.frame_queue.qsize()})")
+                
         except Exception as e:
-            logger.debug(f"Error polling frames: {e}")
+            logger.error(f"Error polling frames: {e}", exc_info=True)
 
     def _add_frame_row(self, frame):
         """Add a received CAN frame to the frame table and process it.
