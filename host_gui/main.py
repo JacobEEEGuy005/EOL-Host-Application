@@ -531,6 +531,16 @@ class TestRunner:
                         except Exception:
                             data_bytes = b''
 
+                    # Update real-time monitoring: when commanding the DAC, show the commanded value
+                    try:
+                        if dac_cmd_sig and dac_cmd_sig in signals:
+                            gui.current_signal_label.setText(str(signals[dac_cmd_sig]))
+                        elif len(signals) == 1:
+                            # if a single signal is being sent, show its value
+                            gui.current_signal_label.setText(str(list(signals.values())[0]))
+                    except Exception:
+                        pass
+
                     if AdapterFrame is not None:
                         f = AdapterFrame(can_id=can_id, data=data_bytes)
                         print(signals)
