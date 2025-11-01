@@ -30,7 +30,16 @@ try:
     import cantools
 except Exception:
     cantools = None
+
 import logging
+
+# Configure logging for host GUI
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -70,13 +79,15 @@ class AdapterWorker(threading.Thread):
         try:
             for frame in self.sim.iter_recv():
                 if self._stop.is_set():
+                    logger.debug("AdapterWorker: stop signal received")
                     break
                 self.out_q.put(frame)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"AdapterWorker error in run loop: {e}", exc_info=True)
 
     def stop(self):
         self._stop.set()
+        logger.debug("AdapterWorker: stop() called")
 
 
 class TestRunner:
@@ -97,6 +108,7 @@ class TestRunner:
         gui = self.gui
         # ensure adapter running
         if gui.sim is None:
+            logger.error("Attempted to run test without adapter running")
             raise RuntimeError('Adapter not running')
         act = test.get('actuation', {})
         try:
@@ -441,23 +453,58 @@ class TestRunner:
                 # 6) Increase DAC by dac_step_mv until dac_max_mv, holding for dwell_ms at each step
                 # 7) Set DAC output to 0mV and disable MUX
                 can_id = act.get('dac_can_id')
+                
+                # Validate CAN ID
+                try:
+                    can_id = int(can_id)
+                    if not (0 <= can_id <= 0x1FFFFFFF):
+                        raise ValueError(f"Invalid DAC CAN ID: {can_id}")
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Invalid DAC CAN ID in test configuration: {e}")
+                    return False, f"Invalid DAC CAN ID: {can_id}"
+                
                 mux_enable_sig = act.get('mux_enable_signal') or act.get('mux_enable')
                 mux_channel_sig = act.get('mux_channel_signal') or act.get('mux_channel')
                 mux_channel_value = act.get('mux_channel_value', act.get('mux_channel_value'))
                 dac_cmd_sig = act.get('dac_command_signal') or act.get('dac_command')
+                
+                # Validate and parse DAC voltage parameters
                 try:
                     dac_min = int(act.get('dac_min_mv', act.get('dac_min', 0)))
-                except Exception:
+                    if not (0 <= dac_min <= 5000):
+                        raise ValueError(f"DAC min {dac_min} out of range (0-5000 mV)")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid DAC min, using 0: {e}")
                     dac_min = 0
+                    
                 try:
                     dac_max = int(act.get('dac_max_mv', act.get('dac_max', dac_min)))
-                except Exception:
+                    if not (0 <= dac_max <= 5000):
+                        raise ValueError(f"DAC max {dac_max} out of range (0-5000 mV)")
+                    if dac_max < dac_min:
+                        logger.warning(f"DAC max {dac_max} < min {dac_min}, swapping")
+                        dac_max, dac_min = dac_min, dac_max
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid DAC max, using min: {e}")
                     dac_max = dac_min
+                    
                 try:
                     dac_step = int(act.get('dac_step_mv', act.get('dac_step', max(1, (dac_max - dac_min)))))
-                except Exception:
+                    if dac_step <= 0:
+                        raise ValueError(f"DAC step must be positive, got {dac_step}")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid DAC step, using calculated: {e}")
                     dac_step = max(1, dac_max - dac_min)
-                dwell_ms = int(act.get('dac_dwell_ms', act.get('dwell_ms', 100))) or 100
+                    
+                try:
+                    dwell_ms = int(act.get('dac_dwell_ms', act.get('dwell_ms', 100)))
+                    if dwell_ms < 0:
+                        raise ValueError(f"Dwell time must be non-negative, got {dwell_ms}")
+                    if dwell_ms == 0:
+                        dwell_ms = 100  # Default minimum
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid dwell time, using 100ms: {e}")
+                    dwell_ms = 100
 
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
@@ -2354,9 +2401,24 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}{metrics}')
 
     def _run_single_test(self, test: dict, timeout: float = 1.0):
+        """Run a single test with validation."""
+        # Validate test structure
+        if not isinstance(test, dict):
+            logger.error(f"Invalid test format: {type(test)}")
+            return False, "Invalid test format"
+        if not test.get('name'):
+            logger.warning("Test missing name field")
+        if not test.get('actuation'):
+            logger.error("Test missing actuation field")
+            return False, "Test missing actuation configuration"
+        
         # Delegate execution to TestRunner (keeps behavior identical but isolates logic)
         runner = TestRunner(self)
-        return runner.run_single_test(test, timeout)
+        try:
+            return runner.run_single_test(test, timeout)
+        except Exception as e:
+            logger.error(f"Test execution failed: {e}", exc_info=True)
+            return False, f"Test execution error: {e}"
 
     # Adapter control
     def toggle_adapter(self):
@@ -2365,7 +2427,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             selected = self.device_combo.currentText()
         except Exception:
             selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
-        print(f"[host_gui] toggle_adapter called; sim is {'set' if self.sim is not None else 'None'}; selected={selected}")
+        logger.info(f"toggle_adapter called; sim is {'set' if self.sim is not None else 'None'}; selected={selected}")
         if self.sim is None:
             if selected != 'SimAdapter':
                 handled = False
@@ -2384,6 +2446,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                         self._adapter_name = 'PCAN'
                         handled = True
                     except Exception as e:
+                        logger.error(f"Failed to open PCAN adapter: {e}", exc_info=True)
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open PCAN adapter: {e}')
                         self.sim = None
                         return
@@ -2403,6 +2466,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                         self._adapter_name = 'PythonCAN'
                         handled = True
                     except Exception as e:
+                        logger.error(f"Failed to open PythonCAN adapter: {e}", exc_info=True)
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open PythonCAN adapter: {e}')
                         self.sim = None
                         return
@@ -2428,6 +2492,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                         self._adapter_name = 'Canalystii'
                         handled = True
                     except Exception as e:
+                        logger.error(f"Failed to open Canalystii adapter: {e}", exc_info=True)
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open Canalystii adapter: {e}')
                         self.sim = None
                         return
@@ -2447,13 +2512,15 @@ class BaseGUI(QtWidgets.QMainWindow):
                     self.sim.open()
                     self._adapter_name = 'Sim'
                 except Exception as e:
+                    logger.error(f"Failed to open SimAdapter: {e}", exc_info=True)
                     QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open SimAdapter: {e}')
                     self.sim = None
                     return
             # Prompt user to optionally load a DBC when adapter starts
             try:
                 fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
-            except Exception:
+            except Exception as e:
+                logger.warning(f"File dialog error: {e}")
                 fname = ''
 
             if fname:
@@ -2474,6 +2541,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                         except Exception:
                             db = cantools.db.load_file(fname)
                     except Exception as e:
+                        logger.error(f"Failed to parse DBC file {fname}: {e}", exc_info=True)
                         self._dbc_db = None
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to parse DBC: {e}')
                     else:
@@ -2490,6 +2558,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                                 self.sim.set_filters(filters)
                             QtWidgets.QMessageBox.information(self, 'DBC Loaded', f'Loaded DBC: {os.path.basename(fname)}; applied {len(filters)} filters')
                         except Exception as e:
+                            logger.warning(f"Failed to apply filters to adapter: {e}", exc_info=True)
                             QtWidgets.QMessageBox.warning(self, 'Filters', f'Failed to apply filters to adapter: {e}')
             # if no DBC was chosen or parse failed, close adapter and do not start reception
             if not fname or (cantools is not None and getattr(self, '_dbc_db', None) is None):
@@ -2499,8 +2568,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                     pass
                 try:
                     self.sim.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error closing adapter: {e}")
                 self.sim = None
                 return
 
@@ -2508,10 +2577,10 @@ class BaseGUI(QtWidgets.QMainWindow):
             try:
                 self.worker = AdapterWorker(self.sim, self.frame_q)
                 self.worker.start()
-                print('[host_gui] started AdapterWorker')
+                logger.info('Started AdapterWorker and poll timer')
                 self.poll_timer.start()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to start AdapterWorker: {e}", exc_info=True)
 
             # update connect button and status
             if self.start_btn is not None:
@@ -2543,19 +2612,21 @@ class BaseGUI(QtWidgets.QMainWindow):
             try:
                 if self.worker:
                     self.worker.stop()
-            except Exception:
-                pass
+                    logger.debug("Stopped AdapterWorker")
+            except Exception as e:
+                logger.warning(f"Error stopping AdapterWorker: {e}")
             try:
                 self.sim.close()
-            except Exception:
-                pass
+                logger.info("Closed adapter")
+            except Exception as e:
+                logger.warning(f"Error closing adapter during disconnect: {e}", exc_info=True)
             self.sim = None
             self.worker = None
             self.poll_timer.stop()
             if self.start_btn is not None:
                 self.start_btn.setText('Connect')
             self.conn_indicator.setText('Adapter: stopped')
-            print('[host_gui] stopped adapter')
+            logger.info('Adapter stopped and cleaned up')
 
 
     def _append_msg_log(self, direction: str, frame):
@@ -2582,8 +2653,8 @@ class BaseGUI(QtWidgets.QMainWindow):
             while not self.frame_q.empty():
                 f = self.frame_q.get_nowait()
                 self._add_frame_row(f)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error polling frames: {e}")
 
     def _add_frame_row(self, frame):
         r = self.frame_table.rowCount()
@@ -2598,8 +2669,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         # also append to message log
         try:
             self._append_msg_log('RX', frame)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error appending to message log: {e}")
         # limit number of rows to latest N
         try:
             while self.frame_table.rowCount() > self._max_frames:
@@ -2608,13 +2679,13 @@ class BaseGUI(QtWidgets.QMainWindow):
             item = self.frame_table.item(self.frame_table.rowCount()-1, 0)
             if item is not None:
                 self.frame_table.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtBottom)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error managing frame table rows: {e}")
         # Also attempt to decode signals from DBC and show in Signal View
         try:
             self._decode_and_add_signals(frame)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error decoding signals from frame: {e}")
 
     def _decode_and_add_signals(self, frame):
         """Decode a received frame using loaded DBC and append each signal to Signal View."""
@@ -2810,28 +2881,47 @@ class BaseGUI(QtWidgets.QMainWindow):
             return
         try:
             can_id_text = self.send_id.text().strip()
+            if not can_id_text:
+                raise ValueError("CAN ID is required")
             if can_id_text.lower().startswith('0x'):
                 can_id = int(can_id_text, 16)
             else:
                 can_id = int(can_id_text, 0)
-            data = bytes.fromhex(self.send_data.text().strip()) if self.send_data.text().strip() else b''
+            
+            # Validate CAN ID range
+            if not (0 <= can_id <= 0x1FFFFFFF):
+                raise ValueError(f"CAN ID {can_id} out of range (0-0x1FFFFFFF)")
+            
+            data_text = self.send_data.text().strip()
+            if not data_text:
+                data = b''
+            else:
+                data = bytes.fromhex(data_text.replace(' ', '').replace('-', ''))
+                # Validate data length
+                if len(data) > 8:
+                    raise ValueError(f"Data length {len(data)} exceeds CAN frame max (8 bytes)")
             if AdapterFrame is not None:
                 f = AdapterFrame(can_id=can_id, data=data)
             else:
                 class F: pass
                 f = F(); f.can_id = can_id; f.data = data; f.timestamp = time.time()
             self.sim.send(f)
+            logger.debug(f"Sent frame: can_id=0x{can_id:X}, data={data.hex()}")
             if hasattr(self.sim, 'loopback'):
                 try:
                     self.sim.loopback(f)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Loopback failed (non-fatal): {e}")
             try:
                 self._append_msg_log('TX', f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error appending TX to message log: {e}")
             QtWidgets.QMessageBox.information(self, 'Sent', 'Frame sent')
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid frame data: {e}")
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Invalid input: {e}')
         except Exception as e:
+            logger.error(f"Failed to send frame: {e}", exc_info=True)
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to send: {e}')
 
 
