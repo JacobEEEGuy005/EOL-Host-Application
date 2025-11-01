@@ -2887,7 +2887,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             pass
 
         # prepare feedback source + signal similar to Create dialog
-        feedback_edit = QtWidgets.QLineEdit()
+        feedback_edit = QtWidgets.QLineEdit(data.get('feedback_signal', ''))
         fb_msg_combo = None
         fb_signal_combo = None
         if self.dbc_service is not None and self.dbc_service.is_loaded():
