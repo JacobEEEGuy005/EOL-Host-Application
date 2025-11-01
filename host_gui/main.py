@@ -2191,6 +2191,18 @@ class BaseGUI(QtWidgets.QMainWindow):
             mux_chan = QtWidgets.QLineEdit()
             dac_can = QtWidgets.QLineEdit()
             dac_cmd = QtWidgets.QLineEdit()
+            # Create widgets for analog test parameters (with validators)
+            mv_validator = QtGui.QIntValidator(0, 5000, self)
+            step_validator = QtGui.QIntValidator(0, 5000, self)
+            dwell_validator = QtGui.QIntValidator(0, DWELL_TIME_MAX_MS, self)
+            dac_min_mv = QtWidgets.QLineEdit()
+            dac_min_mv.setValidator(mv_validator)
+            dac_max_mv = QtWidgets.QLineEdit()
+            dac_max_mv.setValidator(mv_validator)
+            dac_step_mv = QtWidgets.QLineEdit()
+            dac_step_mv.setValidator(step_validator)
+            dac_dwell_ms = QtWidgets.QLineEdit()
+            dac_dwell_ms.setValidator(dwell_validator)
             # populate sub-widgets
             digital_layout.addRow('Command Message:', dig_can)
             digital_layout.addRow('Actuation Signal:', dig_signal)
@@ -2198,13 +2210,13 @@ class BaseGUI(QtWidgets.QMainWindow):
             digital_layout.addRow('Value - High:', dig_value_high)
             digital_layout.addRow('Dwell Time (ms):', dig_dwell_ms)
             # fallback analog fields when no DBC
-            analog_layout.addRow('Command Message (free-text):', mux_chan)
-            analog_layout.addRow('DAC CAN ID (analog):', dac_can)
-            analog_layout.addRow('DAC Command (hex):', dac_cmd)
-            analog_layout.addRow('DAC Min Output (mV):', QtWidgets.QLineEdit())
-            analog_layout.addRow('DAC Max Output (mV):', QtWidgets.QLineEdit())
-            analog_layout.addRow('Step Change (mV):', QtWidgets.QLineEdit())
-            analog_layout.addRow('Dwell Time (ms):', QtWidgets.QLineEdit())
+            analog_layout.addRow('MUX Channel:', mux_chan)
+            analog_layout.addRow('DAC CAN ID:', dac_can)
+            analog_layout.addRow('DAC Command Signal:', dac_cmd)
+            analog_layout.addRow('DAC Min Output (mV):', dac_min_mv)
+            analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
+            analog_layout.addRow('Step Change (mV):', dac_step_mv)
+            analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -2350,19 +2362,39 @@ class BaseGUI(QtWidgets.QMainWindow):
                         'dwell_ms': dig_dwell,
                     }
                 else:
+                    # Non-DBC analog test: read all fields
                     try:
-                        mux = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
+                        mux_channel_val = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
                     except Exception:
-                        mux = None
+                        mux_channel_val = None
                     try:
                         dac_id = int(dac_can.text().strip(), 0) if dac_can.text().strip() else None
                     except Exception:
                         dac_id = None
+                    dac_cmd_sig = dac_cmd.text().strip()
+                    
+                    # Read numeric DAC parameters
+                    def _to_int_or_none(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dac_min = _to_int_or_none(dac_min_mv)
+                    dac_max = _to_int_or_none(dac_max_mv)
+                    dac_step = _to_int_or_none(dac_step_mv)
+                    dac_dwell = _to_int_or_none(dac_dwell_ms)
+                    
                     act = {
                         'type': 'analog',
-                        'mux_channel': mux,
                         'dac_can_id': dac_id,
-                        'dac_command': dac_cmd.text().strip()
+                        'dac_command_signal': dac_cmd_sig,
+                        'mux_channel_value': mux_channel_val,
+                        'dac_min_mv': dac_min,
+                        'dac_max_mv': dac_max,
+                        'dac_step_mv': dac_step,
+                        'dac_dwell_ms': dac_dwell,
                     }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
