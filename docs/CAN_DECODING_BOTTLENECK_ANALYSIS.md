@@ -114,9 +114,9 @@ def _poll_frames(self):
 ```
 
 ### Priority 2: Reduce Polling Interval
-- Reduce `FRAME_POLL_INTERVAL_MS` from 150ms to **10-20ms**
-- Provides ~50-100 polls/second
-- Better matches high-rate CAN traffic
+- `FRAME_POLL_INTERVAL_MS` is already **10ms** (previously reduced from 150ms)
+- Provides ~100 polls/second
+- Good match for high-rate CAN traffic
 
 ### Priority 3: Add Frame Rate Limiting
 - Limit frames processed per poll (e.g., 50 frames max)
@@ -136,7 +136,13 @@ def _poll_frames(self):
 
 After fixes:
 - **No frames lost**: All frames processed (bug fix)
-- **Faster updates**: 10ms polling = ~100 polls/sec vs ~6.67 polls/sec
+- **Faster updates**: 10ms polling = ~100 polls/sec (already optimized)
 - **Better responsiveness**: Frame rate limiting prevents UI freeze
 - **Bounded memory**: Queue monitoring prevents unbounded growth
+
+## Status
+✅ **CRITICAL BUG FIXED**: `_add_frame_row()` now called inside the loop
+✅ **Frame rate limiting added**: MAX_FRAMES_PER_POLL = 100
+✅ **Polling interval**: Already optimized to 10ms
+✅ **Queue monitoring**: Added logging for diagnostics
 
