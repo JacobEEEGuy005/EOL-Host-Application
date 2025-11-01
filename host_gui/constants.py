@@ -36,6 +36,9 @@ DWELL_TIME_DEFAULT = 100
 DWELL_TIME_MIN = 100
 POLL_INTERVAL_MS = 50  # 0.05 seconds
 FRAME_POLL_INTERVAL_MS = 150
+# DAC settling time after command change (milliseconds)
+# Data points collected within this time after a DAC command step change will be disregarded
+DAC_SETTLING_TIME_MS = 20
 
 # Display limits
 MAX_MESSAGES_DEFAULT = 50
