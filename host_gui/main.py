@@ -967,6 +967,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         can_service: CanService instance for adapter management
         dbc_service: DbcService instance for DBC operations
         signal_service: SignalService instance for signal decoding
+        
+        # Phase 2: Async test execution
+        test_execution_thread: TestExecutionThread instance (None when not running)
     """
     
     def __init__(self):
@@ -1000,6 +1003,14 @@ class BaseGUI(QtWidgets.QMainWindow):
             self.signal_service = SignalService(self.dbc_service)
         else:
             self.signal_service = None
+        
+        # Phase 2: Async test execution thread (initialized when needed)
+        try:
+            from host_gui.services.test_execution_thread import TestExecutionThread
+            self.TestExecutionThread = TestExecutionThread
+        except ImportError:
+            self.TestExecutionThread = None
+        self.test_execution_thread = None
         
         # limits
         self._max_messages = MAX_MESSAGES_DEFAULT
@@ -2793,12 +2804,71 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._on_run_selected()
 
     def _on_run_sequence(self) -> None:
-        """Execute all configured tests in sequence.
+        """Execute all configured tests in sequence using background thread.
         
-        Runs each test in the _tests list sequentially, displaying
-        progress in the progress bar and logging results. Provides
-        a summary with pass rate and performance metrics at completion.
+        Phase 2: Uses TestExecutionThread to run tests asynchronously,
+        preventing UI blocking. Progress is updated via Qt signals.
         """
+        # Phase 2: Use async thread if available, fallback to legacy synchronous execution
+        if self.TestExecutionThread is None:
+            return self._on_run_sequence_legacy()
+        
+        # Check if already running
+        if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+            logger.warning("Test sequence already running, ignoring request")
+            return
+        
+        if not self._tests:
+            self.status_label.setText('No tests to run')
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
+            return
+        
+        # Switch to Test Status tab
+        self.tabs_main.setCurrentIndex(self.status_tab_index)
+        
+        # Create and configure TestExecutionThread
+        runner = TestRunner(self)
+        self.test_execution_thread = self.TestExecutionThread(
+            tests=list(self._tests),
+            test_runner=runner,
+            can_service=self.can_service,
+            dbc_service=self.dbc_service,
+            signal_service=self.signal_service,
+            timeout=1.0
+        )
+        
+        # Connect signals
+        self.test_execution_thread.test_started.connect(self._on_test_started)
+        self.test_execution_thread.test_finished.connect(self._on_test_finished)
+        self.test_execution_thread.test_failed.connect(self._on_test_failed)
+        self.test_execution_thread.sequence_started.connect(self._on_sequence_started)
+        self.test_execution_thread.sequence_progress.connect(self._on_sequence_progress)
+        self.test_execution_thread.sequence_finished.connect(self._on_sequence_finished)
+        self.test_execution_thread.sequence_cancelled.connect(self._on_sequence_cancelled)
+        
+        # Initialize UI
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, len(self._tests))
+        self.progress_bar.setValue(0)
+        self.status_label.setText('Starting test sequence...')
+        
+        # Update run button to cancel button
+        try:
+            if hasattr(self, 'run_seq_btn'):
+                self.run_seq_btn.setText('Cancel Sequence')
+                self.run_seq_btn.clicked.disconnect()
+                self.run_seq_btn.clicked.connect(self._on_cancel_sequence)
+        except Exception:
+            pass
+        
+        # Start thread
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Starting test sequence ({len(self._tests)} tests)')
+        self.test_execution_thread.start()
+        logger.info(f"Started test sequence thread with {len(self._tests)} tests")
+    
+    def _on_run_sequence_legacy(self) -> None:
+        """Legacy synchronous test sequence execution (fallback)."""
         if not self._tests:
             self.status_label.setText('No tests to run')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
@@ -2868,6 +2938,141 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.status_label.setText('Sequence completed')
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}{metrics}')
+    
+    def _on_cancel_sequence(self) -> None:
+        """Cancel the currently running test sequence."""
+        if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+            logger.info("Cancelling test sequence")
+            self.test_execution_thread.stop()
+            self.status_label.setText('Cancelling test sequence...')
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            self.test_log.appendPlainText(f'[{timestamp}] Test sequence cancellation requested')
+        else:
+            logger.debug("No test sequence running to cancel")
+    
+    def _on_sequence_started(self, total_tests: int) -> None:
+        """Handle sequence started signal from TestExecutionThread."""
+        self.progress_bar.setRange(0, total_tests)
+        self.progress_bar.setValue(0)
+        self.status_label.setText(f'Running test sequence ({total_tests} tests)...')
+        logger.debug(f"Sequence started: {total_tests} tests")
+    
+    def _on_sequence_progress(self, current: int, total: int) -> None:
+        """Handle sequence progress signal from TestExecutionThread."""
+        self.progress_bar.setValue(current)
+        self.status_label.setText(f'Running test {current}/{total}...')
+    
+    def _on_test_started(self, test_index: int, test_name: str) -> None:
+        """Handle test started signal from TestExecutionThread."""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Running test: {test_name}')
+        
+        # Find test and set current feedback signal
+        try:
+            if test_index < len(self._tests):
+                t = self._tests[test_index]
+                self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
+                if self._current_feedback and self._current_feedback[1]:
+                    ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
+                    if v is not None:
+                        try:
+                            self.feedback_signal_label.setText(str(v))
+                        except Exception:
+                            pass
+        except Exception:
+            self._current_feedback = None
+    
+    def _on_test_finished(self, test_index: int, success: bool, info: str, exec_time: float) -> None:
+        """Handle test finished signal from TestExecutionThread."""
+        result = 'PASS' if success else 'FAIL'
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
+        
+        # Add to results table
+        try:
+            if test_index < len(self._tests):
+                t = self._tests[test_index]
+                self._add_result_to_table(t, result, f"{exec_time:.2f}s", info)
+        except Exception:
+            pass
+        
+        # Clear current feedback
+        try:
+            self._current_feedback = None
+        except Exception:
+            pass
+    
+    def _on_test_failed(self, test_index: int, error: str, exec_time: float) -> None:
+        """Handle test failed signal from TestExecutionThread."""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Error: {error}')
+        
+        # Add to results table
+        try:
+            if test_index < len(self._tests):
+                t = self._tests[test_index]
+                self._add_result_to_table(t, 'ERROR', f"{exec_time:.2f}s", error)
+        except Exception:
+            pass
+        
+        # Clear current feedback
+        try:
+            self._current_feedback = None
+        except Exception:
+            pass
+    
+    def _on_sequence_finished(self, results: list, summary: str) -> None:
+        """Handle sequence finished signal from TestExecutionThread."""
+        self.progress_bar.setVisible(False)
+        
+        # Parse results for UI update
+        pass_count = sum(1 for _, success, _ in results if success)
+        total = len(results)
+        self.status_label.setText(f'Sequence completed: {pass_count}/{total} passed')
+        
+        # Log summary
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}')
+        
+        # Restore run button
+        try:
+            if hasattr(self, 'run_seq_btn'):
+                self.run_seq_btn.setText('Run Sequence')
+                self.run_seq_btn.clicked.disconnect()
+                self.run_seq_btn.clicked.connect(self._on_run_sequence)
+        except Exception:
+            pass
+        
+        # Clean up thread
+        if self.test_execution_thread is not None:
+            self.test_execution_thread.wait(1000)  # Wait up to 1 second for thread to finish
+            self.test_execution_thread = None
+        
+        logger.info(f"Test sequence finished: {pass_count}/{total} passed")
+    
+    def _on_sequence_cancelled(self) -> None:
+        """Handle sequence cancelled signal from TestExecutionThread."""
+        self.progress_bar.setVisible(False)
+        self.status_label.setText('Test sequence cancelled')
+        
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test sequence was cancelled by user')
+        
+        # Restore run button
+        try:
+            if hasattr(self, 'run_seq_btn'):
+                self.run_seq_btn.setText('Run Sequence')
+                self.run_seq_btn.clicked.disconnect()
+                self.run_seq_btn.clicked.connect(self._on_run_sequence)
+        except Exception:
+            pass
+        
+        # Clean up thread
+        if self.test_execution_thread is not None:
+            self.test_execution_thread.wait(1000)  # Wait up to 1 second for thread to finish
+            self.test_execution_thread = None
+        
+        logger.info("Test sequence cancelled")
 
     def _run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Run a single test with validation.
