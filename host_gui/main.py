@@ -22,20 +22,23 @@ if repo_root not in sys.path:
 try:
     from backend.adapters.sim import SimAdapter
     from backend.adapters.interface import Frame as AdapterFrame
-    try:
-        from backend.adapters.pcan import PcanAdapter
-    except Exception:
-        PcanAdapter = None
-        try:
-            from backend.adapters.python_can_adapter import PythonCanAdapter
-        except Exception:
-            PythonCanAdapter = None
 except Exception as exc:
     SimAdapter = None
     AdapterFrame = None
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
+
+# Import optional adapters independently so module-level names always exist
+try:
+    from backend.adapters.pcan import PcanAdapter
+except Exception:
+    PcanAdapter = None
+
+try:
+    from backend.adapters.python_can_adapter import PythonCanAdapter
+except Exception:
+    PythonCanAdapter = None
 
 
 class AdapterWorker(threading.Thread):
@@ -671,8 +674,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._max_frames = 50
         # generic CAN settings defaults (can be overridden by UI)
         # defaults may come from environment variables specific to adapters
-        self._can_channel = os.environ.get('PCAN_CHANNEL', os.environ.get('CAN_CHANNEL', 'PCAN_USBBUS1'))
-        self._can_bitrate = os.environ.get('PCAN_BITRATE', os.environ.get('CAN_BITRATE', ''))
+        # Use conservative defaults: channel 0 and 500 kbps
+        self._can_channel = os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', '0'))
+        try:
+            # prefer environment-provided bitrate in kbps, otherwise default to 500
+            self._can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', '500')))
+        except Exception:
+            self._can_bitrate = 500
 
         self._build_menu()
         self._build_toolbar()
@@ -955,6 +963,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.can_bitrate_combo = QtWidgets.QComboBox()
         bitrate_choices = ['10 kbps','20 kbps','50 kbps','125 kbps','250 kbps','500 kbps','800 kbps','1000 kbps']
         self.can_bitrate_combo.addItems(bitrate_choices)
+        # tooltip to clarify units; Canalystii backend expects bitrate in bits-per-second,
+        # the GUI accepts kbps and will auto-convert when Canalystii is selected.
+        self.can_bitrate_combo.setToolTip('Bitrate in kbps (e.g. 500). Canalystii backend will be converted to bps automatically.')
         # set default if present
         try:
             if self._can_bitrate:
@@ -990,6 +1001,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                 channels = ['PCAN_USBBUS1','PCAN_USBBUS2','PCAN_USBBUS3','PCAN_USBBUS4']
             elif text.lower().startswith('socketcan'):
                 channels = ['can0','can1','can2']
+            elif text.lower().startswith('canalystii') or text.lower() == 'canalystii':
+                channels = ['0','1']
             elif text.lower().startswith('sim'):
                 channels = ['sim']
             else:
@@ -1136,6 +1149,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             import backend.adapters.python_can_adapter as _pycan
             devices.append('PythonCAN')
+            # python-can backend can also be used with Canalystii hardware
+            devices.append('Canalystii')
         except Exception:
             pass
         try:
@@ -2193,6 +2208,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         print(f"[host_gui] toggle_adapter called; sim is {'set' if self.sim is not None else 'None'}; selected={selected}")
         if self.sim is None:
             if selected != 'SimAdapter':
+                handled = False
                 # attempt to instantiate PCAN adapter if selected
                 if selected == 'PCAN' and PcanAdapter is not None:
                     try:
@@ -2206,12 +2222,11 @@ class BaseGUI(QtWidgets.QMainWindow):
                         self.sim = PcanAdapter(channel=self._can_channel, bitrate=br)
                         self.sim.open()
                         self._adapter_name = 'PCAN'
+                        handled = True
                     except Exception as e:
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open PCAN adapter: {e}')
                         self.sim = None
                         return
-                else:
-                    QtWidgets.QMessageBox.information(self, 'Adapter', f'Adapter {selected} not implemented in prototype; using SimAdapter')
                 # Python-can backed adapter
                 if selected == 'PythonCAN' and PythonCanAdapter is not None:
                     try:
@@ -2226,10 +2241,39 @@ class BaseGUI(QtWidgets.QMainWindow):
                         self.sim = PythonCanAdapter(channel=chan, bitrate=br, interface=None)
                         self.sim.open()
                         self._adapter_name = 'PythonCAN'
+                        handled = True
                     except Exception as e:
                         QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open PythonCAN adapter: {e}')
                         self.sim = None
                         return
+                # Canalystii via python-can
+                if selected == 'Canalystii' and PythonCanAdapter is not None:
+                    try:
+                        br = None
+                        if str(self._can_bitrate).strip():
+                            try:
+                                br = int(str(self._can_bitrate).strip())
+                            except Exception:
+                                br = None
+                        chan = self._can_channel or '0'
+                        # python-can canalystii interface expects channel as string (e.g., '0')
+                        # Canalystii python-can backend expects bitrate in bits-per-second; UI provides kbps.
+                        if br is not None:
+                            try:
+                                br = int(br) * 1000
+                            except Exception:
+                                pass
+                        self.sim = PythonCanAdapter(channel=chan, bitrate=br, interface='canalystii')
+                        self.sim.open()
+                        self._adapter_name = 'Canalystii'
+                        handled = True
+                    except Exception as e:
+                        QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to open Canalystii adapter: {e}')
+                        self.sim = None
+                        return
+
+                if not handled:
+                    QtWidgets.QMessageBox.information(self, 'Adapter', f'Adapter {selected} not implemented in prototype; using SimAdapter')
             if self.sim is None and SimAdapter is None:
                 msg = 'SimAdapter import failed; ensure running from repository root or install dependencies.'
                 if _IMPORT_ERROR is not None:
