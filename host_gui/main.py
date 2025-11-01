@@ -647,7 +647,10 @@ class TestRunner:
                         time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
                 
                 def _collect_data_points_during_dwell(dac_voltage: int, dwell_ms: int, dac_cmd_sig: str, fb_signal: str, fb_msg_id: int):
-                    """Collect multiple feedback data points during dwell time, resending DAC command every 50ms.
+                    """Collect all available feedback data points during dwell time, resending DAC command every 50ms.
+                    
+                    This function collects every received data point without any time-based filtering,
+                    maximizing the data collection rate for better test characterization.
                     
                     Args:
                         dac_voltage: Current DAC voltage command value (mV)
@@ -663,14 +666,9 @@ class TestRunner:
                     COMMAND_PERIOD_MS = 50
                     command_interval_sec = COMMAND_PERIOD_MS / 1000.0
                     
-                    # Poll interval for collecting data (smaller for more data points)
-                    DATA_COLLECTION_INTERVAL_MS = 10  # Collect data every 10ms
-                    data_poll_interval_sec = DATA_COLLECTION_INTERVAL_MS / 1000.0
-                    
                     start_time = time.time()
                     dwell_end_time = start_time + (dwell_ms / 1000.0)
                     last_command_time = start_time
-                    last_data_collection_time = start_time
                     
                     data_points_collected = 0
                     
@@ -685,17 +683,16 @@ class TestRunner:
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during dwell: {e}")
                         
-                        # Collect feedback data points as frequently as possible
-                        if (current_time - last_data_collection_time) >= data_poll_interval_sec:
-                            if fb_signal and fb_msg_id:
-                                try:
-                                    ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
-                                    if fb_val is not None:
-                                        gui._update_plot(dac_voltage, fb_val, test_name)
-                                        data_points_collected += 1
-                                except Exception as e:
-                                    logger.debug(f"Error collecting feedback during dwell: {e}")
-                            last_data_collection_time = current_time
+                        # Collect feedback data points on every loop iteration (no time limit)
+                        # This maximizes data collection by capturing every available data point
+                        if fb_signal and fb_msg_id:
+                            try:
+                                ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                if fb_val is not None:
+                                    gui._update_plot(dac_voltage, fb_val, test_name)
+                                    data_points_collected += 1
+                            except Exception as e:
+                                logger.debug(f"Error collecting feedback during dwell: {e}")
                         
                         # Process Qt events to keep UI responsive
                         try:
@@ -703,8 +700,9 @@ class TestRunner:
                         except Exception:
                             pass
                         
-                        # Small sleep to prevent busy waiting
-                        time.sleep(min(data_poll_interval_sec, SLEEP_INTERVAL_SHORT))
+                        # Small sleep to prevent busy waiting and allow other threads to process
+                        # This is minimal to maximize collection rate while maintaining system responsiveness
+                        time.sleep(SLEEP_INTERVAL_SHORT)
                     
                     logger.debug(f"Collected {data_points_collected} data points during {dwell_ms}ms dwell at {dac_voltage}mV")
 
