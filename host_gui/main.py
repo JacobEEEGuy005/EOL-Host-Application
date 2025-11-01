@@ -230,8 +230,9 @@ class TestRunner:
             Tuple of (success: bool, info: str)
         """
         gui = self.gui
-        # ensure adapter running
-        if gui.sim is None:
+        # ensure adapter running - Phase 1: check CanService first
+        adapter_available = (self.can_service is not None and self.can_service.is_connected()) or gui.sim is not None
+        if not adapter_available:
             logger.error("Attempted to run test without adapter running")
             raise RuntimeError('Adapter not running')
         act = test.get('actuation', {})
@@ -264,14 +265,14 @@ class TestRunner:
                     dwell_ms = DWELL_TIME_DEFAULT
 
                 def _encode_value_to_bytes(v):
-                # Try DBC encoding if available and signal specified
-                # Phase 1: Use DbcService if available
-                dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
-                if dbc_available and sig:
-                    if self.dbc_service is not None:
-                        msg = self.dbc_service.find_message_by_id(can_id)
-                    else:
-                        msg = gui._find_message_by_id(can_id)
+                    # Try DBC encoding if available and signal specified
+                    # Phase 1: Use DbcService if available
+                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                    if dbc_available and sig:
+                        if self.dbc_service is not None:
+                            msg = self.dbc_service.find_message_by_id(can_id)
+                        else:
+                            msg = gui._find_message_by_id(can_id)
                         if msg is not None:
                             try:
                                 vv = v
@@ -287,7 +288,10 @@ class TestRunner:
                                 relay_signals = ['CMD_Relay_1', 'CMD_Relay_2', 'CMD_Relay_3', 'CMD_Relay_4']
                                 for rs in relay_signals:
                                     enc[rs] = vv if rs == sig else 0
-                                return msg.encode(enc)
+                                if self.dbc_service is not None:
+                                    return self.dbc_service.encode_message(msg, enc)
+                                else:
+                                    return msg.encode(enc)
                             except Exception:
                                 pass
                     # fallback raw
@@ -352,7 +356,10 @@ class TestRunner:
                                             target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
                                         if target_msg is not None:
                                             try:
-                                                decoded = target_msg.decode(raw)
+                                                if self.dbc_service is not None:
+                                                    decoded = self.dbc_service.decode_message(target_msg, raw)
+                                                else:
+                                                    decoded = target_msg.decode(raw)
                                                 observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
                                                 return True, observed_info
                                             except Exception:
@@ -473,7 +480,11 @@ class TestRunner:
                         try:
                             if fb:
                                 if fb_mid is not None:
-                                    ts, val = gui.get_latest_signal(fb_mid, fb)
+                                    # Phase 1: Use SignalService if available
+                                    if self.signal_service is not None:
+                                        ts, val = self.signal_service.get_latest_signal(fb_mid, fb)
+                                    else:
+                                        ts, val = gui.get_latest_signal(fb_mid, fb)
                                 else:
                                     candidates = []
                                     for k, (t, v) in gui._signal_values.items():
@@ -659,15 +670,17 @@ class TestRunner:
                     encode_data = {'DeviceID': 0}  # always include DeviceID
                     mux_value = None
                     data_bytes = b''
-                            # Phase 1: Use DbcService if available
-                            dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
-                            if dbc_available:
-                                if self.dbc_service is not None:
-                                    target_msg = self.dbc_service.find_message_by_id(can_id)
-                                else:
-                                    target_msg = gui._find_message_by_id(can_id)
-                        if target_msg is not None:
-                            for sig_name in signals:
+                    # Phase 1: Use DbcService if available
+                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                    if dbc_available:
+                        if self.dbc_service is not None:
+                            target_msg = self.dbc_service.find_message_by_id(can_id)
+                        else:
+                            target_msg = gui._find_message_by_id(can_id)
+                    else:
+                        target_msg = None
+                    if target_msg is not None:
+                        for sig_name in signals:
                                 encode_data[sig_name] = signals[sig_name]
                                 # check if this signal is muxed
                                 for sig in target_msg.signals:
@@ -709,7 +722,10 @@ class TestRunner:
                                 except Exception:
                                     pass
                             try:
-                                data_bytes = target_msg.encode(encode_data)
+                                if self.dbc_service is not None:
+                                    data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
+                                else:
+                                    data_bytes = target_msg.encode(encode_data)
                             except Exception:
                                 # fallback to single byte
                                 try:
