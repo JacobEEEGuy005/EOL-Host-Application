@@ -596,6 +596,16 @@ class TestRunner:
                 mux_channel_value = act.get('mux_channel_value', act.get('mux_channel_value'))
                 dac_cmd_sig = act.get('dac_command_signal') or act.get('dac_command')
                 
+                # Validate required parameters
+                if not dac_cmd_sig:
+                    logger.error("Analog test requires dac_command_signal but none provided")
+                    return False, "Analog test failed: dac_command_signal is required but missing"
+                
+                # Log configuration for debugging
+                logger.info(f"Analog test config: dac_can_id=0x{can_id:X}, dac_command_signal='{dac_cmd_sig}', "
+                          f"mux_enable='{mux_enable_sig}', mux_channel='{mux_channel_sig}', "
+                          f"mux_channel_value={mux_channel_value}")
+                
                 # Validate and parse DAC voltage parameters
                 try:
                     dac_min = int(act.get('dac_min_mv', act.get('dac_min', DAC_VOLTAGE_MIN)))
@@ -708,6 +718,10 @@ class TestRunner:
 
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
+                    if not signals:
+                        logger.warning("_encode_and_send called with empty signals dict")
+                        return
+                    
                     encode_data = {'DeviceID': 0}  # always include DeviceID
                     mux_value = None
                     data_bytes = b''
@@ -720,6 +734,9 @@ class TestRunner:
                             target_msg = gui._find_message_by_id(can_id)
                     else:
                         target_msg = None
+                    
+                    if target_msg is None:
+                        logger.warning(f"Could not find message for CAN ID 0x{can_id:X} - DBC may not be loaded or message missing")
                     
                     if target_msg is not None:
                         for sig_name in signals:
@@ -805,9 +822,12 @@ class TestRunner:
                         logger.debug(f'Encode data: {encode_data}')
                         logger.debug(f"Sending frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
                         try:
-                            self.can_service.send_frame(f)
+                            success = self.can_service.send_frame(f)
+                            if not success:
+                                logger.warning(f"send_frame returned False for can_id=0x{can_id:X}")
                         except Exception as e:
-                            logger.warning(f"Failed to send frame via service: {e}")
+                            logger.error(f"Failed to send frame via service: {e}", exc_info=True)
+                            raise  # Re-raise to allow caller to handle
                     else:
                         # Legacy: use direct adapter (should not happen - CanService should always be available)
                         logger.warning("CanService not available for frame sending")
