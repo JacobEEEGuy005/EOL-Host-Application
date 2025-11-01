@@ -3749,7 +3749,15 @@ class BaseGUI(QtWidgets.QMainWindow):
                         adapter_frame = frame
                     
                     # Decode signals
-                    signal_values = signal_service.decode_frame(adapter_frame)
+                    try:
+                        signal_values = signal_service.decode_frame(adapter_frame)
+                    except Exception as e:
+                        # Handle decode errors gracefully (log and continue without decoded signals)
+                        if SignalDecodeError and isinstance(e, SignalDecodeError):
+                            logger.warning(f"Signal decode error for frame 0x{can_id:X}: {e}")
+                        else:
+                            logger.warning(f"Error during signal decode for frame 0x{can_id:X}: {e}")
+                        signal_values = []  # Continue without decoded signals
                     can_id = getattr(frame, 'can_id', 0)
                     if signal_values:
                         logger.info(f"SignalService decoded {len(signal_values)} signals from frame 0x{can_id:X}")

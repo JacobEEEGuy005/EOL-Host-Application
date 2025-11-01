@@ -91,7 +91,7 @@ class DbcService:
             logger.error(f"Failed to load DBC file {filepath}: {e}", exc_info=True)
             self.database = None
             self.dbc_path = None
-            raise ValueError(f"Failed to parse DBC file: {e}")
+            raise DbcError(f"Failed to load DBC file: {e}", dbc_path=filepath, operation='load_file', original_error=e)
     
     def is_loaded(self) -> bool:
         """Check if a DBC file is currently loaded.
@@ -235,7 +235,8 @@ class DbcService:
             return message.decode(data)
         except Exception as e:
             logger.error(f"Failed to decode message: {e}", exc_info=True)
-            raise ValueError(f"Decoding failed: {e}")
+            raise DbcError(f"Failed to decode message {message.name if hasattr(message, 'name') else 'unknown'}: {e}",
+                          dbc_path=self.dbc_path, operation='decode_message', original_error=e)
     
     def clear_caches(self):
         """Clear all caches (call when DBC is reloaded)."""

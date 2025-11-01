@@ -12,6 +12,11 @@ from backend.adapters.interface import Frame
 from host_gui.services.dbc_service import DbcService
 from host_gui.models.signal_value import SignalValue
 
+try:
+    from host_gui.exceptions import SignalDecodeError
+except ImportError:
+    SignalDecodeError = ValueError
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,10 +87,13 @@ class SignalService:
             decoded = self.dbc_service.decode_message(message, raw_data)
         except ValueError as e:
             logger.warning(f"SignalService.decode_frame: Failed to decode message 0x{can_id:X}: {e}")
-            return []
+            # Raise SignalDecodeError but allow caller to handle gracefully
+            raise SignalDecodeError(f"Failed to decode CAN message 0x{can_id:X}: {e}",
+                                  can_id=can_id, data=raw_data, original_error=e)
         except Exception as e:
             logger.error(f"SignalService.decode_frame: Unexpected error decoding 0x{can_id:X}: {e}", exc_info=True)
-            return []
+            raise SignalDecodeError(f"Unexpected error decoding CAN message 0x{can_id:X}: {e}",
+                                  can_id=can_id, data=raw_data, original_error=e)
         
         if not decoded:
             logger.warning(f"SignalService.decode_frame: Decoded message 0x{can_id:X} returned empty dict")

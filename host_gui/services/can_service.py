@@ -105,7 +105,8 @@ class CanService:
         self.frame_queue = queue.Queue()
         self.adapter_name: Optional[str] = None
         
-        # Load channel and bitrate from environment or use defaults
+        # Load channel and bitrate from parameters or environment (backwards compatibility)
+        # Note: ConfigManager should be used by caller to provide these values
         self.channel = channel or os.environ.get('CAN_CHANNEL', os.environ.get('PCAN_CHANNEL', CAN_CHANNEL_DEFAULT))
         try:
             self.bitrate = bitrate or int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
@@ -139,9 +140,10 @@ class CanService:
                 self.adapter = SimAdapter()
                 self.adapter.open()
                 self.adapter_name = 'Sim'
-            except Exception as e:
-                logger.error(f"Failed to open SimAdapter: {e}", exc_info=True)
-                raise RuntimeError(f"Failed to open SimAdapter: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to open SimAdapter: {e}", exc_info=True)
+                        raise CanAdapterError(f"Failed to open SimAdapter: {e}", 
+                                             adapter_type='SimAdapter', operation='connect', original_error=e)
         
         elif adapter_type == 'PCAN':
             if PcanAdapter is None:
@@ -151,9 +153,10 @@ class CanService:
                 self.adapter = PcanAdapter(channel=self.channel, bitrate=br)
                 self.adapter.open()
                 self.adapter_name = 'PCAN'
-            except Exception as e:
-                logger.error(f"Failed to open PCAN adapter: {e}", exc_info=True)
-                raise RuntimeError(f"Failed to open PCAN adapter: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to open PCAN adapter: {e}", exc_info=True)
+                        raise CanAdapterError(f"Failed to open PCAN adapter: {e}",
+                                             adapter_type='PCAN', operation='connect', original_error=e)
         
         elif adapter_type in ('PythonCAN', 'Canalystii'):
             if PythonCanAdapter is None:
@@ -168,9 +171,10 @@ class CanService:
                 self.adapter = PythonCanAdapter(channel=self.channel, bitrate=br, interface=interface_name)
                 self.adapter.open()
                 self.adapter_name = adapter_type
-            except Exception as e:
-                logger.error(f"Failed to open {adapter_type} adapter: {e}", exc_info=True)
-                raise RuntimeError(f"Failed to open {adapter_type} adapter: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to open {adapter_type} adapter: {e}", exc_info=True)
+                        raise CanAdapterError(f"Failed to open {adapter_type} adapter: {e}",
+                                             adapter_type=adapter_type, operation='connect', original_error=e)
         
         elif adapter_type == 'SocketCAN':
             if PythonCanAdapter is None:
@@ -179,9 +183,10 @@ class CanService:
                 self.adapter = PythonCanAdapter(channel=self.channel, bitrate=self.bitrate, interface='socketcan')
                 self.adapter.open()
                 self.adapter_name = 'SocketCAN'
-            except Exception as e:
-                logger.error(f"Failed to open SocketCAN adapter: {e}", exc_info=True)
-                raise RuntimeError(f"Failed to open SocketCAN adapter: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to open SocketCAN adapter: {e}", exc_info=True)
+                        raise CanAdapterError(f"Failed to open SocketCAN adapter: {e}",
+                                             adapter_type='SocketCAN', operation='connect', original_error=e)
         
         else:
             raise ValueError(f"Unknown adapter type: {adapter_type}")
