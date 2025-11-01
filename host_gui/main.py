@@ -1729,6 +1729,13 @@ class BaseGUI(QtWidgets.QMainWindow):
     
     def _clear_dbcs_cache(self):
         """Clear DBC-related caches. Call this when DBC is reloaded."""
+        # Phase 1: Clear service caches
+        if self.dbc_service is not None:
+            self.dbc_service.clear_caches()
+        if self.signal_service is not None:
+            self.signal_service.clear_cache()
+        
+        # Legacy caches
         self._signal_lookup_cache.clear()
         self._message_cache.clear()
         logger.debug("Cleared DBC lookup caches")
@@ -3521,6 +3528,51 @@ class BaseGUI(QtWidgets.QMainWindow):
         The CAN ID can be specified in hex (0x prefix) or decimal format.
         Data must be a hex string (may contain spaces or dashes).
         """
+        # Phase 1: Check CanService first
+        if self.can_service is not None:
+            if not self.can_service.is_connected():
+                QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
+                return
+            
+            try:
+                can_id_text = self.send_id.text()
+                can_id = self._parse_can_id(can_id_text)
+                if can_id is None:
+                    raise ValueError("CAN ID is required and must be a valid number")
+                
+                # Validate CAN ID range
+                if not (CAN_ID_MIN <= can_id <= CAN_ID_MAX):
+                    raise ValueError(f"CAN ID out of range: 0x{can_id:X} (valid: 0x{CAN_ID_MIN:X}-0x{CAN_ID_MAX:X})")
+                
+                data_hex = self.send_data.text()
+                data_bytes = self._parse_hex_data(data_hex)
+                
+                # Validate data length
+                if len(data_bytes) > CAN_FRAME_MAX_LENGTH:
+                    raise ValueError(f"Data too long: {len(data_bytes)} bytes (max: {CAN_FRAME_MAX_LENGTH})")
+                
+                # Create frame
+                from backend.adapters.interface import Frame as AdapterFrame
+                frame = AdapterFrame(can_id=can_id, data=data_bytes, timestamp=time.time())
+                
+                # Send via service
+                success = self.can_service.send_frame(frame)
+                if success:
+                    # Log message
+                    self._append_msg_log('TX', frame)
+                    logger.debug(f"Sent frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
+                else:
+                    QtWidgets.QMessageBox.warning(self, 'Send Failed', 'Failed to send frame')
+                return
+            except ValueError as e:
+                QtWidgets.QMessageBox.warning(self, 'Invalid Input', str(e))
+                return
+            except Exception as e:
+                logger.error(f"Failed to send frame via service: {e}", exc_info=True)
+                QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to send: {e}')
+                return
+        
+        # Legacy implementation (fallback)
         if self.sim is None:
             QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
             return
