@@ -3054,22 +3054,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                    self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
-                    if self._current_feedback and self._current_feedback[1]:
-                        ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
-                        if v is not None:
-                            try:
-                                self.feedback_signal_label.setText(str(v))
-                            except Exception:
-                                pass
-                except Exception:
-                    self._current_feedback = None
+                self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
+                if self._current_feedback and self._current_feedback[1]:
+                    ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
+                    if v is not None:
+                        try:
+                            self.feedback_signal_label.setText(str(v))
+                        except Exception:
+                            pass
+        except Exception:
+            self._current_feedback = None
 
     def _on_test_finished(self, test_index: int, success: bool, info: str, exec_time: float) -> None:
         """Handle test finished signal from TestExecutionThread."""
         result = 'PASS' if success else 'FAIL'
-                timestamp = datetime.now().strftime('%H:%M:%S')
-                self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
         
         # Add to results table
         try:
@@ -3087,7 +3087,7 @@ class BaseGUI(QtWidgets.QMainWindow):
     
     def _on_test_failed(self, test_index: int, error: str, exec_time: float) -> None:
         """Handle test failed signal from TestExecutionThread."""
-                timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Error: {error}')
         
         # Add to results table
@@ -3099,10 +3099,10 @@ class BaseGUI(QtWidgets.QMainWindow):
             pass
         
         # Clear current feedback
-                try:
-                    self._current_feedback = None
-                except Exception:
-                    pass
+        try:
+            self._current_feedback = None
+        except Exception:
+            pass
     
     def _on_sequence_finished(self, results: list, summary: str) -> None:
         """Handle sequence finished signal from TestExecutionThread."""
@@ -3189,21 +3189,21 @@ class BaseGUI(QtWidgets.QMainWindow):
                 if hasattr(self.can_service, 'is_connected') and self.can_service.is_connected():
                     self.can_service.disconnect()
                     logger.info("CanService disconnected")
-                    except Exception as e:
+            except Exception as e:
                 logger.warning(f"Error disconnecting CanService: {e}", exc_info=True)
         
         # Stop polling timer
         try:
             if hasattr(self, 'poll_timer') and self.poll_timer.isActive():
                 self.poll_timer.stop()
-                            except Exception:
+        except Exception:
             pass
         
         # Phase 4: Save window geometry and configuration
         if self.config_manager:
             try:
                 self.config_manager.save_window_geometry(self.saveGeometry())
-                    except Exception as e:
+            except Exception as e:
                 logger.debug(f"Failed to save window geometry: {e}")
         
         logger.info("BaseGUI cleanup complete")
@@ -3241,7 +3241,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         """Connect or disconnect adapter using CanService (Phase 1 implementation)."""
         try:
             selected = self.device_combo.currentText()
-                            except Exception:
+        except Exception:
             selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
         
         logger.info(f"toggle_adapter called (service); connected={self.can_service.is_connected()}; selected={selected}")
@@ -3455,7 +3455,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             try:
                 if hasattr(dbc_service, 'is_loaded'):
                     dbc_loaded = dbc_service.is_loaded()
-        except Exception:
+            except Exception:
                 pass
             
             # Also check legacy _dbc_db
@@ -3511,45 +3511,45 @@ class BaseGUI(QtWidgets.QMainWindow):
                             val = sig_val.value
                             ts = sig_val.timestamp or time.time()
                             
-            if key in self._signal_rows:
-                row = self._signal_rows[key]
-                try:
-                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
-                except Exception:
-                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
-                self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
+                            if key in self._signal_rows:
+                                row = self._signal_rows[key]
+                                try:
+                                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                                except Exception:
+                                    self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                                self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
                                 # Sync legacy cache
                                 self._signal_values[key] = (ts, val)
-            else:
-                r = self.signal_table.rowCount()
-                self.signal_table.insertRow(r)
-                try:
-                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
-                except Exception:
-                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
+                            else:
+                                r = self.signal_table.rowCount()
+                                self.signal_table.insertRow(r)
+                                try:
+                                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(datetime.fromtimestamp(ts).isoformat()))
+                                except Exception:
+                                    self.signal_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ts)))
                                 self.signal_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(sig_val.message_name or '')))
-                self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
-                self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
-                self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
-                self._signal_rows[key] = r
+                                self.signal_table.setItem(r, 2, QtWidgets.QTableWidgetItem(str(fid)))
+                                self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
+                                self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
+                                self._signal_rows[key] = r
                                 # Signal values stored in signal_service
                             
                             # Update feedback label if this is the current monitored signal
-                    try:
-                        cur = getattr(self, '_current_feedback', None)
-                        if cur and cur[1] and str(cur[1]) == str(sig_name):
                             try:
+                                cur = getattr(self, '_current_feedback', None)
+                                if cur and cur[1] and str(cur[1]) == str(sig_name):
+                                    try:
                                         cur_id = int(cur[0]) if cur[0] is not None else None
-                                this_id = int(fid)
-                            if cur_id is not None and this_id is not None and cur_id == this_id:
-                                try:
+                                        this_id = int(fid)
+                                        if cur_id is not None and this_id is not None and cur_id == this_id:
+                                            try:
                                                 self.feedback_signal_label.setText(str(val))
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
                         return  # Successfully decoded via service
                 except Exception as e:
                     logger.debug(f"SignalService decode failed: {e}", exc_info=True)
@@ -3590,8 +3590,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Phase 1: Check CanService first
         if self.can_service is not None:
             if not self.can_service.is_connected():
-            QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
-            return
+                QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
+                return
             
             try:
                 can_id_text = self.send_id.text()
@@ -3620,9 +3620,9 @@ class BaseGUI(QtWidgets.QMainWindow):
                     # Log message
                     self._append_msg_log('TX', frame)
                     logger.debug(f"Sent frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
-            else:
+                else:
                     QtWidgets.QMessageBox.warning(self, 'Send Failed', 'Failed to send frame')
-                return
+                    return
             except ValueError as e:
                 QtWidgets.QMessageBox.warning(self, 'Invalid Input', str(e))
                 return
