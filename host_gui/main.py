@@ -200,8 +200,8 @@ class TestRunner:
             Tuple of (success: bool, info: str)
         """
         gui = self.gui
-        # ensure adapter running - Phase 1: check CanService first
-        adapter_available = (self.can_service is not None and self.can_service.is_connected()) or gui.sim is not None
+        # ensure adapter running - check CanService
+        adapter_available = (self.can_service is not None and self.can_service.is_connected())
         if not adapter_available:
             logger.error("Attempted to run test without adapter running")
             raise RuntimeError('Adapter not running')
@@ -281,12 +281,14 @@ class TestRunner:
                         class F: pass
                         f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                     try:
-                        gui.sim.send(f)
+                        if gui.can_service is not None and gui.can_service.is_connected():
+                        gui.can_service.send_frame(f)
                     except Exception:
                         pass
-                    if hasattr(gui.sim, 'loopback'):
+                    # Loopback handled by adapter if supported
+                    if hasattr(gui.can_service.adapter, 'loopback'):
                         try:
-                            gui.sim.loopback(f)
+                            gui.can_service.adapter.loopback(f)
                         except Exception:
                             pass
 
@@ -747,12 +749,14 @@ class TestRunner:
                             class F: pass
                             f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                         try:
-                            gui.sim.send(f)
+                            if gui.can_service is not None and gui.can_service.is_connected():
+                        gui.can_service.send_frame(f)
                         except Exception:
                             pass
-                    if hasattr(gui.sim, 'loopback'):
+                    # Loopback handled by adapter if supported
+                    if hasattr(gui.can_service.adapter, 'loopback'):
                         try:
-                            gui.sim.loopback(f)
+                            gui.can_service.adapter.loopback(f)
                         except Exception:
                             pass
 
@@ -982,9 +986,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         else:
             self.resize(WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT)
 
-        self.sim = None  # Legacy - will be replaced by can_service
-        self.worker = None  # Legacy - will be replaced by can_service
-        self.frame_q = queue.Queue()  # Legacy - will use can_service.frame_queue
+        # Legacy attributes removed - use services instead:
+        # self.sim -> self.can_service.adapter
+        # self.worker -> self.can_service.worker
+        # self.frame_q -> self.can_service.frame_queue
         
         # Initialize services (Phase 1) - use ConfigManager if available
         if CanService is not None:
@@ -999,7 +1004,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 except Exception:
                     can_bitrate = CAN_BITRATE_DEFAULT
             self.can_service = CanService(channel=can_channel, bitrate=can_bitrate)
-            self.frame_q = self.can_service.frame_queue  # Use service's queue
+            # frame_queue accessed via self.can_service.frame_queue
         else:
             self.can_service = None
         
@@ -1684,7 +1689,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         Otherwise, it will attempt to connect using the selected device type.
         """
         # If adapter running, toggle to stop
-        if self.sim is not None:
+        if self.can_service is not None and self.can_service.is_connected():
             self.toggle_adapter()
             return
         # otherwise start using selected device
@@ -1754,23 +1759,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         if self.dbc_service is not None:
             return self.dbc_service.find_message_by_id(can_id)
         
-        # Legacy implementation (fallback)
-        if not hasattr(self, '_dbc_db') or self._dbc_db is None:
-            return None
-        
-        # Check cache first
-        if can_id in self._message_cache:
-            return self._message_cache[can_id]
-        
-        # Search and cache result
-        for m in getattr(self._dbc_db, 'messages', []):
-            msg_id = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
-            if msg_id is not None and int(msg_id) == int(can_id):
-                self._message_cache[can_id] = m
-                return m
-        
-        # Cache None to avoid repeated searches
-        self._message_cache[can_id] = None
+        # Legacy implementation removed - DbcService should always be available
+        # If we reach here, DbcService was not available - this should not happen
+        logger.warning("_find_message_by_id: DbcService not available")
         return None
     
     def _find_message_and_signal(self, can_id: int, signal_name: str) -> Tuple[Optional[Any], Optional[Any]]:
@@ -1955,8 +1946,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         if self.dbc_service is not None:
             try:
                 if self.dbc_service.load_dbc_file(fname):
-                    # Sync with legacy _dbc_db for compatibility
-                    self._dbc_db = self.dbc_service.database
+                    # DBC loaded via service
                     # Clear signal cache when DBC reloaded
                     if self.signal_service is not None:
                         self.signal_service.clear_cache()
@@ -2005,10 +1995,9 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self.signal_service.clear_cache()
             self._clear_dbcs_cache()
             
-            # populate nothing global; Create/Edit dialogs will query self._dbc_db when opened
+            # Create/Edit dialogs will query dbc_service.database when opened
             QtWidgets.QMessageBox.information(self, 'DBC Loaded', f'Loaded DBC: {os.path.basename(fname)} ({len(getattr(db, "messages", []))} messages)')
         except Exception as e:
-            self._dbc_db = None
             if self.dbc_service is not None:
                 try:
                     self.dbc_service.database = None
@@ -2037,9 +2026,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         analog_widget = QtWidgets.QWidget()
         analog_layout = QtWidgets.QFormLayout(analog_widget)
     # if a DBC is loaded, provide message+signal dropdowns
-        if self._dbc_db is not None:
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
             # collect messages
-            messages = list(getattr(self._dbc_db, 'messages', []))
+            messages = list(getattr(self.dbc_service.database, 'messages', []))
             msg_display = []
             for m in messages:
                 fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
@@ -2166,9 +2155,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
         # Feedback source and signal (DBC-driven when available)
-        if self._dbc_db is not None:
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
             # build feedback message combo and signal combo
-            fb_messages = list(getattr(self._dbc_db, 'messages', []))
+            fb_messages = list(getattr(self.dbc_service.database, 'messages', []))
             fb_msg_display = []
             for m in fb_messages:
                 fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
@@ -2221,7 +2210,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             t = type_combo.currentText()
             feedback = feedback_edit.text().strip()
             # build actuation dict depending on type
-            if self._dbc_db is not None:
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
                 if t == 'digital':
                     # read selected message id and signal
                     try:
@@ -2323,7 +2312,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                     }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
-            if self._dbc_db is not None:
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
                 try:
                     feedback = fb_signal_combo.currentText().strip()
                     fb_msg_id = fb_msg_combo.currentData()
@@ -2454,8 +2443,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         feedback_edit = QtWidgets.QLineEdit()
         fb_msg_combo = None
         fb_signal_combo = None
-        if self._dbc_db is not None:
-            fb_messages = list(getattr(self._dbc_db, 'messages', []))
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
+            fb_messages = list(getattr(self.dbc_service.database, 'messages', []))
             fb_msg_display = []
             for m in fb_messages:
                 fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
@@ -2502,8 +2491,8 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         # populate actuation controls from stored data
         act = data.get('actuation', {}) or {}
-        if self._dbc_db is not None:
-            messages = list(getattr(self._dbc_db, 'messages', []))
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
+            messages = list(getattr(self.dbc_service.database, 'messages', []))
             msg_display = []
             for m in messages:
                 fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
@@ -2665,7 +2654,7 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
-        if self._dbc_db is not None:
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
             form.addRow('Feedback Signal Source:', fb_msg_combo)
             form.addRow('Feedback Signal:', fb_signal_combo)
         else:
@@ -2697,7 +2686,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             data['name'] = name_edit.text().strip() or data.get('name')
             data['type'] = type_combo.currentText()
             # feedback
-            if self._dbc_db is not None:
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
                 try:
                     data['feedback_message_id'] = fb_msg_combo.currentData()
                     data['feedback_signal'] = fb_signal_combo.currentText().strip()
@@ -2878,9 +2867,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         Phase 2: Uses TestExecutionThread to run tests asynchronously,
         preventing UI blocking. Progress is updated via Qt signals.
         """
-        # Phase 2: Use async thread if available, fallback to legacy synchronous execution
+        # Phase 2: Use async thread for test execution
         if self.TestExecutionThread is None:
-            return self._on_run_sequence_legacy()
+            QtWidgets.QMessageBox.critical(self, 'Error', 'TestExecutionThread not available - this should not happen')
+            logger.error("TestExecutionThread not available in _on_run_sequence")
+            return
         
         # Check if already running
         if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
@@ -2973,70 +2964,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             except Exception:
                 pass
     
-    def _on_run_sequence_legacy(self) -> None:
-        """Legacy synchronous test sequence execution (fallback)."""
-        if not self._tests:
-            self.status_label.setText('No tests to run')
-            self.tabs_main.setCurrentIndex(self.status_tab_index)
-            return
-        self.tabs_main.setCurrentIndex(self.status_tab_index)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(self._tests))
-        self.progress_bar.setValue(0)
-        self.status_label.setText('Running test sequence...')
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        self.test_log.appendPlainText(f'[{timestamp}] Starting test sequence')
-        results = []
-        exec_times = []
-        for i, t in enumerate(list(self._tests)):
-            self.status_label.setText(f'Running test {i+1}/{len(self._tests)}: {t.get("name","<unnamed>")}')
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            self.test_log.appendPlainText(f'[{timestamp}] Running test: {t.get("name","<unnamed>")}')
-            start_time = time.time()
-            try:
-                # set current feedback signal for this test
-                try:
-                    self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
-                    if self._current_feedback and self._current_feedback[1]:
-                        ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
-                        if v is not None:
-                            try:
-                                self.feedback_signal_label.setText(str(v))
-                            except Exception:
-                                pass
-                except Exception:
-                    self._current_feedback = None
-
-                ok, info = self._run_single_test(t)
-                end_time = time.time()
-                exec_time = end_time - start_time
-                exec_times.append(exec_time)
-                results.append((t.get('name','<unnamed>'), ok, info))
-                result = 'PASS' if ok else 'FAIL'
-                timestamp = datetime.now().strftime('%H:%M:%S')
-                self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
-                self._add_result_to_table(t, result, f"{exec_time:.2f}s", info)
-            except Exception as e:
-                end_time = time.time()
-                exec_time = end_time - start_time
-                exec_times.append(exec_time)
-                results.append((t.get('name','<unnamed>'), False, str(e)))
-                timestamp = datetime.now().strftime('%H:%M:%S')
-                self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
-                self._add_result_to_table(t, 'ERROR', f"{exec_time:.2f}s", str(e))
-            finally:
-                # clear current feedback for this test iteration
-                try:
-                    self._current_feedback = None
-                except Exception:
-                    pass
-            self.progress_bar.setValue(i+1)
-        # summarize
-        self.progress_bar.setVisible(False)
-        summary = '\n'.join([f"{n}: {'PASS' if ok else 'FAIL'} - {info}" for n,ok,info in results])
-        # Performance metrics
-        pass_count = sum(1 for _, ok, _ in results if ok)
-        pass_rate = pass_count / len(results) * 100 if results else 0
+    # Legacy _on_run_sequence_legacy method removed - TestExecutionThread should always be available
         avg_time = sum(exec_times) / len(exec_times) if exec_times else 0
         failure_reasons = [info for _, ok, info in results if not ok]
         failure_summary = '\n'.join(set(failure_reasons)) if failure_reasons else 'None'
@@ -3272,9 +3200,6 @@ class BaseGUI(QtWidgets.QMainWindow):
         if self.can_service.is_connected():
             # Disconnect
             self.can_service.disconnect()
-            # Update legacy attributes for compatibility
-            self.sim = None
-            self.worker = None
             self.poll_timer.stop()
             if self.start_btn is not None:
                 self.start_btn.setText('Connect')
@@ -3293,9 +3218,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect: {e}')
             return
         
-        # Update legacy attributes for compatibility during transition
-        self.sim = self.can_service.adapter
-        self.worker = self.can_service.worker
+        # Adapter connected via service
         
         # Prompt for DBC file and load
         try:
@@ -3313,8 +3236,6 @@ class BaseGUI(QtWidgets.QMainWindow):
             
             try:
                 self.dbc_service.load_dbc_file(fname)
-                # Sync with legacy _dbc_db for compatibility
-                self._dbc_db = self.dbc_service.database
                 
                 # Build filters from DBC messages and apply to adapter
                 filters = []
@@ -3360,8 +3281,9 @@ class BaseGUI(QtWidgets.QMainWindow):
             if os.environ.get('HOST_GUI_INJECT_TEST_FRAME', '').lower() in ('1', 'true'):
                 from backend.adapters.interface import Frame
                 test_frame = Frame(can_id=0x123, data=b'\x01\x02\x03', timestamp=time.time())
-                logger.debug('[host_gui] injecting deterministic test frame into frame_q')
-                self.frame_q.put(test_frame)
+                logger.debug('[host_gui] injecting deterministic test frame into frame_queue')
+                if self.can_service is not None:
+                    self.can_service.frame_queue.put(test_frame)
         except Exception:
             pass
     
@@ -3383,11 +3305,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         The adapter selection is taken from the device_combo widget, which
         lists available adapter types based on installed hardware/drivers.
         """
-        # Phase 1: Use CanService if available, fallback to legacy
-        if self.can_service is not None:
-            return self._toggle_adapter_with_service()
+        # Use CanService (should always be available)
+        if self.can_service is None:
+            QtWidgets.QMessageBox.critical(self, 'Error', 'CanService not available - this should not happen')
+            logger.error("CanService not available in toggle_adapter")
+            return
         
-        # Legacy implementation (fallback)
+        return self._toggle_adapter_with_service()
         # If called from welcome connect button, use device_combo if present
         try:
             selected = self.device_combo.currentText()
@@ -3625,9 +3549,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         during each poll interval.
         """
         try:
-            while not self.frame_q.empty():
-                f = self.frame_q.get_nowait()
-                self._add_frame_row(f)
+            if self.can_service is not None:
+                while not self.can_service.frame_queue.empty():
+                    f = self.can_service.frame_queue.get_nowait()
+                    self._add_frame_row(f)
         except Exception as e:
             logger.debug(f"Error polling frames: {e}")
 
@@ -3725,8 +3650,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                     else:
                         # More detailed debug logging
                         dbc_loaded_check = dbc_service.is_loaded() if dbc_service else False
-                        legacy_dbc = getattr(self, '_dbc_db', None) is not None
-                        logger.warning(f"SignalService returned no signals for frame 0x{can_id:X} - DBC service loaded: {dbc_loaded_check}, Legacy DBC: {legacy_dbc}")
+                        logger.warning(f"SignalService returned no signals for frame 0x{can_id:X} - DBC service loaded: {dbc_loaded_check}")
                         if dbc_service:
                             # Try to find the message
                             msg = dbc_service.find_message_by_id(can_id)
@@ -3766,8 +3690,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                                 self.signal_table.setItem(r, 3, QtWidgets.QTableWidgetItem(str(sig_name)))
                                 self.signal_table.setItem(r, 4, QtWidgets.QTableWidgetItem(str(val)))
                                 self._signal_rows[key] = r
-                                # Sync legacy cache
-                                self._signal_values[key] = (ts, val)
+                                # Signal values stored in signal_service
                             
                             # Update feedback label if this is the current monitored signal
                             try:
@@ -3787,33 +3710,11 @@ class BaseGUI(QtWidgets.QMainWindow):
                                 pass
                         return  # Successfully decoded via service
                 except Exception as e:
-                    logger.debug(f"SignalService decode failed, falling back to legacy: {e}", exc_info=True)
+                    logger.debug(f"SignalService decode failed: {e}", exc_info=True)
         
-        # Legacy implementation (fallback)
-        if cantools is None or getattr(self, '_dbc_db', None) is None:
-            return
-        try:
-            fid = int(getattr(frame, 'can_id', 0))
-        except Exception:
-            return
-        target_msg = None
-        for m in getattr(self._dbc_db, 'messages', []):
-            mid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
-            try:
-                if mid is not None and int(mid) == fid:
-                    target_msg = m
-                    break
-            except Exception:
-                continue
-        if target_msg is None:
-            return
-        # get raw bytes
-        raw = getattr(frame, 'data', b'')
-        if isinstance(raw, str):
-            try:
-                raw = bytes.fromhex(raw)
-            except Exception:
-                raw = b''
+        # Legacy implementation removed - SignalService should handle all decoding
+        # If we reach here, SignalService decode failed and we can't decode
+        logger.debug("No signal decoding possible - SignalService failed and legacy removed")
         try:
             decoded = target_msg.decode(raw)
         except Exception:
