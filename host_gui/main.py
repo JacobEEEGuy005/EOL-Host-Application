@@ -1939,11 +1939,38 @@ class BaseGUI(QtWidgets.QMainWindow):
 
     # Test Configurator handlers
     def _on_load_dbc(self):
-        # allow user to pick a DBC file, parse with cantools and display its path
+        """Load a DBC file using DbcService (Phase 1) or legacy method."""
         fname, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select DBC file', '', 'DBC files (*.dbc);;All files (*)')
         if not fname:
             return
         self.dbc_path_edit.setText(fname)
+        
+        # Phase 1: Use DbcService if available
+        if self.dbc_service is not None:
+            try:
+                if self.dbc_service.load_dbc_file(fname):
+                    # Sync with legacy _dbc_db for compatibility
+                    self._dbc_db = self.dbc_service.database
+                    # Clear signal cache when DBC reloaded
+                    if self.signal_service is not None:
+                        self.signal_service.clear_cache()
+                    self._clear_dbcs_cache()
+                    message_count = len(self.dbc_service.get_all_messages())
+                    QtWidgets.QMessageBox.information(self, 'DBC Loaded', f'Loaded DBC: {os.path.basename(fname)} ({message_count} messages)')
+                    logger.info(f"DBC loaded successfully via service: {os.path.basename(fname)} ({message_count} messages)")
+                    return
+                else:
+                    logger.warning(f"DbcService.load_dbc_file returned False for: {fname}")
+                    QtWidgets.QMessageBox.warning(self, 'Error', f'Failed to load DBC file: {fname}')
+                    self._dbc_db = None
+                    return
+            except (FileNotFoundError, ValueError, RuntimeError) as e:
+                logger.error(f"Failed to load DBC via service: {e}", exc_info=True)
+                QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load DBC: {e}')
+                self._dbc_db = None
+                return
+        
+        # Legacy implementation (fallback)
         if cantools is None:
             QtWidgets.QMessageBox.warning(self, 'DBC Load', 'cantools not installed in this environment. Install cantools to enable DBC parsing.')
             self._dbc_db = None
@@ -1956,11 +1983,34 @@ class BaseGUI(QtWidgets.QMainWindow):
                 # fallback to older API name
                 db = cantools.db.load_file(fname)
             self._dbc_db = db
+            
+            # If DbcService is available, try to sync the DBC into it
+            if self.dbc_service is not None:
+                try:
+                    # Manually set the database in DbcService to keep them in sync
+                    self.dbc_service.database = db
+                    self.dbc_service.dbc_path = fname
+                    logger.info(f"Synced legacy DBC load into DbcService: {os.path.basename(fname)}")
+                except Exception as e:
+                    logger.warning(f"Failed to sync DBC into DbcService: {e}", exc_info=True)
+            
+            # Clear signal cache when DBC reloaded
+            if self.signal_service is not None:
+                self.signal_service.clear_cache()
+            self._clear_dbcs_cache()
+            
             # populate nothing global; Create/Edit dialogs will query self._dbc_db when opened
             QtWidgets.QMessageBox.information(self, 'DBC Loaded', f'Loaded DBC: {os.path.basename(fname)} ({len(getattr(db, "messages", []))} messages)')
         except Exception as e:
             self._dbc_db = None
-            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to parse DBC: {e}')
+            if self.dbc_service is not None:
+                try:
+                    self.dbc_service.database = None
+                    self.dbc_service.dbc_path = None
+                except Exception:
+                    pass
+            logger.error(f"Failed to load DBC: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load DBC: {e}')
 
     def _on_create_test(self):
         # Create a dialog to create a test entry (name, type, actuation mapping)
