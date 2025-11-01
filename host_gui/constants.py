@@ -1,4 +1,22 @@
-"""Constants and configuration values for the EOL Host GUI application."""
+"""
+Constants and configuration values for the EOL Host GUI application.
+
+This module centralizes all magic numbers, limits, and configuration values
+used throughout the GUI application. This improves maintainability by
+providing a single source of truth for these values.
+
+Constants are organized by category:
+- CAN ID ranges and limits
+- DAC voltage specifications
+- CAN frame specifications
+- Timing constants (dwell times, poll intervals)
+- Display limits
+- Message Type values from DBC specification
+- Default CAN bus settings
+
+All values are based on the EOL hardware and IPC specifications defined in
+the DBC file (docs/can_specs/eol_firmware.dbc).
+"""
 
 # CAN ID ranges
 CAN_ID_MIN = 0

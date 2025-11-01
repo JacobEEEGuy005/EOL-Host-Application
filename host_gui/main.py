@@ -1,3 +1,28 @@
+"""
+EOL Host GUI - PySide6-based application for End of Line testing of IPC (Integrated Power Converter).
+
+This module provides a GUI interface for:
+- Connecting to CAN bus adapters (PCAN, SocketCAN, Canalystii, SimAdapter)
+- Loading and managing DBC (Database CAN) files for signal decoding
+- Configuring and executing test sequences (digital and analog tests)
+- Real-time monitoring of CAN frames and decoded signals
+- Visualizing test results with live plots (Feedback vs DAC Voltage for analog tests)
+
+Key Components:
+- BaseGUI: Main application window with tabs for CAN data, test configurator, and test status
+- TestRunner: Encapsulates test execution logic (can be moved to background thread)
+- AdapterWorker: Background thread for receiving CAN frames
+
+Test Types:
+- Digital: Apply High/Low voltage to inputs, verify IPC feedback (1/0)
+- Analog: Step DAC voltage from min to max, monitor IPC feedback signal response
+
+Dependencies:
+- PySide6: GUI framework
+- cantools: DBC parsing and signal encoding/decoding
+- matplotlib: Live plotting (optional)
+- python-can: CAN bus abstraction layer (via backend adapters)
+"""
 import sys
 import threading
 import json
@@ -100,13 +125,32 @@ except Exception:
 
 
 class AdapterWorker(threading.Thread):
+    """Background worker thread that receives CAN frames from adapter and enqueues them.
+    
+    This worker runs in a separate thread to prevent blocking the GUI main thread.
+    Frames received from the adapter are placed into a queue for processing by the
+    GUI's frame polling mechanism.
+    
+    Attributes:
+        sim: CAN adapter instance (must implement iter_recv() method)
+        out_q: Queue for outgoing frames to GUI
+        _stop: Event to signal thread shutdown
+    """
+    
     def __init__(self, sim, out_q: queue.Queue):
+        """Initialize the adapter worker thread.
+        
+        Args:
+            sim: CAN adapter instance (SimAdapter, PcanAdapter, etc.)
+            out_q: Queue.Queue for frames to be processed by GUI
+        """
         super().__init__(daemon=True)
         self.sim = sim
         self.out_q = out_q
         self._stop = threading.Event()
 
     def run(self):
+        """Main thread loop: continuously receive frames and enqueue them."""
         try:
             for frame in self.sim.iter_recv():
                 if self._stop.is_set():
@@ -117,6 +161,7 @@ class AdapterWorker(threading.Thread):
             logger.error(f"AdapterWorker error in run loop: {e}", exc_info=True)
 
     def stop(self):
+        """Signal the worker thread to stop. Thread will exit after current frame."""
         self._stop.set()
         logger.debug("AdapterWorker: stop() called")
 
@@ -796,7 +841,33 @@ class TestRunner:
 
 
 class BaseGUI(QtWidgets.QMainWindow):
+    """Main GUI application window for EOL Host testing.
+    
+    This class provides the main application interface including:
+    - CAN adapter connection and configuration
+    - DBC file management and loading
+    - Test configuration and execution
+    - Real-time CAN frame monitoring
+    - Signal decoding and visualization
+    - Test results display with live plots
+    
+    The GUI is organized into tabs:
+    - Home: Welcome and overview
+    - CAN Data View: Live frames, decoded signals, manual frame sending
+    - Test Configurator: Create and manage test profiles
+    - Test Status: Execute tests and view results with plots
+    
+    Attributes:
+        sim: Current CAN adapter instance (None when disconnected)
+        worker: AdapterWorker thread for frame reception
+        frame_q: Queue for frames from worker thread
+        _dbc_db: Loaded cantools database object
+        _tests: List of configured test profiles
+        _signal_values: Cache of latest signal values (key: "can_id:signal_name")
+    """
+    
     def __init__(self):
+        """Initialize the main GUI window and build all UI components."""
         super().__init__()
         self.setWindowTitle('EOL Host - Native GUI')
         self.resize(1100, 700)
@@ -834,6 +905,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.poll_timer.timeout.connect(self._poll_frames)
 
     def _build_menu(self):
+        """Build the application menu bar with File and Help menus."""
         menubar = self.menuBar()
         file_menu = menubar.addMenu('&File')
         exit_act = QtGui.QAction('E&xit', self)
@@ -846,7 +918,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         help_menu.addAction(about_act)
 
     def _build_test_configurator(self):
-        """Builds the Test Configurator tab widget and returns it."""
+        """Builds the Test Configurator tab widget and returns it.
+        
+        The Test Configurator allows users to:
+        - Create new test profiles (digital or analog)
+        - Edit existing test configurations
+        - Delete tests
+        - Reorder tests in sequence
+        - Save/load test profiles as JSON files
+        
+        Test profiles include:
+        - Digital tests: Relay commands, feedback signal, dwell time
+        - Analog tests: DAC voltage range, MUX settings, feedback signal
+        
+        Returns:
+            QWidget containing the Test Configurator tab layout
+        """
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
 
@@ -917,7 +1004,18 @@ class BaseGUI(QtWidgets.QMainWindow):
         return tab
 
     def _build_test_status(self):
-        """Builds the Test Status tab widget and returns it."""
+        """Builds the Test Status tab widget and returns it.
+        
+        The Test Status tab provides:
+        - Test execution controls (Run Selected, Run Sequence)
+        - Real-time monitoring of current and feedback signals
+        - Live plot showing Feedback vs DAC Voltage (for analog tests)
+        - Test results table with pass/fail status
+        - Execution log with timestamps
+        
+        Returns:
+            QWidget containing the Test Status tab layout
+        """
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
 
@@ -1025,7 +1123,15 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         return tab
 
-    def _add_result_to_table(self, test, status, exec_time, notes):
+    def _add_result_to_table(self, test: Dict[str, Any], status: str, exec_time: str, notes: str) -> None:
+        """Add a test result row to the results table in Test Status tab.
+        
+        Args:
+            test: Test configuration dictionary
+            status: Test status ('PASS', 'FAIL', or 'ERROR')
+            exec_time: Execution time as string (e.g., "1.23s")
+            notes: Additional information or error details
+        """
         row = self.results_table.rowCount()
         self.results_table.insertRow(row)
         self.results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(test.get('name', '<unnamed>')))
@@ -1058,7 +1164,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(notes))
 
     def _init_plot(self):
-        """Initialize the matplotlib plot for Feedback vs DAC Voltage visualization."""
+        """Initialize the matplotlib plot widget for Feedback vs DAC Voltage visualization.
+        
+        Creates a scatter plot with connected line showing the relationship between
+        commanded DAC output voltage (X-axis) and IPC feedback signal value (Y-axis).
+        The plot is displayed in the Test Status tab during analog test execution.
+        """
         if not matplotlib_available:
             self.plot_canvas = None
             return
@@ -1381,6 +1492,15 @@ class BaseGUI(QtWidgets.QMainWindow):
 
     # Welcome actions
     def _refresh_can_devices(self):
+        """Refresh the list of available CAN adapter types in the device combo box.
+        
+        Probes for available adapters by attempting imports:
+        - SimAdapter: Always available (software simulation)
+        - PCAN: Peak CAN USB adapters
+        - PythonCAN: Generic python-can backend
+        - Canalystii: Canalystii hardware via python-can
+        - SocketCAN: Linux SocketCAN interfaces
+        """
         # Probe available adapters
         devices = []
         # SimAdapter always available as a software option
@@ -1407,6 +1527,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.device_combo.addItems(devices)
 
     def _connect_selected_device(self):
+        """Connect or disconnect the selected CAN adapter device.
+        
+        If adapter is already running, this will disconnect it.
+        Otherwise, it will attempt to connect using the selected device type.
+        """
         # If adapter running, toggle to stop
         if self.sim is not None:
             self.toggle_adapter()
@@ -1551,7 +1676,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             return b''
 
     # DBC functions
-    def _load_dbcs(self):
+    def _load_dbcs(self) -> None:
+        """Load the list of available DBC files from the persistent store.
+        
+        Reads the DBC index.json file and populates the DBC list widget
+        with available database files. Called during GUI initialization.
+        """
         index_path = os.path.join(repo_root, 'backend', 'data', 'dbcs', 'index.json')
         self.dbc_list.clear()
         if os.path.exists(index_path):
@@ -1997,7 +2127,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             pass
         self.json_preview.clear()
 
-    def _on_save_tests(self):
+    def _on_save_tests(self) -> None:
+        """Save current test configuration to JSON file.
+        
+        Saves all configured tests to backend/data/tests/tests.json
+        in the format defined by the test profile schema.
+        """
         default_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
         os.makedirs(default_dir, exist_ok=True)
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -2012,7 +2147,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save tests: {e}')
 
-    def _on_load_tests(self):
+    def _on_load_tests(self) -> None:
+        """Load test configuration from JSON file.
+        
+        Loads tests from backend/data/tests/tests.json and populates
+        the test list. Validates test structure against schema.
+        """
         default_dir = os.path.join(repo_root, 'backend', 'data', 'tests')
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, 'Load Test Profile', default_dir, 'JSON Files (*.json);;All Files (*)'
@@ -2414,7 +2554,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         btns.rejected.connect(dlg.reject)
         dlg.exec()
 
-    def _on_run_selected(self):
+    def _on_run_selected(self) -> None:
+        """Execute the currently selected test from the test list.
+        
+        Validates that a test is selected, switches to Test Status tab,
+        and executes the test using the TestRunner. Results are displayed
+        in the results table and execution log.
+        """
         idx = self.test_list.currentRow()
         if idx < 0 or idx >= len(self._tests):
             self.status_label.setText('No test selected')
@@ -2463,7 +2609,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-    def _on_clear_results(self):
+    def _on_clear_results(self) -> None:
+        """Clear all test results, logs, and plots from the Test Status tab.
+        
+        Resets the results table, execution log, and clears the feedback
+        vs DAC voltage plot. Useful for starting a fresh test session.
+        """
         self.results_table.setRowCount(0)
         self.test_log.clear()
         self.status_label.setText('Results cleared')
@@ -2477,7 +2628,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Repeat the currently selected test
         self._on_run_selected()
 
-    def _on_run_sequence(self):
+    def _on_run_sequence(self) -> None:
+        """Execute all configured tests in sequence.
+        
+        Runs each test in the _tests list sequentially, displaying
+        progress in the progress bar and logging results. Provides
+        a summary with pass rate and performance metrics at completion.
+        """
         if not self._tests:
             self.status_label.setText('No tests to run')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
@@ -2578,6 +2735,22 @@ class BaseGUI(QtWidgets.QMainWindow):
 
     # Adapter control
     def toggle_adapter(self):
+        """Connect or disconnect the CAN adapter.
+        
+        If no adapter is connected, this will:
+        1. Instantiate the selected adapter type (PCAN, PythonCAN, Canalystii, or Sim)
+        2. Prompt user to select a DBC file
+        3. Load the DBC and apply filters to the adapter
+        4. Start background frame reception thread
+        
+        If adapter is connected, this will:
+        1. Stop the background worker thread
+        2. Close the adapter connection
+        3. Clean up resources
+        
+        The adapter selection is taken from the device_combo widget, which
+        lists available adapter types based on installed hardware/drivers.
+        """
         # If called from welcome connect button, use device_combo if present
         try:
             selected = self.device_combo.currentText()
@@ -2807,6 +2980,13 @@ class BaseGUI(QtWidgets.QMainWindow):
             pass
 
     def _poll_frames(self):
+        """Poll the frame queue and add received frames to the frame table.
+        
+        This method is called periodically by a QTimer to process frames
+        that have been received by the AdapterWorker thread and placed
+        into frame_q. It processes all available frames in the queue
+        during each poll interval.
+        """
         try:
             while not self.frame_q.empty():
                 f = self.frame_q.get_nowait()
@@ -2815,6 +2995,11 @@ class BaseGUI(QtWidgets.QMainWindow):
             logger.debug(f"Error polling frames: {e}")
 
     def _add_frame_row(self, frame):
+        """Add a received CAN frame to the frame table and process it.
+        
+        Args:
+            frame: CAN frame object with attributes: can_id, data, timestamp
+        """
         r = self.frame_table.rowCount()
         self.frame_table.insertRow(r)
         ts = getattr(frame, 'timestamp', '')
@@ -2846,7 +3031,15 @@ class BaseGUI(QtWidgets.QMainWindow):
             logger.debug(f"Error decoding signals from frame: {e}")
 
     def _decode_and_add_signals(self, frame):
-        """Decode a received frame using loaded DBC and append each signal to Signal View."""
+        """Decode a received CAN frame using loaded DBC and append each signal to Signal View.
+        
+        This method decodes the frame's data bytes using the DBC database to extract
+        individual signal values. Each decoded signal is added to the signal table
+        and cached in _signal_values for quick lookup during test execution.
+        
+        Args:
+            frame: CAN frame object with can_id and data attributes
+        """
         if cantools is None or getattr(self, '_dbc_db', None) is None:
             return
         try:
@@ -3042,6 +3235,15 @@ class BaseGUI(QtWidgets.QMainWindow):
             return (None, None)
 
     def _send_frame(self):
+        """Send a CAN frame manually via the adapter.
+        
+        Reads CAN ID and data from the send frame UI widgets, validates
+        the input, encodes it as a CAN frame, and sends it through the
+        connected adapter. The frame is also logged in the message log.
+        
+        The CAN ID can be specified in hex (0x prefix) or decimal format.
+        Data must be a hex string (may contain spaces or dashes).
+        """
         if self.sim is None:
             QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
             return
@@ -3087,6 +3289,12 @@ class BaseGUI(QtWidgets.QMainWindow):
 
 
 def main():
+    """Main entry point for the EOL Host GUI application.
+    
+    Initializes the Qt application, creates and shows the main window,
+    then enters the Qt event loop. The application will run until
+    the user closes the window or calls QApplication.quit().
+    """
     logger.info(f"Starting host GUI (cwd={os.getcwd()}, python={sys.executable})")
     # create QApplication and show main window
     app = QtWidgets.QApplication(sys.argv)
