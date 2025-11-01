@@ -992,6 +992,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._services_initialized = False
         self.setWindowTitle('EOL Host - Native GUI')
         
+        # Phase 4: Initialize ConfigManager first (must be early, before window sizing and services)
+        try:
+            from host_gui.config import ConfigManager
+            self.config_manager = ConfigManager()
+            # Update log level if ConfigManager loaded it
+            if self.config_manager.app_settings.log_level:
+                try:
+                    new_level = getattr(logging, self.config_manager.app_settings.log_level.upper(), logging.INFO)
+                    logging.getLogger().setLevel(new_level)
+                    logger.info(f"Log level set to {self.config_manager.app_settings.log_level} from ConfigManager")
+                except Exception as e:
+                    logger.debug(f"Failed to update log level from ConfigManager: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ConfigManager, using defaults: {e}", exc_info=True)
+            self.config_manager = None
+        
         # Phase 4: Use window size from ConfigManager if available
         if self.config_manager:
             window_width = self.config_manager.ui_settings.window_width
@@ -1008,22 +1024,6 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.sim = None  # Legacy - will be replaced by can_service
         self.worker = None  # Legacy - will be replaced by can_service
         self.frame_q = queue.Queue()  # Legacy - will use can_service.frame_queue
-        
-        # Phase 4: Initialize ConfigManager (must be early, before services)
-        try:
-            from host_gui.config import ConfigManager
-            self.config_manager = ConfigManager()
-            # Update log level if ConfigManager loaded it
-            if self.config_manager.app_settings.log_level:
-                try:
-                    new_level = getattr(logging, self.config_manager.app_settings.log_level.upper(), logging.INFO)
-                    logging.getLogger().setLevel(new_level)
-                    logger.info(f"Log level set to {self.config_manager.app_settings.log_level} from ConfigManager")
-                except Exception as e:
-                    logger.debug(f"Failed to update log level from ConfigManager: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to initialize ConfigManager, using defaults: {e}", exc_info=True)
-            self.config_manager = None
         
         # Initialize services (Phase 1) - use ConfigManager if available
         if CanService is not None:
