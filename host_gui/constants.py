@@ -39,6 +39,10 @@ FRAME_POLL_INTERVAL_MS = 10
 # DAC settling time after command change (milliseconds)
 # Data points collected within this time after a DAC command step change will be disregarded
 DAC_SETTLING_TIME_MS = 20
+# Pre-step discard time before next step change (milliseconds)
+# Data points collected within this time before a DAC command step change will be disregarded
+# This ensures only stable data points in the middle of the dwell period are collected
+DAC_PRE_STEP_DISCARD_TIME_MS = 20
 
 # Display limits
 MAX_MESSAGES_DEFAULT = 50
