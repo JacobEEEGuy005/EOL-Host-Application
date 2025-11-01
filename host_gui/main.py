@@ -452,6 +452,8 @@ class TestRunner:
 
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
+                    encode_data = {'DeviceID': 0}  # always include DeviceID
+                    mux_value = None
                     data_bytes = b''
                     if gui._dbc_db is not None:
                         target_msg = None
@@ -464,10 +466,51 @@ class TestRunner:
                             except Exception:
                                 continue
                         if target_msg is not None:
+                            for sig_name in signals:
+                                encode_data[sig_name] = signals[sig_name]
+                                # check if this signal is muxed
+                                for sig in target_msg.signals:
+                                    if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                        mux_value = sig.multiplexer_ids[0]
+                                        break
+                            if mux_value is not None:
+                                encode_data['MessageType'] = mux_value
+                            else:
+                                # If this message has a MessageType signal with defined choices,
+                                # try to infer the correct selector for non-muxed commands
+                                # (e.g. DAC commands require MessageType=18).
+                                try:
+                                    mtype_sig = None
+                                    for s in target_msg.signals:
+                                        if getattr(s, 'name', '') == 'MessageType':
+                                            mtype_sig = s
+                                            break
+                                    if mtype_sig is not None and 'MessageType' not in encode_data:
+                                        choices = getattr(mtype_sig, 'choices', None) or {}
+                                        # simple heuristics: match substrings from signal name to choice name
+                                        for sig_name in signals:
+                                            sname_up = str(sig_name).upper()
+                                            for val, cname in (choices.items() if hasattr(choices, 'items') else []):
+                                                try:
+                                                    if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
+                                                        encode_data['MessageType'] = val
+                                                        raise StopIteration
+                                                    if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
+                                                        encode_data['MessageType'] = val
+                                                        raise StopIteration
+                                                    if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
+                                                        encode_data['MessageType'] = val
+                                                        raise StopIteration
+                                                except StopIteration:
+                                                    break
+                                            if 'MessageType' in encode_data:
+                                                break
+                                except Exception:
+                                    pass
                             try:
-                                data_bytes = target_msg.encode(signals)
+                                data_bytes = target_msg.encode(encode_data)
                             except Exception:
-                                # try converting single value to one byte
+                                # fallback to single byte
                                 try:
                                     if len(signals) == 1:
                                         v = list(signals.values())[0]
@@ -487,6 +530,9 @@ class TestRunner:
 
                     if AdapterFrame is not None:
                         f = AdapterFrame(can_id=can_id, data=data_bytes)
+                        print(signals)
+                        print(encode_data)
+                        print(f"Sending frame: can_id=0x{can_id:X} data={data_bytes.hex()}")
                     else:
                         class F: pass
                         f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
@@ -513,9 +559,12 @@ class TestRunner:
                     if dac_cmd_sig:
                         _encode_and_send({dac_cmd_sig: int(dac_min)})
                         _nb_sleep(0.02)
-                    # 4) Enable MUX
+                    # 4) Enable MUX (send channel + enable together if channel known)
                     if mux_enable_sig:
-                        _encode_and_send({mux_enable_sig: 1})
+                        if mux_channel_sig and mux_channel_value is not None:
+                            _encode_and_send({mux_enable_sig: 1, mux_channel_sig: int(mux_channel_value)})
+                        else:
+                            _encode_and_send({mux_enable_sig: 1})
                     # 5) Hold initial dwell
                     _nb_sleep(float(dwell_ms) / 1000.0)
                     # 6) Ramp DAC up by step, holding for dwell each step
