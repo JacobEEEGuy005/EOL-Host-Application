@@ -9,6 +9,24 @@ from datetime import datetime
 
 from PySide6 import QtCore, QtGui, QtWidgets
 try:
+    import matplotlib
+    matplotlib.use('QtAgg')  # Use Qt backend for PySide6
+    # Try newer backend first (matplotlib 3.5+), fall back to older if needed
+    try:
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+    except ImportError:
+        try:
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+        except ImportError:
+            raise ImportError("Matplotlib Qt backend not available")
+    from matplotlib.figure import Figure
+    matplotlib_available = True
+except Exception:
+    matplotlib = None
+    FigureCanvasQTAgg = None
+    Figure = None
+    matplotlib_available = False
+try:
     import cantools
 except Exception:
     cantools = None
@@ -561,6 +579,17 @@ class TestRunner:
 
                 success = False
                 info = ''
+                # Get feedback signal info for plotting
+                fb_signal = test.get('feedback_signal')
+                fb_msg_id = test.get('feedback_message_id')
+                test_name = test.get('name', 'Analog Test')
+                
+                # Clear plot before starting new analog test
+                try:
+                    gui._clear_plot()
+                except Exception:
+                    pass
+                
                 try:
                     # 1) Disable MUX
                     if mux_enable_sig:
@@ -580,8 +609,17 @@ class TestRunner:
                             _encode_and_send({mux_enable_sig: 1, mux_channel_sig: int(mux_channel_value)})
                         else:
                             _encode_and_send({mux_enable_sig: 1})
-                    # 5) Hold initial dwell
+                    # 5) Hold initial dwell and collect feedback data point
                     _nb_sleep(float(dwell_ms) / 1000.0)
+                    # Collect feedback value for initial DAC voltage
+                    if fb_signal and fb_msg_id:
+                        try:
+                            ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                            if fb_val is not None:
+                                gui._update_plot(dac_min, fb_val, test_name)
+                        except Exception:
+                            pass
+                    
                     # 6) Ramp DAC up by step, holding for dwell each step
                     cur = int(dac_min)
                     while cur < int(dac_max):
@@ -589,6 +627,14 @@ class TestRunner:
                         if dac_cmd_sig:
                             _encode_and_send({dac_cmd_sig: int(cur)})
                         _nb_sleep(float(dwell_ms) / 1000.0)
+                        # Collect feedback value at this DAC voltage step
+                        if fb_signal and fb_msg_id:
+                            try:
+                                ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                if fb_val is not None:
+                                    gui._update_plot(cur, fb_val, test_name)
+                            except Exception:
+                                pass
                     success = True
                     info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
                 except Exception as e:
@@ -832,6 +878,32 @@ class BaseGUI(QtWidgets.QMainWindow):
         monitor_layout.addRow('Feedback Signal Value:', self.feedback_signal_label)
         status_layout.addWidget(monitor_group)
 
+        # Plot widget for analog tests (Feedback vs DAC Voltage)
+        plot_group = QtWidgets.QGroupBox('Feedback vs DAC Output Voltage')
+        plot_layout = QtWidgets.QVBoxLayout(plot_group)
+        if matplotlib_available:
+            try:
+                self._init_plot()
+                if hasattr(self, 'plot_canvas') and self.plot_canvas is not None:
+                    plot_layout.addWidget(self.plot_canvas)
+                    plot_group.setVisible(True)
+                else:
+                    no_plot_label = QtWidgets.QLabel('Plot initialization failed.')
+                    no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
+                    plot_layout.addWidget(no_plot_label)
+                    plot_group.setVisible(False)
+            except Exception:
+                no_plot_label = QtWidgets.QLabel('Plot initialization failed.')
+                no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
+                plot_layout.addWidget(no_plot_label)
+                plot_group.setVisible(False)
+        else:
+            no_plot_label = QtWidgets.QLabel('Matplotlib not available. Plot disabled.')
+            no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
+            plot_layout.addWidget(no_plot_label)
+            plot_group.setVisible(False)
+        status_layout.addWidget(plot_group)
+
         # Results table
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(6)
@@ -901,6 +973,79 @@ class BaseGUI(QtWidgets.QMainWindow):
         param_str = ', '.join(params)
         self.results_table.setItem(row, 4, QtWidgets.QTableWidgetItem(param_str))
         self.results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(notes))
+
+    def _init_plot(self):
+        """Initialize the matplotlib plot for Feedback vs DAC Voltage visualization."""
+        if not matplotlib_available:
+            self.plot_canvas = None
+            return
+        try:
+            # Create figure and canvas
+            self.plot_figure = Figure(figsize=(8, 4))
+            self.plot_canvas = FigureCanvasQTAgg(self.plot_figure)
+            self.plot_axes = self.plot_figure.add_subplot(111)
+            
+            # Initialize data storage
+            self.plot_dac_voltages = []
+            self.plot_feedback_values = []
+            
+            # Configure axes
+            self.plot_axes.set_xlabel('DAC Output Voltage (mV)')
+            self.plot_axes.set_ylabel('Feedback Signal Value')
+            self.plot_axes.set_title('Feedback vs DAC Output')
+            self.plot_axes.grid(True, alpha=0.3)
+            
+            # Create initial empty scatter plot with line connection
+            self.plot_line, = self.plot_axes.plot([], [], 'bo-', markersize=6, linewidth=1, label='Feedback')
+            self.plot_axes.legend()
+            
+            # Auto-adjust layout
+            self.plot_figure.tight_layout()
+        except Exception:
+            # If plot initialization fails, mark as unavailable
+            self.plot_canvas = None
+            self.plot_axes = None
+            self.plot_figure = None
+
+    def _clear_plot(self):
+        """Clear the plot data and reset axes."""
+        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            return
+        try:
+            self.plot_dac_voltages = []
+            self.plot_feedback_values = []
+            self.plot_line.set_data([], [])
+            self.plot_axes.relim()
+            self.plot_axes.autoscale()
+            self.plot_canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _update_plot(self, dac_voltage, feedback_value, test_name=None):
+        """Update the plot with a new data point (DAC voltage, feedback value)."""
+        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            return
+        try:
+            # Add new data point
+            if dac_voltage is not None and feedback_value is not None:
+                self.plot_dac_voltages.append(float(dac_voltage))
+                self.plot_feedback_values.append(float(feedback_value))
+                
+                # Update plot line
+                self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
+                
+                # Auto-scale axes to fit all data
+                self.plot_axes.relim()
+                self.plot_axes.autoscale()
+                
+                # Update title if test name provided
+                if test_name and not self.plot_axes.get_title():
+                    self.plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
+                
+                # Refresh canvas (use draw_idle for better performance)
+                self.plot_canvas.draw_idle()
+        except Exception:
+            pass
 
     def _build_test_report(self):
         """Builds the Test Report tab widget and returns it."""
@@ -2127,6 +2272,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.results_table.setRowCount(0)
         self.test_log.clear()
         self.status_label.setText('Results cleared')
+        # Also clear the plot
+        try:
+            self._clear_plot()
+        except Exception:
+            pass
 
     def _on_repeat_test(self):
         # Repeat the currently selected test

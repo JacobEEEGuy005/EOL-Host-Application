@@ -1,2 +1,3 @@
 PySide6>=6.5
 cantools>=36.0.0
+matplotlib>=3.5.0
