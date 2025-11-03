@@ -1147,6 +1147,26 @@ class TestRunner:
                             _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception:
                         pass
+                # Capture and store plot data immediately for analog tests before returning
+                # This prevents plot data from being lost when the next test clears the plot arrays
+                if test.get('type') == 'analog':
+                    test_name = test.get('name', '<unnamed>')
+                    try:
+                        if hasattr(gui, 'plot_dac_voltages') and hasattr(gui, 'plot_feedback_values'):
+                            if gui.plot_dac_voltages and gui.plot_feedback_values:
+                                plot_data = {
+                                    'dac_voltages': list(gui.plot_dac_voltages),
+                                    'feedback_values': list(gui.plot_feedback_values)
+                                }
+                                # Store plot data immediately in execution data (will be merged with other data later)
+                                # Use a temporary key structure that _on_test_finished can access
+                                if not hasattr(gui, '_test_plot_data_temp'):
+                                    gui._test_plot_data_temp = {}
+                                gui._test_plot_data_temp[test_name] = plot_data
+                                logger.debug(f"Captured and stored plot data for {test_name}: {len(plot_data['dac_voltages'])} points")
+                    except Exception as e:
+                        logger.debug(f"Failed to capture plot data for {test_name}: {e}", exc_info=True)
+                
                 return success, info
             else:
                 pass
@@ -1438,6 +1458,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Test execution data storage: test_name -> {exec_time, notes, parameters}
         # Used to display details in popup when clicking Test Plan rows
         self._test_execution_data = {}
+        
+        # Temporary storage for plot data captured at the end of run_single_test
+        # Key: test_name -> plot_data dictionary
+        # This prevents plot data from being lost when the next test clears the plot arrays
+        # Data is removed after being retrieved by _on_test_finished/_on_test_failed
+        self._test_plot_data_temp = {}
 
         # run controls will be created in the configurator UI
         self._run_log = []
@@ -4044,14 +4070,22 @@ Data Points Used: {data_points}"""
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
             # Add to table
-            # Capture plot data for analog tests
+            # Retrieve plot data that was captured at the end of run_single_test
             plot_data = None
-            if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
-                if self.plot_dac_voltages and self.plot_feedback_values:
-                    plot_data = {
-                        'dac_voltages': list(self.plot_dac_voltages),
-                        'feedback_values': list(self.plot_feedback_values)
-                    }
+            if t.get('type') == 'analog':
+                test_name = t.get('name', '<unnamed>')
+                # First try to get from temporary storage (captured in run_single_test)
+                if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                    plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                    logger.debug(f"Retrieved stored plot data for {test_name} (single test)")
+                # Fallback: try to read from global arrays (for backwards compatibility)
+                elif hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                    if self.plot_dac_voltages and self.plot_feedback_values:
+                        plot_data = {
+                            'dac_voltages': list(self.plot_dac_voltages),
+                            'feedback_values': list(self.plot_feedback_values)
+                        }
+                        logger.debug(f"Used global plot data for {test_name} (single test, fallback)")
             self._update_test_plan_row(t, result, exec_time, info, plot_data)
         except Exception as e:
             end_time = time.time()
@@ -4059,14 +4093,22 @@ Data Points Used: {data_points}"""
             self.status_label.setText('Test error')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
-            # Capture plot data for analog tests (even if failed, may have partial data)
+            # Retrieve plot data that was captured at the end of run_single_test (even if failed, may have partial data)
             plot_data = None
-            if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
-                if self.plot_dac_voltages and self.plot_feedback_values:
-                    plot_data = {
-                        'dac_voltages': list(self.plot_dac_voltages),
-                        'feedback_values': list(self.plot_feedback_values)
-                    }
+            if t.get('type') == 'analog':
+                test_name = t.get('name', '<unnamed>')
+                # First try to get from temporary storage (captured in run_single_test)
+                if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                    plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                    logger.debug(f"Retrieved stored plot data for {test_name} (exception case)")
+                # Fallback: try to read from global arrays (for backwards compatibility)
+                elif hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                    if self.plot_dac_voltages and self.plot_feedback_values:
+                        plot_data = {
+                            'dac_voltages': list(self.plot_dac_voltages),
+                            'feedback_values': list(self.plot_feedback_values)
+                        }
+                        logger.debug(f"Used global plot data for {test_name} (exception case, fallback)")
             self._update_test_plan_row(t, 'ERROR', exec_time, str(e), plot_data)
         finally:
             # clear current feedback monitor
@@ -4265,14 +4307,23 @@ Data Points Used: {data_points}"""
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                # Capture plot data for analog tests before clearing
+                # Retrieve plot data that was captured at the end of run_single_test
+                # This data was stored before the next test could clear the plot arrays
                 plot_data = None
-                if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
-                    if self.plot_dac_voltages and self.plot_feedback_values:
-                        plot_data = {
-                            'dac_voltages': list(self.plot_dac_voltages),
-                            'feedback_values': list(self.plot_feedback_values)
-                        }
+                if t.get('type') == 'analog':
+                    test_name = t.get('name', '<unnamed>')
+                    # First try to get from temporary storage (captured in run_single_test)
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name}")
+                    # Fallback: try to read from global arrays (for backwards compatibility)
+                    elif hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                        if self.plot_dac_voltages and self.plot_feedback_values:
+                            plot_data = {
+                                'dac_voltages': list(self.plot_dac_voltages),
+                                'feedback_values': list(self.plot_feedback_values)
+                            }
+                            logger.debug(f"Used global plot data for {test_name} (fallback)")
                 self._update_test_plan_row(t, result, f"{exec_time:.2f}s", info, plot_data)
         except Exception:
             pass
@@ -4292,14 +4343,22 @@ Data Points Used: {data_points}"""
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                # Capture plot data for analog tests before clearing (even if failed, may have partial data)
+                # Retrieve plot data that was captured at the end of run_single_test (even if failed, may have partial data)
                 plot_data = None
-                if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
-                    if self.plot_dac_voltages and self.plot_feedback_values:
-                        plot_data = {
-                            'dac_voltages': list(self.plot_dac_voltages),
-                            'feedback_values': list(self.plot_feedback_values)
-                        }
+                if t.get('type') == 'analog':
+                    test_name = t.get('name', '<unnamed>')
+                    # First try to get from temporary storage (captured in run_single_test)
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (error case)")
+                    # Fallback: try to read from global arrays (for backwards compatibility)
+                    elif hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                        if self.plot_dac_voltages and self.plot_feedback_values:
+                            plot_data = {
+                                'dac_voltages': list(self.plot_dac_voltages),
+                                'feedback_values': list(self.plot_feedback_values)
+                            }
+                            logger.debug(f"Used global plot data for {test_name} (error case, fallback)")
                 self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error, plot_data)
         except Exception:
             pass
