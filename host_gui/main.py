@@ -1434,6 +1434,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._tests = []
         # DBC database once loaded
         self._dbc_db = None
+        
+        # Test execution data storage: test_name -> {exec_time, notes, parameters}
+        # Used to display details in popup when clicking Test Plan rows
+        self._test_execution_data = {}
 
         # run controls will be created in the configurator UI
         self._run_log = []
@@ -1533,12 +1537,15 @@ class BaseGUI(QtWidgets.QMainWindow):
             plot_group.setVisible(False)
         status_layout.addWidget(plot_group)
 
-        # Results table
+        # Test Plan table (renamed from Results table)
         self.results_table = QtWidgets.QTableWidget()
-        self.results_table.setColumnCount(6)
-        self.results_table.setHorizontalHeaderLabels(['Test Name', 'Type', 'Status', 'Execution Time', 'Parameters', 'Notes'])
+        self.results_table.setColumnCount(3)
+        self.results_table.setHorizontalHeaderLabels(['Test Name', 'Type', 'Status'])
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.setAlternatingRowColors(True)
+        # Enable single-click to show details
+        self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.results_table.itemClicked.connect(self._on_test_plan_item_clicked)
 
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
@@ -1547,8 +1554,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Results display with splitter
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         
-        # Results table in a group
-        table_group = QtWidgets.QGroupBox('Test Results Table')
+        # Test Plan in a group (renamed from Test Results Table)
+        table_group = QtWidgets.QGroupBox('Test Plan')
         table_layout = QtWidgets.QVBoxLayout(table_group)
         table_layout.addWidget(self.results_table)
         splitter.addWidget(table_group)
@@ -1571,26 +1578,46 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         return tab
 
-    def _add_result_to_table(self, test: Dict[str, Any], status: str, exec_time: str, notes: str) -> None:
-        """Add a test result row to the results table in Test Status tab.
+    def _populate_test_plan(self) -> None:
+        """Populate the Test Plan table with all tests from self._tests.
+        
+        This method ensures all loaded tests are displayed in the Test Plan,
+        with status "Not Run" for tests that haven't been executed yet.
+        Tests that have been executed will show their current status.
+        """
+        # Clear existing rows
+        self.results_table.setRowCount(0)
+        
+        # Add all tests from self._tests
+        for test in self._tests:
+            test_name = test.get('name', '<unnamed>')
+            act = test.get('actuation', {})
+            test_type = act.get('type', 'Unknown').capitalize()
+            
+            # Check if test has execution data (has been run before)
+            exec_data = self._test_execution_data.get(test_name, {})
+            status = exec_data.get('status', 'Not Run')
+            
+            # Add row
+            row = self.results_table.rowCount()
+            self.results_table.insertRow(row)
+            self.results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(test_name))
+            self.results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(test_type))
+            self.results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(status))
+    
+    def _get_test_parameters_string(self, test: Dict[str, Any]) -> str:
+        """Extract parameters string from test configuration.
         
         Args:
             test: Test configuration dictionary
-            status: Test status ('PASS', 'FAIL', or 'ERROR')
-            exec_time: Execution time as string (e.g., "1.23s")
-            notes: Additional information or error details
+            
+        Returns:
+            Formatted string with test parameters
         """
-        row = self.results_table.rowCount()
-        self.results_table.insertRow(row)
-        self.results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(test.get('name', '<unnamed>')))
         act = test.get('actuation', {})
         test_type = act.get('type', 'Unknown')
-        self.results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(test_type.capitalize()))
-        self.results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(status))
-        self.results_table.setItem(row, 3, QtWidgets.QTableWidgetItem(exec_time))
-        
-        # Parameters
         params = []
+        
         if test_type == 'digital':
             if act.get('can_id'):
                 params.append(f"CAN ID: {act['can_id']}")
@@ -1603,13 +1630,160 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"DAC CAN ID: {act['dac_can_id']}")
             if act.get('dac_command'):
                 params.append(f"Command: {act['dac_command']}")
-            if act.get('mux_channel'):
+            if act.get('mux_channel') is not None:
                 params.append(f"MUX Channel: {act['mux_channel']}")
-            if act.get('mux_value'):
+            if act.get('mux_value') is not None:
                 params.append(f"MUX Value: {act['mux_value']}")
-        param_str = ', '.join(params)
-        self.results_table.setItem(row, 4, QtWidgets.QTableWidgetItem(param_str))
-        self.results_table.setItem(row, 5, QtWidgets.QTableWidgetItem(notes))
+            if act.get('mux_enable_signal'):
+                params.append(f"MUX Enable Signal: {act['mux_enable_signal']}")
+        
+        return ', '.join(params) if params else 'None'
+    
+    def _update_test_plan_row(self, test: Dict[str, Any], status: str, exec_time: str, notes: str) -> None:
+        """Update or insert a test result row in the Test Plan table.
+        
+        Uses test name as the unique key. If a row with the same test name exists,
+        it updates the status. Otherwise, it inserts a new row. Execution data
+        (exec_time, notes, parameters) are stored separately for popup display.
+        
+        Args:
+            test: Test configuration dictionary
+            status: Test status ('PASS', 'FAIL', 'ERROR', 'Running...')
+            exec_time: Execution time as string (e.g., "1.23s")
+            notes: Additional information or error details
+        """
+        test_name = test.get('name', '<unnamed>')
+        act = test.get('actuation', {})
+        test_type = act.get('type', 'Unknown').capitalize()
+        
+        # Store execution data for popup display
+        params_str = self._get_test_parameters_string(test)
+        self._test_execution_data[test_name] = {
+            'status': status,
+            'exec_time': exec_time,
+            'notes': notes,
+            'parameters': params_str,
+            'test_type': test_type
+        }
+        
+        # Find existing row by test name
+        existing_row = None
+        for row in range(self.results_table.rowCount()):
+            name_item = self.results_table.item(row, 0)
+            if name_item and name_item.text() == test_name:
+                existing_row = row
+                break
+        
+        if existing_row is not None:
+            # Update existing row
+            self.results_table.setItem(existing_row, 2, QtWidgets.QTableWidgetItem(status))
+        else:
+            # Insert new row if test exists in self._tests but not in table
+            # (shouldn't happen if _populate_test_plan was called, but handle gracefully)
+            row = self.results_table.rowCount()
+            self.results_table.insertRow(row)
+            self.results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(test_name))
+            self.results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(test_type))
+            self.results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(status))
+    
+    def _on_test_plan_item_clicked(self, item: QtWidgets.QTableWidgetItem) -> None:
+        """Handle click on Test Plan table item to show test details popup.
+        
+        Args:
+            item: The clicked table item
+        """
+        # Get row of clicked item
+        row = item.row()
+        
+        # Get test name from first column
+        name_item = self.results_table.item(row, 0)
+        if not name_item:
+            return
+        
+        test_name = name_item.text()
+        
+        # Find test in self._tests for full configuration
+        test_config = None
+        for test in self._tests:
+            if test.get('name', '') == test_name:
+                test_config = test
+                break
+        
+        # Get execution data
+        exec_data = self._test_execution_data.get(test_name, {})
+        
+        # Show popup dialog
+        self._show_test_details_popup(test_name, test_config, exec_data)
+    
+    def _show_test_details_popup(self, test_name: str, test_config: Optional[Dict[str, Any]], exec_data: Dict[str, Any]) -> None:
+        """Show a popup dialog with test execution details.
+        
+        Args:
+            test_name: Name of the test
+            test_config: Test configuration dictionary (may be None if test not found)
+            exec_data: Execution data dictionary with status, exec_time, notes, parameters
+        """
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f'Test Details: {test_name}')
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(300)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        
+        # Test Name section
+        name_label = QtWidgets.QLabel(f'<b>Test Name:</b> {test_name}')
+        layout.addWidget(name_label)
+        
+        # Status section
+        status = exec_data.get('status', 'Not Run')
+        status_label = QtWidgets.QLabel(f'<b>Status:</b> {status}')
+        # Color code status
+        if status == 'PASS':
+            status_label.setStyleSheet('color: green;')
+        elif status in ('FAIL', 'ERROR'):
+            status_label.setStyleSheet('color: red;')
+        elif status == 'Running...':
+            status_label.setStyleSheet('color: blue;')
+        layout.addWidget(status_label)
+        
+        # Execution Time section
+        exec_time = exec_data.get('exec_time', 'N/A')
+        exec_time_label = QtWidgets.QLabel(f'<b>Execution Time:</b> {exec_time}')
+        layout.addWidget(exec_time_label)
+        
+        # Parameters section
+        parameters = exec_data.get('parameters', 'None')
+        if not parameters and test_config:
+            # If no stored parameters, extract them from test_config
+            parameters = self._get_test_parameters_string(test_config)
+        params_label = QtWidgets.QLabel(f'<b>Parameters:</b>')
+        layout.addWidget(params_label)
+        params_text = QtWidgets.QTextEdit()
+        params_text.setPlainText(parameters)
+        params_text.setReadOnly(True)
+        params_text.setMaximumHeight(100)
+        layout.addWidget(params_text)
+        
+        # Notes/Details section
+        notes = exec_data.get('notes', '')
+        if not notes:
+            notes = 'No additional notes available.'
+        notes_label = QtWidgets.QLabel(f'<b>Notes/Details:</b>')
+        layout.addWidget(notes_label)
+        notes_text = QtWidgets.QTextEdit()
+        notes_text.setPlainText(notes)
+        notes_text.setReadOnly(True)
+        layout.addWidget(notes_text)
+        
+        # Close button
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.addStretch()
+        close_btn = QtWidgets.QPushButton('Close')
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+        
+        dialog.exec()
 
     def _init_plot(self):
         """Initialize the matplotlib plot widget for Feedback vs DAC Voltage visualization.
@@ -2691,6 +2865,11 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self._on_select_test(None, None)
             except Exception:
                 pass
+            # Sync Test Plan
+            try:
+                self._populate_test_plan()
+            except Exception:
+                pass
             dlg.accept()
 
         btns.accepted.connect(on_accept)
@@ -2774,10 +2953,20 @@ class BaseGUI(QtWidgets.QMainWindow):
             return
         self.test_list.takeItem(it)
         try:
+            deleted_test = self._tests[it]
             del self._tests[it]
+            # Remove execution data for deleted test
+            test_name = deleted_test.get('name', '')
+            if test_name in self._test_execution_data:
+                del self._test_execution_data[test_name]
         except Exception:
             pass
         self.json_preview.clear()
+        # Sync Test Plan
+        try:
+            self._populate_test_plan()
+        except Exception:
+            pass
 
     def _on_save_tests(self) -> None:
         """Save current test configuration to JSON file.
@@ -2997,6 +3186,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         for t in self._tests:
             self.test_list.addItem(t.get('name', '<unnamed>'))
         
+        # Sync Test Plan
+        try:
+            self._populate_test_plan()
+        except Exception:
+            pass
+        
         logger.info(f"Loaded {len(loaded_tests)} tests from {file_path}")
         QtWidgets.QMessageBox.information(
             self, 'Loaded',
@@ -3042,6 +3237,11 @@ class BaseGUI(QtWidgets.QMainWindow):
             if len(new_order) == self.test_list.count() == len(self._tests):
                 self._tests = new_order
                 logger.debug(f"Reordered {len(new_order)} tests")
+                # Sync Test Plan (order matters, but we preserve existing statuses)
+                try:
+                    self._populate_test_plan()
+                except Exception:
+                    pass
             else:
                 logger.error(f"Reorder failed: expected {self.test_list.count()} items, matched {len(new_order)}, have {len(self._tests)} tests")
         except Exception as e:
@@ -3462,11 +3662,21 @@ class BaseGUI(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.warning(dlg, 'Invalid Test Configuration', f'Cannot save test: {error_msg}')
                 return
             
+            old_test_name = self._tests[idx].get('name', '')
             self._tests[idx] = data
             self.test_list.currentItem().setText(data['name'])
+            # If test name changed, update execution data key
+            new_test_name = data.get('name', '')
+            if old_test_name != new_test_name and old_test_name in self._test_execution_data:
+                self._test_execution_data[new_test_name] = self._test_execution_data.pop(old_test_name)
             # refresh JSON preview for current selection
             try:
                 self._on_select_test(None, None)
+            except Exception:
+                pass
+            # Sync Test Plan
+            try:
+                self._populate_test_plan()
             except Exception:
                 pass
             dlg.accept()
@@ -3515,14 +3725,14 @@ class BaseGUI(QtWidgets.QMainWindow):
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
             # Add to table
-            self._add_result_to_table(t, result, exec_time, info)
+            self._update_test_plan_row(t, result, exec_time, info)
         except Exception as e:
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
             self.status_label.setText('Test error')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
-            self._add_result_to_table(t, 'ERROR', exec_time, str(e))
+            self._update_test_plan_row(t, 'ERROR', exec_time, str(e))
         finally:
             # clear current feedback monitor
             try:
@@ -3533,12 +3743,24 @@ class BaseGUI(QtWidgets.QMainWindow):
     def _on_clear_results(self) -> None:
         """Clear all test results, logs, and plots from the Test Status tab.
         
-        Resets the results table, execution log, and clears the feedback
+        Resets test statuses to "Not Run", clears execution log, and clears the feedback
         vs DAC voltage plot. Useful for starting a fresh test session.
+        Execution data is preserved but statuses are reset.
         """
-        self.results_table.setRowCount(0)
+        # Clear execution data statuses (preserve execution history, just reset status)
+        for test_name in self._test_execution_data:
+            self._test_execution_data[test_name]['status'] = 'Not Run'
+        
+        # Clear execution log
         self.test_log.clear()
         self.status_label.setText('Results cleared')
+        
+        # Repopulate Test Plan with "Not Run" statuses
+        try:
+            self._populate_test_plan()
+        except Exception:
+            pass
+        
         # Also clear the plot
         try:
             self._clear_plot()
@@ -3682,10 +3904,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Running test: {test_name}')
         
-        # Find test and set current feedback signal
+        # Update Test Plan status to "Running..."
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
+                self._update_test_plan_row(t, 'Running...', 'N/A', 'Test execution in progress...')
                 self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
                 if self._current_feedback and self._current_feedback[1]:
                     ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
@@ -3703,11 +3926,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
         
-        # Add to results table
+        # Update Test Plan row
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                self._add_result_to_table(t, result, f"{exec_time:.2f}s", info)
+                self._update_test_plan_row(t, result, f"{exec_time:.2f}s", info)
         except Exception:
             pass
         
@@ -3722,11 +3945,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Error: {error}')
         
-        # Add to results table
+        # Update Test Plan row
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                self._add_result_to_table(t, 'ERROR', f"{exec_time:.2f}s", error)
+                self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error)
         except Exception:
             pass
         
