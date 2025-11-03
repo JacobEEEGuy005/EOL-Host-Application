@@ -1502,6 +1502,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.status_label = QtWidgets.QLabel('Ready')
         status_layout.addWidget(self.status_label)
 
+        # Create horizontal splitter for two-column layout
+        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        
+        # Left column: Real-time monitoring, plot, and execution log
+        left_column = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
         # Real-time monitoring
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
         monitor_layout = QtWidgets.QFormLayout(monitor_group)
@@ -1509,7 +1517,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         monitor_layout.addRow('Current Signal Value:', self.current_signal_label)
         self.feedback_signal_label = QtWidgets.QLabel('N/A')
         monitor_layout.addRow('Feedback Signal Value:', self.feedback_signal_label)
-        status_layout.addWidget(monitor_group)
+        left_layout.addWidget(monitor_group)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
         plot_group = QtWidgets.QGroupBox('Feedback vs DAC Output Voltage')
@@ -1535,8 +1543,21 @@ class BaseGUI(QtWidgets.QMainWindow):
             no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
             plot_layout.addWidget(no_plot_label)
             plot_group.setVisible(False)
-        status_layout.addWidget(plot_group)
+        left_layout.addWidget(plot_group)
 
+        # Log text area
+        self.test_log = QtWidgets.QPlainTextEdit()
+        self.test_log.setReadOnly(True)
+        
+        # Log in a group
+        log_group = QtWidgets.QGroupBox('Execution Log')
+        log_layout = QtWidgets.QVBoxLayout(log_group)
+        log_layout.addWidget(self.test_log)
+        left_layout.addWidget(log_group)
+        
+        main_splitter.addWidget(left_column)
+        
+        # Right column: Test Plan
         # Test Plan table (renamed from Results table)
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(3)
@@ -1546,27 +1567,18 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Enable single-click to show details
         self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.results_table.itemClicked.connect(self._on_test_plan_item_clicked)
-
-        # Log text area
-        self.test_log = QtWidgets.QPlainTextEdit()
-        self.test_log.setReadOnly(True)
-
-        # Results display with splitter
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         
-        # Test Plan in a group (renamed from Test Results Table)
+        # Test Plan in a group
         table_group = QtWidgets.QGroupBox('Test Plan')
         table_layout = QtWidgets.QVBoxLayout(table_group)
         table_layout.addWidget(self.results_table)
-        splitter.addWidget(table_group)
+        main_splitter.addWidget(table_group)
         
-        # Log in a group
-        log_group = QtWidgets.QGroupBox('Execution Log')
-        log_layout = QtWidgets.QVBoxLayout(log_group)
-        log_layout.addWidget(self.test_log)
-        splitter.addWidget(log_group)
+        # Set splitter proportions (left column gets more space initially)
+        main_splitter.setStretchFactor(0, 2)  # Left column
+        main_splitter.setStretchFactor(1, 1)  # Right column (Test Plan)
         
-        status_layout.addWidget(splitter)
+        status_layout.addWidget(main_splitter)
 
         layout.addWidget(status_group)
 
