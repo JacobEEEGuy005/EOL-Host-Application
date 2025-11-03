@@ -784,6 +784,10 @@ class TestRunner:
                         # Store DAC command timestamp for timestamp validation
                         # Only feedback values received after this timestamp will be used
                         dac_command_timestamp = step_change_time
+                        logger.debug(
+                            f"DAC command sent: voltage={dac_voltage}mV, "
+                            f"command_timestamp={dac_command_timestamp}"
+                        )
                     except Exception as e:
                         logger.debug(f"Error sending initial DAC command during dwell: {e}")
                         step_change_time = time.time()
@@ -1043,6 +1047,15 @@ class TestRunner:
                     gui._clear_plot()
                 except Exception:
                     pass
+                
+                # Clear signal cache before starting analog test to ensure fresh timestamps
+                # This prevents stale cached feedback values from previous tests from being used
+                try:
+                    if gui.signal_service is not None:
+                        gui.signal_service.clear_cache()
+                        logger.debug("Cleared signal cache before starting analog test")
+                except Exception as e:
+                    logger.debug(f"Failed to clear signal cache before analog test: {e}")
                 
                 try:
                     # 1) Disable MUX

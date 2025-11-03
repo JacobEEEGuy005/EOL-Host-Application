@@ -100,7 +100,36 @@ class SignalService:
             return []
         
         # Create SignalValue objects and update cache
-        timestamp = getattr(frame, 'timestamp', None) or time.time()
+        # Validate and use frame timestamp, or fall back to current time
+        frame_timestamp = getattr(frame, 'timestamp', None)
+        current_time = time.time()
+        
+        # Only use frame timestamp if it's explicitly provided and reasonable
+        # Timestamps should be Unix epoch seconds (typically > 1e9 for dates after 2001)
+        # and not too far in the future (within 30 years)
+        if frame_timestamp is not None:
+            # Validate timestamp is reasonable (Unix epoch range, not relative time)
+            # Valid Unix timestamps: 0 to ~2147483647 (year 2038), but we'll check for reasonable range
+            # For 2025: timestamps should be ~1700000000-1800000000
+            # If timestamp is too small (< 1e9) or negative, it's likely relative time or invalid
+            # Validate timestamp is in reasonable Unix epoch range (after year 2001, within 30 years future)
+            # Small values (< 1e9) likely indicate relative time, milliseconds, or other invalid format
+            if frame_timestamp > 1e9 and frame_timestamp < current_time + (86400 * 365 * 30):
+                timestamp = frame_timestamp
+            else:
+                # Timestamp appears invalid (relative time, microseconds, or wrong format)
+                # Use current decode time instead to ensure accurate timestamps
+                age_sec = current_time - frame_timestamp if frame_timestamp > 0 else None
+                logger.debug(
+                    f"Frame timestamp validation failed: frame_ts={frame_timestamp}, "
+                    f"current_ts={current_time}, using decode time instead. "
+                    f"(frame_ts seems {'relative/invalid' if frame_timestamp < 1e9 else 'too far in future'})"
+                )
+                timestamp = current_time
+        else:
+            # No timestamp from frame, use current decode time
+            timestamp = current_time
+        
         signal_values = []
         message_name = getattr(message, 'name', None)
         
