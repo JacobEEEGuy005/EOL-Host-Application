@@ -841,6 +841,26 @@ class TestRunner:
                             try:
                                 ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                 if fb_val is not None:
+                                    # Get measured DAC voltage from EOL configuration
+                                    measured_dac_voltage = dac_voltage  # Default to commanded value
+                                    if hasattr(gui, '_eol_hw_config') and gui._eol_hw_config.get('feedback_message_id'):
+                                        try:
+                                            eol_msg_id = gui._eol_hw_config['feedback_message_id']
+                                            eol_signal_name = gui._eol_hw_config['measured_dac_signal']
+                                            ts_measured, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            if measured_val is not None:
+                                                measured_dac_voltage = float(measured_val)
+                                                logger.debug(
+                                                    f"Using measured DAC voltage: {measured_dac_voltage}mV "
+                                                    f"(commanded: {dac_voltage}mV)"
+                                                )
+                                            else:
+                                                logger.debug(f"Measured DAC voltage not available, using commanded: {dac_voltage}mV")
+                                        except Exception as e:
+                                            logger.debug(f"Error reading measured DAC voltage: {e}, using commanded: {dac_voltage}mV")
+                                    else:
+                                        logger.debug(f"EOL config not available, using commanded DAC voltage: {dac_voltage}mV")
+                                    
                                     # Timestamp validation: only use feedback values received AFTER the DAC command
                                     # This prevents using stale cached values from previous voltage steps
                                     # Allow small tolerance (-10ms) to handle timing precision issues
@@ -850,19 +870,19 @@ class TestRunner:
                                         # No timestamp available - collect anyway but log warning
                                         # This can happen if frames don't have timestamps or cache is empty
                                         logger.info(
-                                            f"Collecting feedback data point: DAC={dac_voltage}mV, "
+                                            f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
                                             f"Feedback={fb_val} (no timestamp available)"
                                         )
-                                        gui._update_plot(dac_voltage, fb_val, test_name)
+                                        gui._update_plot(measured_dac_voltage, fb_val, test_name)
                                         data_points_collected += 1
                                     elif ts >= (dac_command_timestamp - TIMESTAMP_TOLERANCE_SEC):
                                         # This feedback value is fresh enough (within tolerance window)
                                         # Note: Allow small negative difference to handle timing precision
                                         logger.debug(
-                                            f"Collecting feedback data point: DAC={dac_voltage}mV, "
+                                            f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
                                             f"Feedback={fb_val}, timestamp_age={(time.time() - ts)*1000:.1f}ms"
                                         )
-                                        gui._update_plot(dac_voltage, fb_val, test_name)
+                                        gui._update_plot(measured_dac_voltage, fb_val, test_name)
                                         data_points_collected += 1
                                     else:
                                         # Stale feedback value - skip it (logged at debug level only if significant)
@@ -1103,7 +1123,18 @@ class TestRunner:
                             try:
                                 ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                 if fb_val is not None:
-                                    gui._update_plot(dac_min, fb_val, test_name)
+                                    # Get measured DAC voltage if configured
+                                    measured_dac = dac_min
+                                    if hasattr(gui, '_eol_hw_config') and gui._eol_hw_config.get('feedback_message_id'):
+                                        try:
+                                            eol_msg_id = gui._eol_hw_config['feedback_message_id']
+                                            eol_signal_name = gui._eol_hw_config['measured_dac_signal']
+                                            _, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            if measured_val is not None:
+                                                measured_dac = float(measured_val)
+                                        except Exception:
+                                            pass
+                                    gui._update_plot(measured_dac, fb_val, test_name)
                             except Exception:
                                 pass
                     
@@ -1122,7 +1153,18 @@ class TestRunner:
                                 try:
                                     ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                     if fb_val is not None:
-                                        gui._update_plot(cur, fb_val, test_name)
+                                        # Get measured DAC voltage if configured
+                                        measured_dac = cur
+                                        if hasattr(gui, '_eol_hw_config') and gui._eol_hw_config.get('feedback_message_id'):
+                                            try:
+                                                eol_msg_id = gui._eol_hw_config['feedback_message_id']
+                                                eol_signal_name = gui._eol_hw_config['measured_dac_signal']
+                                                _, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                                if measured_val is not None:
+                                                    measured_dac = float(measured_val)
+                                            except Exception:
+                                                pass
+                                        gui._update_plot(measured_dac, fb_val, test_name)
                                 except Exception:
                                     pass
                     success = True
@@ -1386,6 +1428,88 @@ class BaseGUI(QtWidgets.QMainWindow):
         about_act.triggered.connect(lambda: QtWidgets.QMessageBox.information(self, 'About', 'EOL Host Native GUI'))
         help_menu.addAction(about_act)
 
+    def _build_eol_hw_configurator(self) -> QtWidgets.QWidget:
+        """Builds the EOL H/W Configuration tab widget.
+        
+        This tab allows users to:
+        - Create new EOL hardware configurations
+        - Edit existing configurations
+        - Load saved configurations
+        - Link DBC messages/signals to EOL hardware
+        
+        Configuration includes:
+        - EOL Feedback Message: DBC message that contains feedback data
+        - Measured DAC Output Voltage Signal: Signal within that message for DAC measurement
+        
+        Returns:
+            QWidget containing the EOL H/W Configuration layout
+        """
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        
+        # Top: Action buttons (Create, Edit, Load)
+        button_layout = QtWidgets.QHBoxLayout()
+        self.eol_create_btn = QtWidgets.QPushButton('Create EOL Configuration')
+        self.eol_edit_btn = QtWidgets.QPushButton('Edit EOL Configuration')
+        self.eol_load_btn = QtWidgets.QPushButton('Load EOL Configuration')
+        self.eol_save_btn = QtWidgets.QPushButton('Save EOL Configuration')
+        button_layout.addWidget(self.eol_create_btn)
+        button_layout.addWidget(self.eol_edit_btn)
+        button_layout.addWidget(self.eol_load_btn)
+        button_layout.addWidget(self.eol_save_btn)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # Middle: Current Configuration display area
+        config_group = QtWidgets.QGroupBox('Current EOL Hardware Configuration')
+        config_layout = QtWidgets.QFormLayout()
+        
+        self.eol_feedback_msg_label = QtWidgets.QLabel('Not configured')
+        self.eol_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dac_signal_label = QtWidgets.QLabel('Not configured')
+        self.eol_dac_signal_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_config_name_label = QtWidgets.QLabel('No configuration loaded')
+        self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
+        
+        config_layout.addRow('Configuration Name:', self.eol_config_name_label)
+        config_layout.addRow('EOL Feedback Message:', self.eol_feedback_msg_label)
+        config_layout.addRow('Measured DAC Output Voltage Signal:', self.eol_dac_signal_label)
+        config_group.setLayout(config_layout)
+        layout.addWidget(config_group)
+        
+        # Bottom: Saved configurations list
+        saved_group = QtWidgets.QGroupBox('Saved Configurations')
+        saved_layout = QtWidgets.QVBoxLayout()
+        saved_info = QtWidgets.QLabel('Double-click to load a saved configuration')
+        saved_info.setStyleSheet('color: gray; font-size: 10px;')
+        saved_layout.addWidget(saved_info)
+        self.eol_config_list = QtWidgets.QListWidget()
+        self.eol_config_list.itemDoubleClicked.connect(self._on_eol_config_list_double_clicked)
+        saved_layout.addWidget(self.eol_config_list)
+        saved_group.setLayout(saved_layout)
+        layout.addWidget(saved_group, 1)
+        
+        # Store current configuration
+        self._eol_hw_config = {
+            'name': None,
+            'feedback_message_id': None,
+            'feedback_message_name': None,
+            'measured_dac_signal': None,
+            'created_at': None,
+            'updated_at': None
+        }
+        
+        # Wire buttons
+        self.eol_create_btn.clicked.connect(self._on_create_eol_config)
+        self.eol_edit_btn.clicked.connect(self._on_edit_eol_config)
+        self.eol_load_btn.clicked.connect(self._on_load_eol_config)
+        self.eol_save_btn.clicked.connect(self._on_save_eol_config)
+        
+        # Refresh saved configurations list
+        self._refresh_eol_config_list()
+        
+        return tab
+    
     def _build_test_configurator(self):
         """Builds the Test Configurator tab widget and returns it.
         
@@ -1457,6 +1581,17 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._tests = []
         # DBC database once loaded
         self._dbc_db = None
+        
+        # EOL Hardware Configuration (initialized in _build_eol_hw_configurator if that tab exists)
+        # Pre-initialize here in case tab isn't built yet
+        self._eol_hw_config = {
+            'name': None,
+            'feedback_message_id': None,
+            'feedback_message_name': None,
+            'measured_dac_signal': None,
+            'created_at': None,
+            'updated_at': None
+        }
         
         # Test execution data storage: test_name -> {exec_time, notes, parameters}
         # Used to display details in popup when clicking Test Plan rows
@@ -2435,10 +2570,18 @@ Data Points Used: {data_points}"""
         except Exception:
             self.start_btn = None
 
+        # build EOL H/W Configuration tab and wire into main_tabs
+        try:
+            eol_tab = self._build_eol_hw_configurator()
+            # add as a top-level tab before Test Configurator
+            self.tabs_main.addTab(eol_tab, 'EOL H/W Configuration')
+        except Exception as e:
+            logger.error(f"Failed to build EOL H/W Configuration tab: {e}", exc_info=True)
+        
         # build Test Configurator tab and wire into main_tabs
         try:
             test_tab = self._build_test_configurator()
-            # add as a top-level tab after CAN Data View
+            # add as a top-level tab after EOL H/W Configuration
             self.tabs_main.addTab(test_tab, 'Test Configurator')
             # Add placeholder tabs for Test Status and Test Report
             status_tab = self._build_test_status()
@@ -2736,6 +2879,551 @@ Data Points Used: {data_points}"""
     def _decode_sample(self):
         QtWidgets.QMessageBox.information(self, 'Decode', 'Decode sample frame: not yet implemented in prototype')
 
+    # EOL H/W Configuration handlers
+    def _on_create_eol_config(self):
+        """Open dialog to create new EOL hardware configuration."""
+        if not self._check_dbc_loaded():
+            return
+        
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Create EOL Hardware Configuration')
+        dialog.setMinimumWidth(600)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        
+        # Configuration name
+        name_layout = QtWidgets.QHBoxLayout()
+        name_layout.addWidget(QtWidgets.QLabel('Configuration Name:'))
+        name_edit = QtWidgets.QLineEdit()
+        name_edit.setPlaceholderText('e.g., EOL_HW_v1.0')
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+        
+        # Message selection
+        msg_label = QtWidgets.QLabel('<b>EOL Feedback Message:</b>')
+        layout.addWidget(msg_label)
+        msg_combo = QtWidgets.QComboBox()
+        
+        # Populate with messages from loaded DBC
+        messages = []
+        if self.dbc_service and self.dbc_service.is_loaded():
+            messages = self.dbc_service.get_all_messages()
+        elif self._dbc_db:
+            try:
+                messages = getattr(self._dbc_db, 'messages', [])
+            except Exception:
+                pass
+        
+        if not messages:
+            QtWidgets.QMessageBox.warning(self, 'No DBC Loaded', 
+                'Please load a DBC file first in the CAN Data View tab.')
+            dialog.reject()
+            return
+        
+        msg_combo.addItem('-- Select Message --', None)
+        for msg in messages:
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+        
+        layout.addWidget(msg_combo)
+        
+        # Signal selection (updates when message changes)
+        sig_label = QtWidgets.QLabel('<b>Measured DAC Output Voltage Signal:</b>')
+        layout.addWidget(sig_label)
+        sig_combo = QtWidgets.QComboBox()
+        sig_combo.setEnabled(False)
+        layout.addWidget(sig_combo)
+        
+        # Signal details display
+        sig_details = QtWidgets.QLabel('')
+        sig_details.setWordWrap(True)
+        sig_details.setStyleSheet('color: gray; font-size: 10px;')
+        layout.addWidget(sig_details)
+        
+        def on_message_changed(index):
+            """Update signal combo when message selection changes."""
+            sig_combo.clear()
+            sig_details.setText('')
+            msg = msg_combo.currentData()
+            if msg is None or index == 0:
+                sig_combo.setEnabled(False)
+                return
+            
+            sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            sig_combo.addItem('-- Select Signal --', None)
+            for sig in signals:
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                sig_scale = getattr(sig, 'scale', 1.0)
+                sig_offset = getattr(sig, 'offset', 0.0)
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                sig_combo.addItem(display_text, sig)
+        
+        msg_combo.currentIndexChanged.connect(on_message_changed)
+        
+        def on_signal_changed(index):
+            """Update signal details when signal selection changes."""
+            sig = sig_combo.currentData()
+            if sig is None or index == 0:
+                sig_details.setText('')
+                return
+            
+            sig_name = getattr(sig, 'name', '')
+            sig_units = getattr(sig, 'unit', '')
+            sig_scale = getattr(sig, 'scale', 1.0)
+            sig_offset = getattr(sig, 'offset', 0.0)
+            sig_min = getattr(sig, 'minimum', None)
+            sig_max = getattr(sig, 'maximum', None)
+            
+            details = f"Signal: {sig_name}"
+            if sig_units:
+                details += f", Units: {sig_units}"
+            details += f", Scale: {sig_scale}, Offset: {sig_offset}"
+            if sig_min is not None or sig_max is not None:
+                details += f", Range: [{sig_min}, {sig_max}]"
+            sig_details.setText(details)
+        
+        sig_combo.currentIndexChanged.connect(on_signal_changed)
+        
+        # Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        save_btn = QtWidgets.QPushButton('Save')
+        cancel_btn = QtWidgets.QPushButton('Cancel')
+        button_layout.addStretch()
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+        
+        def on_save():
+            config_name = name_edit.text().strip()
+            if not config_name:
+                QtWidgets.QMessageBox.warning(dialog, 'Invalid Name', 
+                    'Please enter a configuration name.')
+                return
+            
+            msg = msg_combo.currentData()
+            sig = sig_combo.currentData()
+            if not msg or not sig:
+                QtWidgets.QMessageBox.warning(dialog, 'Invalid Configuration', 
+                    'Please select both message and signal.')
+                return
+            
+            # Save configuration
+            self._eol_hw_config = {
+                'name': config_name,
+                'feedback_message_id': getattr(msg, 'frame_id', 0),
+                'feedback_message_name': getattr(msg, 'name', ''),
+                'measured_dac_signal': getattr(sig, 'name', ''),
+                'created_at': datetime.utcnow().isoformat() + 'Z',
+                'updated_at': datetime.utcnow().isoformat() + 'Z'
+            }
+            
+            # Update display labels
+            self._update_eol_config_display()
+            
+            logger.info(f"Created EOL HW configuration: {config_name}")
+            QtWidgets.QMessageBox.information(dialog, 'Success', 
+                f'EOL Hardware Configuration "{config_name}" created successfully.')
+            dialog.accept()
+        
+        save_btn.clicked.connect(on_save)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        dialog.exec()
+    
+    def _on_edit_eol_config(self):
+        """Open dialog to edit current EOL hardware configuration."""
+        if not self._check_dbc_loaded():
+            return
+        
+        if not self._eol_hw_config.get('feedback_message_id'):
+            QtWidgets.QMessageBox.information(self, 'No Configuration', 
+                'No EOL configuration loaded. Please create or load a configuration first.')
+            return
+        
+        # Open same dialog as create, but pre-filled
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Edit EOL Hardware Configuration')
+        dialog.setMinimumWidth(600)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        
+        # Configuration name
+        name_layout = QtWidgets.QHBoxLayout()
+        name_layout.addWidget(QtWidgets.QLabel('Configuration Name:'))
+        name_edit = QtWidgets.QLineEdit()
+        name_edit.setText(self._eol_hw_config.get('name', ''))
+        name_edit.setPlaceholderText('e.g., EOL_HW_v1.0')
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+        
+        # Message selection
+        msg_label = QtWidgets.QLabel('<b>EOL Feedback Message:</b>')
+        layout.addWidget(msg_label)
+        msg_combo = QtWidgets.QComboBox()
+        
+        messages = []
+        if self.dbc_service and self.dbc_service.is_loaded():
+            messages = self.dbc_service.get_all_messages()
+        elif self._dbc_db:
+            try:
+                messages = getattr(self._dbc_db, 'messages', [])
+            except Exception:
+                pass
+        
+        if not messages:
+            QtWidgets.QMessageBox.warning(self, 'No DBC Loaded', 
+                'Please load a DBC file first in the CAN Data View tab.')
+            dialog.reject()
+            return
+        
+        msg_combo.addItem('-- Select Message --', None)
+        current_msg_id = self._eol_hw_config.get('feedback_message_id')
+        current_msg_index = 0
+        for idx, msg in enumerate(messages, start=1):
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+            if msg_id == current_msg_id:
+                current_msg_index = idx
+        
+        layout.addWidget(msg_combo)
+        
+        # Signal selection
+        sig_label = QtWidgets.QLabel('<b>Measured DAC Output Voltage Signal:</b>')
+        layout.addWidget(sig_label)
+        sig_combo = QtWidgets.QComboBox()
+        sig_combo.setEnabled(False)
+        layout.addWidget(sig_combo)
+        
+        sig_details = QtWidgets.QLabel('')
+        sig_details.setWordWrap(True)
+        sig_details.setStyleSheet('color: gray; font-size: 10px;')
+        layout.addWidget(sig_details)
+        
+        def on_message_changed(index):
+            sig_combo.clear()
+            sig_details.setText('')
+            msg = msg_combo.currentData()
+            if msg is None or index == 0:
+                sig_combo.setEnabled(False)
+                return
+            
+            sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            sig_combo.addItem('-- Select Signal --', None)
+            current_sig_name = self._eol_hw_config.get('measured_dac_signal')
+            current_sig_index = 0
+            for idx, sig in enumerate(signals, start=1):
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                sig_combo.addItem(display_text, sig)
+                if sig_name == current_sig_name:
+                    current_sig_index = idx
+            
+            if current_sig_index > 0:
+                sig_combo.setCurrentIndex(current_sig_index)
+                on_signal_changed(current_sig_index)
+        
+        def on_signal_changed(index):
+            sig = sig_combo.currentData()
+            if sig is None or index == 0:
+                sig_details.setText('')
+                return
+            
+            sig_name = getattr(sig, 'name', '')
+            sig_units = getattr(sig, 'unit', '')
+            sig_scale = getattr(sig, 'scale', 1.0)
+            sig_offset = getattr(sig, 'offset', 0.0)
+            sig_min = getattr(sig, 'minimum', None)
+            sig_max = getattr(sig, 'maximum', None)
+            
+            details = f"Signal: {sig_name}"
+            if sig_units:
+                details += f", Units: {sig_units}"
+            details += f", Scale: {sig_scale}, Offset: {sig_offset}"
+            if sig_min is not None or sig_max is not None:
+                details += f", Range: [{sig_min}, {sig_max}]"
+            sig_details.setText(details)
+        
+        msg_combo.currentIndexChanged.connect(on_message_changed)
+        sig_combo.currentIndexChanged.connect(on_signal_changed)
+        
+        # Set current selections
+        if current_msg_index > 0:
+            msg_combo.setCurrentIndex(current_msg_index)
+            on_message_changed(current_msg_index)
+        
+        # Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        save_btn = QtWidgets.QPushButton('Save')
+        cancel_btn = QtWidgets.QPushButton('Cancel')
+        button_layout.addStretch()
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+        
+        def on_save():
+            config_name = name_edit.text().strip()
+            if not config_name:
+                QtWidgets.QMessageBox.warning(dialog, 'Invalid Name', 
+                    'Please enter a configuration name.')
+                return
+            
+            msg = msg_combo.currentData()
+            sig = sig_combo.currentData()
+            if not msg or not sig:
+                QtWidgets.QMessageBox.warning(dialog, 'Invalid Configuration', 
+                    'Please select both message and signal.')
+                return
+            
+            self._eol_hw_config.update({
+                'name': config_name,
+                'feedback_message_id': getattr(msg, 'frame_id', 0),
+                'feedback_message_name': getattr(msg, 'name', ''),
+                'measured_dac_signal': getattr(sig, 'name', ''),
+                'updated_at': datetime.utcnow().isoformat() + 'Z'
+            })
+            
+            self._update_eol_config_display()
+            logger.info(f"Edited EOL HW configuration: {config_name}")
+            QtWidgets.QMessageBox.information(dialog, 'Success', 
+                f'EOL Hardware Configuration "{config_name}" updated successfully.')
+            dialog.accept()
+        
+        save_btn.clicked.connect(on_save)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        dialog.exec()
+    
+    def _on_load_eol_config(self):
+        """Load EOL hardware configuration from file."""
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'eol_configs')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        fname, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Load EOL Hardware Configuration',
+            default_dir,
+            'JSON Files (*.json);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        try:
+            with open(fname, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            # Validate structure
+            required_keys = ['feedback_message_id', 'feedback_message_name', 'measured_dac_signal']
+            if not all(key in config_data for key in required_keys):
+                QtWidgets.QMessageBox.warning(self, 'Invalid File', 
+                    'Configuration file is missing required fields.')
+                return
+            
+            # Validate with current DBC
+            if self.dbc_service and self.dbc_service.is_loaded():
+                msg = self.dbc_service.find_message_by_id(config_data['feedback_message_id'])
+                if msg is None:
+                    QtWidgets.QMessageBox.warning(self, 'Validation Error', 
+                        f"Message ID 0x{config_data['feedback_message_id']:X} not found in loaded DBC.")
+                    return
+                
+                # Check if signal exists in message
+                msg_name = getattr(msg, 'name', '')
+                signals = self.dbc_service.get_message_signals(msg)
+                sig_names = [getattr(s, 'name', '') for s in signals]
+                if config_data['measured_dac_signal'] not in sig_names:
+                    QtWidgets.QMessageBox.warning(self, 'Validation Error', 
+                        f"Signal '{config_data['measured_dac_signal']}' not found in message '{msg_name}'.")
+                    return
+            
+            self._eol_hw_config = config_data
+            self._update_eol_config_display()
+            logger.info(f"Loaded EOL HW configuration from {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Success', 
+                f'EOL Hardware Configuration loaded from:\n{os.path.basename(fname)}')
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse EOL config JSON: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to parse JSON file: {e}')
+        except Exception as e:
+            logger.error(f"Failed to load EOL config: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load configuration: {e}')
+    
+    def _on_save_eol_config(self):
+        """Save current EOL hardware configuration to file."""
+        if not self._eol_hw_config.get('feedback_message_id'):
+            QtWidgets.QMessageBox.information(self, 'No Configuration', 
+                'No EOL configuration to save. Please create or edit a configuration first.')
+            return
+        
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'eol_configs')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        config_name = self._eol_hw_config.get('name', 'eol_hw_config')
+        default_filename = f"{config_name.replace(' ', '_')}.json"
+        
+        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Save EOL Hardware Configuration',
+            os.path.join(default_dir, default_filename),
+            'JSON Files (*.json);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        try:
+            # Update timestamp
+            self._eol_hw_config['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            if not self._eol_hw_config.get('created_at'):
+                self._eol_hw_config['created_at'] = self._eol_hw_config['updated_at']
+            
+            with open(fname, 'w', encoding='utf-8') as f:
+                json.dump(self._eol_hw_config, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Saved EOL HW configuration to {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Success', 
+                f'EOL Hardware Configuration saved to:\n{os.path.basename(fname)}')
+            
+            # Refresh saved configurations list
+            self._refresh_eol_config_list()
+        except Exception as e:
+            logger.error(f"Failed to save EOL config: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save configuration: {e}')
+    
+    def _on_eol_config_list_double_clicked(self, item: QtWidgets.QListWidgetItem):
+        """Load configuration when double-clicked in list."""
+        if not item:
+            return
+        
+        filepath = item.data(QtCore.Qt.UserRole)
+        if not filepath or not os.path.exists(filepath):
+            QtWidgets.QMessageBox.warning(self, 'File Not Found', 
+                'Configuration file no longer exists.')
+            self._refresh_eol_config_list()
+            return
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            required_keys = ['feedback_message_id', 'feedback_message_name', 'measured_dac_signal']
+            if not all(key in config_data for key in required_keys):
+                QtWidgets.QMessageBox.warning(self, 'Invalid File', 
+                    'Configuration file is missing required fields.')
+                return
+            
+            self._eol_hw_config = config_data
+            self._update_eol_config_display()
+            logger.info(f"Loaded EOL HW configuration from list: {os.path.basename(filepath)}")
+        except Exception as e:
+            logger.error(f"Failed to load EOL config from list: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load configuration: {e}')
+    
+    def _update_eol_config_display(self):
+        """Update the display labels for current EOL configuration."""
+        if not hasattr(self, 'eol_feedback_msg_label'):
+            return
+        
+        config = self._eol_hw_config
+        if config.get('feedback_message_id'):
+            name = config.get('name', 'Unnamed')
+            msg_name = config.get('feedback_message_name', 'Unknown')
+            msg_id = config.get('feedback_message_id', 0)
+            signal_name = config.get('measured_dac_signal', 'Unknown')
+            
+            self.eol_config_name_label.setText(name)
+            self.eol_config_name_label.setStyleSheet('')
+            self.eol_feedback_msg_label.setText(f"{msg_name} (0x{msg_id:X})")
+            self.eol_feedback_msg_label.setStyleSheet('')
+            self.eol_dac_signal_label.setText(signal_name)
+            self.eol_dac_signal_label.setStyleSheet('')
+        else:
+            self.eol_config_name_label.setText('No configuration loaded')
+            self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_feedback_msg_label.setText('Not configured')
+            self.eol_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dac_signal_label.setText('Not configured')
+            self.eol_dac_signal_label.setStyleSheet('color: gray; font-style: italic;')
+    
+    def _refresh_eol_config_list(self):
+        """Refresh the list of saved EOL configurations."""
+        if not hasattr(self, 'eol_config_list'):
+            return
+        
+        self.eol_config_list.clear()
+        
+        try:
+            config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'eol_configs')
+            if not os.path.exists(config_dir):
+                return
+            
+            config_files = []
+            for filename in os.listdir(config_dir):
+                if filename.endswith('.json'):
+                    filepath = os.path.join(config_dir, filename)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            config_data = json.load(f)
+                            config_name = config_data.get('name', filename.replace('.json', ''))
+                            updated_at = config_data.get('updated_at', '')
+                            item_text = config_name
+                            if updated_at:
+                                try:
+                                    dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                    item_text += f" (Updated: {dt.strftime('%Y-%m-%d %H:%M')})"
+                                except Exception:
+                                    pass
+                            config_files.append((item_text, filepath, os.path.getmtime(filepath)))
+                    except Exception:
+                        continue
+            
+            # Sort by modification time (newest first)
+            config_files.sort(key=lambda x: x[2], reverse=True)
+            
+            for item_text, filepath, _ in config_files:
+                item = QtWidgets.QListWidgetItem(item_text)
+                item.setData(QtCore.Qt.UserRole, filepath)
+                self.eol_config_list.addItem(item)
+        except Exception as e:
+            logger.debug(f"Error refreshing EOL config list: {e}", exc_info=True)
+    
+    def _check_dbc_loaded(self) -> bool:
+        """Check if DBC is loaded, show message if not."""
+        dbc_loaded = False
+        if self.dbc_service and self.dbc_service.is_loaded():
+            dbc_loaded = True
+        elif self._dbc_db:
+            dbc_loaded = True
+        
+        if not dbc_loaded:
+            QtWidgets.QMessageBox.warning(self, 'No DBC Loaded', 
+                'Please load a DBC file first in the CAN Data View tab before configuring EOL hardware.')
+        return dbc_loaded
+    
     # Test Configurator handlers
     def _on_load_dbc(self):
         """Load a DBC file using DbcService (Phase 1) or legacy method."""
