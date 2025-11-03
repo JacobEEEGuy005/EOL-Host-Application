@@ -2001,9 +2001,38 @@ class BaseGUI(QtWidgets.QMainWindow):
                                 gain_error_percent = ((actual_gain - expected_gain) / expected_gain) * 100.0
                                 calibration_params['gain_error_percent'] = gain_error_percent
                                 calibration_params['expected_gain'] = expected_gain
+                                
+                                # Check gain tolerance for pass/fail determination
+                                gain_tolerance = actuation.get('gain_tolerance_percent')
+                                if gain_tolerance is not None:
+                                    try:
+                                        gain_tolerance = float(gain_tolerance)
+                                        if abs(gain_error_percent) > gain_tolerance:
+                                            # Gain error exceeds tolerance - test should fail
+                                            if status == 'PASS':
+                                                status = 'FAIL'
+                                                notes = (notes + '\n' if notes else '') + \
+                                                    f"Gain error {gain_error_percent:+.4f}% exceeds tolerance of ±{gain_tolerance:.2f}%"
+                                                logger.warning(
+                                                    f"Test '{test_name}': Gain error {gain_error_percent:+.4f}% "
+                                                    f"exceeds tolerance ±{gain_tolerance:.2f}% - marking as FAIL"
+                                                )
+                                            calibration_params['tolerance_check'] = 'FAIL'
+                                        else:
+                                            calibration_params['tolerance_check'] = 'PASS'
+                                            logger.debug(
+                                                f"Test '{test_name}': Gain error {gain_error_percent:+.4f}% "
+                                                f"within tolerance ±{gain_tolerance:.2f}%"
+                                            )
+                                    except (ValueError, TypeError) as e:
+                                        logger.debug(f"Error checking gain tolerance: {e}")
                         except (ValueError, TypeError):
                             pass
                     exec_data['calibration'] = calibration_params
+        
+        # Update exec_data with final status and notes (may have been modified by gain tolerance check)
+        exec_data['status'] = status
+        exec_data['notes'] = notes
         
         self._test_execution_data[test_name] = exec_data
         
@@ -3602,6 +3631,12 @@ Data Points Used: {data_points}"""
             expected_gain_edit = QtWidgets.QLineEdit()
             expected_gain_edit.setValidator(expected_gain_validator)
             expected_gain_edit.setPlaceholderText('Optional: for gain adjustment calculation')
+            # Gain Tolerance input (optional, for pass/fail determination)
+            gain_tolerance_validator = QtGui.QDoubleValidator(0.0, 1000.0, 2, self)
+            gain_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            gain_tolerance_edit = QtWidgets.QLineEdit()
+            gain_tolerance_edit.setValidator(gain_tolerance_validator)
+            gain_tolerance_edit.setPlaceholderText('Optional: % tolerance for gain error (e.g., 5.0)')
             # digital dwell input
             dig_dwell_ms = QtWidgets.QLineEdit()
             dig_dwell_ms.setValidator(dwell_validator)
@@ -3789,6 +3824,16 @@ Data Points Used: {data_points}"""
                             expected_gain_val = float(expected_gain_text)
                     except (ValueError, TypeError):
                         pass
+                    # Read gain tolerance (optional float)
+                    gain_tolerance_val = None
+                    try:
+                        gain_tolerance_text = gain_tolerance_edit.text().strip() if hasattr(gain_tolerance_edit, 'text') else ''
+                        if gain_tolerance_text:
+                            gain_tolerance_val = float(gain_tolerance_text)
+                            if gain_tolerance_val < 0:
+                                raise ValueError("Gain tolerance cannot be negative")
+                    except (ValueError, TypeError):
+                        pass
                     act = {
                         'type': 'analog',
                         'dac_can_id': dac_id,
@@ -3803,6 +3848,8 @@ Data Points Used: {data_points}"""
                     }
                     if expected_gain_val is not None:
                         act['expected_gain'] = expected_gain_val
+                    if gain_tolerance_val is not None:
+                        act['gain_tolerance_percent'] = gain_tolerance_val
             else:
                 if t == 'digital':
                     try:
@@ -3854,6 +3901,16 @@ Data Points Used: {data_points}"""
                             expected_gain_val = float(expected_gain_text)
                     except (ValueError, TypeError):
                         pass
+                    # Read gain tolerance (optional float)
+                    gain_tolerance_val = None
+                    try:
+                        gain_tolerance_text = gain_tolerance_edit.text().strip() if hasattr(gain_tolerance_edit, 'text') else ''
+                        if gain_tolerance_text:
+                            gain_tolerance_val = float(gain_tolerance_text)
+                            if gain_tolerance_val < 0:
+                                raise ValueError("Gain tolerance cannot be negative")
+                    except (ValueError, TypeError):
+                        pass
                     
                     act = {
                         'type': 'analog',
@@ -3867,6 +3924,8 @@ Data Points Used: {data_points}"""
                     }
                     if expected_gain_val is not None:
                         act['expected_gain'] = expected_gain_val
+                    if gain_tolerance_val is not None:
+                        act['gain_tolerance_percent'] = gain_tolerance_val
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -4574,6 +4633,13 @@ Data Points Used: {data_points}"""
             expected_gain_edit.setValidator(expected_gain_validator)
             expected_gain_edit.setPlaceholderText('Optional: for gain adjustment calculation')
             analog_layout.addRow('Expected Gain (optional):', expected_gain_edit)
+            # Gain Tolerance input (optional, for pass/fail determination)
+            gain_tolerance_validator = QtGui.QDoubleValidator(0.0, 1000.0, 2, self)
+            gain_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            gain_tolerance_edit = QtWidgets.QLineEdit(str(act.get('gain_tolerance_percent', '')))
+            gain_tolerance_edit.setValidator(gain_tolerance_validator)
+            gain_tolerance_edit.setPlaceholderText('Optional: % tolerance for gain error (e.g., 5.0)')
+            analog_layout.addRow('Gain Tolerance % (optional):', gain_tolerance_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -4724,6 +4790,17 @@ Data Points Used: {data_points}"""
                                 expected_gain_val = float(expected_gain_text)
                     except (ValueError, TypeError):
                         pass
+                    # Read gain tolerance (optional float)
+                    gain_tolerance_val = None
+                    try:
+                        if 'gain_tolerance_edit' in locals():
+                            gain_tolerance_text = gain_tolerance_edit.text().strip() if hasattr(gain_tolerance_edit, 'text') else ''
+                            if gain_tolerance_text:
+                                gain_tolerance_val = float(gain_tolerance_text)
+                                if gain_tolerance_val < 0:
+                                    raise ValueError("Gain tolerance cannot be negative")
+                    except (ValueError, TypeError):
+                        pass
                     data['actuation'] = {
                         'type':'analog',
                         'dac_can_id': dac_id,
@@ -4738,6 +4815,8 @@ Data Points Used: {data_points}"""
                     }
                     if expected_gain_val is not None:
                         data['actuation']['expected_gain'] = expected_gain_val
+                    if gain_tolerance_val is not None:
+                        data['actuation']['gain_tolerance_percent'] = gain_tolerance_val
             else:
                 if data['type'] == 'digital':
                     try:
@@ -4780,6 +4859,17 @@ Data Points Used: {data_points}"""
                             expected_gain_text = expected_gain_edit.text().strip() if hasattr(expected_gain_edit, 'text') else ''
                             if expected_gain_text:
                                 expected_gain_val = float(expected_gain_text)
+                    except (ValueError, TypeError):
+                        pass
+                    # Read gain tolerance (optional float)
+                    gain_tolerance_val = None
+                    try:
+                        if 'gain_tolerance_edit' in locals():
+                            gain_tolerance_text = gain_tolerance_edit.text().strip() if hasattr(gain_tolerance_edit, 'text') else ''
+                            if gain_tolerance_text:
+                                gain_tolerance_val = float(gain_tolerance_text)
+                                if gain_tolerance_val < 0:
+                                    raise ValueError("Gain tolerance cannot be negative")
                     except (ValueError, TypeError):
                         pass
                     

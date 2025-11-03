@@ -76,7 +76,8 @@
         "dac_max_mv": 5000,
         "dac_step_mv": 100,
         "dac_dwell_ms": 1500,
-        "expected_gain": 1.0
+        "expected_gain": 1.0,
+        "gain_tolerance_percent": 0.5
       },
       "created_at": "2025-10-31T19:50:19.695429Z"
     },
@@ -96,7 +97,8 @@
         "dac_max_mv": 5000,
         "dac_step_mv": 100,
         "dac_dwell_ms": 1500,
-        "expected_gain": 1.0
+        "expected_gain": 1.0,
+        "gain_tolerance_percent": 0.5
       },
       "created_at": "2025-10-31T19:51:04.367711Z"
     }
