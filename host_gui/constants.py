@@ -38,11 +38,11 @@ POLL_INTERVAL_MS = 25  # 0.05 seconds
 FRAME_POLL_INTERVAL_MS = 10
 # DAC settling time after command change (milliseconds)
 # Data points collected within this time after a DAC command step change will be disregarded
-DAC_SETTLING_TIME_MS = 100
+DAC_SETTLING_TIME_MS = 200
 # Data collection period after settling time (milliseconds)
 # After the settling period, data is collected for this fixed duration
 # Must be less than (Dwell Time - Settling Time) to fit within the dwell period
-DATA_COLLECTION_PERIOD_MS = 50
+DATA_COLLECTION_PERIOD_MS = 500
 
 # Display limits
 MAX_MESSAGES_DEFAULT = 50
