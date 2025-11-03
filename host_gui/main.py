@@ -1651,7 +1651,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         return ', '.join(params) if params else 'None'
     
-    def _update_test_plan_row(self, test: Dict[str, Any], status: str, exec_time: str, notes: str) -> None:
+    def _update_test_plan_row(self, test: Dict[str, Any], status: str, exec_time: str, notes: str, 
+                             plot_data: Optional[Dict[str, list]] = None) -> None:
         """Update or insert a test result row in the Test Plan table.
         
         Uses test name as the unique key. If a row with the same test name exists,
@@ -1663,6 +1664,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             status: Test status ('PASS', 'FAIL', 'ERROR', 'Running...')
             exec_time: Execution time as string (e.g., "1.23s")
             notes: Additional information or error details
+            plot_data: Optional dictionary with 'dac_voltages' and 'feedback_values' lists for analog tests
         """
         test_name = test.get('name', '<unnamed>')
         act = test.get('actuation', {})
@@ -1670,13 +1672,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Store execution data for popup display
         params_str = self._get_test_parameters_string(test)
-        self._test_execution_data[test_name] = {
+        exec_data = {
             'status': status,
             'exec_time': exec_time,
             'notes': notes,
             'parameters': params_str,
             'test_type': test_type
         }
+        
+        # Store plot data for analog tests (make a copy to preserve data)
+        if plot_data is not None:
+            exec_data['plot_data'] = {
+                'dac_voltages': list(plot_data.get('dac_voltages', [])),
+                'feedback_values': list(plot_data.get('feedback_values', []))
+            }
+        
+        self._test_execution_data[test_name] = exec_data
         
         # Find existing row by test name
         existing_row = None
@@ -1787,6 +1798,46 @@ class BaseGUI(QtWidgets.QMainWindow):
         notes_text.setReadOnly(True)
         layout.addWidget(notes_text)
         
+        # Plot section for analog tests
+        is_analog = test_config and test_config.get('type') == 'analog'
+        plot_data = exec_data.get('plot_data')
+        if is_analog and plot_data and matplotlib_available:
+            plot_dac_voltages = plot_data.get('dac_voltages', [])
+            plot_feedback_values = plot_data.get('feedback_values', [])
+            
+            if plot_dac_voltages and plot_feedback_values and len(plot_dac_voltages) == len(plot_feedback_values):
+                plot_label = QtWidgets.QLabel(f'<b>Feedback vs DAC Output Voltage Plot:</b>')
+                layout.addWidget(plot_label)
+                
+                try:
+                    # Create a new figure and canvas for the dialog
+                    plot_figure = Figure(figsize=(6, 4))
+                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                    plot_axes = plot_figure.add_subplot(111)
+                    
+                    # Plot the data
+                    plot_axes.plot(plot_dac_voltages, plot_feedback_values, 'bo-', markersize=6, linewidth=1, label='Feedback')
+                    plot_axes.set_xlabel('DAC Output Voltage (mV)')
+                    plot_axes.set_ylabel('Feedback Signal Value')
+                    plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
+                    plot_axes.grid(True, alpha=0.3)
+                    plot_axes.legend()
+                    
+                    # Auto-scale axes to fit all data
+                    plot_axes.relim()
+                    plot_axes.autoscale()
+                    
+                    # Tight layout
+                    plot_figure.tight_layout()
+                    
+                    # Add canvas to layout
+                    layout.addWidget(plot_canvas)
+                except Exception as e:
+                    logger.error(f"Error creating plot in test details dialog: {e}", exc_info=True)
+                    error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                    error_label.setStyleSheet('color: red;')
+                    layout.addWidget(error_label)
+        
         # Close button
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.addStretch()
@@ -1794,6 +1845,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         close_btn.clicked.connect(dialog.accept)
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
+        
+        # Adjust dialog size for plot if present
+        if is_analog and plot_data and matplotlib_available:
+            dialog.setMinimumWidth(700)
+            dialog.setMinimumHeight(600)
+        else:
+            dialog.setMinimumWidth(500)
+            dialog.setMinimumHeight(300)
         
         dialog.exec()
 
@@ -3737,14 +3796,30 @@ class BaseGUI(QtWidgets.QMainWindow):
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
             # Add to table
-            self._update_test_plan_row(t, result, exec_time, info)
+            # Capture plot data for analog tests
+            plot_data = None
+            if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                if self.plot_dac_voltages and self.plot_feedback_values:
+                    plot_data = {
+                        'dac_voltages': list(self.plot_dac_voltages),
+                        'feedback_values': list(self.plot_feedback_values)
+                    }
+            self._update_test_plan_row(t, result, exec_time, info, plot_data)
         except Exception as e:
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
             self.status_label.setText('Test error')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
-            self._update_test_plan_row(t, 'ERROR', exec_time, str(e))
+            # Capture plot data for analog tests (even if failed, may have partial data)
+            plot_data = None
+            if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                if self.plot_dac_voltages and self.plot_feedback_values:
+                    plot_data = {
+                        'dac_voltages': list(self.plot_dac_voltages),
+                        'feedback_values': list(self.plot_feedback_values)
+                    }
+            self._update_test_plan_row(t, 'ERROR', exec_time, str(e), plot_data)
         finally:
             # clear current feedback monitor
             try:
@@ -3942,7 +4017,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                self._update_test_plan_row(t, result, f"{exec_time:.2f}s", info)
+                # Capture plot data for analog tests before clearing
+                plot_data = None
+                if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                    if self.plot_dac_voltages and self.plot_feedback_values:
+                        plot_data = {
+                            'dac_voltages': list(self.plot_dac_voltages),
+                            'feedback_values': list(self.plot_feedback_values)
+                        }
+                self._update_test_plan_row(t, result, f"{exec_time:.2f}s", info, plot_data)
         except Exception:
             pass
         
@@ -3961,7 +4044,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
-                self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error)
+                # Capture plot data for analog tests before clearing (even if failed, may have partial data)
+                plot_data = None
+                if t.get('type') == 'analog' and hasattr(self, 'plot_dac_voltages') and hasattr(self, 'plot_feedback_values'):
+                    if self.plot_dac_voltages and self.plot_feedback_values:
+                        plot_data = {
+                            'dac_voltages': list(self.plot_dac_voltages),
+                            'feedback_values': list(self.plot_feedback_values)
+                        }
+                self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error, plot_data)
         except Exception:
             pass
         
