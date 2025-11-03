@@ -1854,6 +1854,20 @@ class BaseGUI(QtWidgets.QMainWindow):
             if dac_voltages and feedback_values and len(dac_voltages) == len(feedback_values):
                 calibration_params = self._calculate_calibration_parameters(dac_voltages, feedback_values)
                 if calibration_params:
+                    # Calculate gain error percentage if expected gain is available
+                    actuation = test.get('actuation', {})
+                    expected_gain = actuation.get('expected_gain')
+                    if expected_gain is not None:
+                        try:
+                            expected_gain = float(expected_gain)
+                            actual_gain = calibration_params.get('gain', 0)
+                            if abs(expected_gain) > 1e-10 and abs(actual_gain) > 1e-10:
+                                # Gain error percentage = ((Actual - Expected) / Expected) * 100
+                                gain_error_percent = ((actual_gain - expected_gain) / expected_gain) * 100.0
+                                calibration_params['gain_error_percent'] = gain_error_percent
+                                calibration_params['expected_gain'] = expected_gain
+                        except (ValueError, TypeError):
+                            pass
                     exec_data['calibration'] = calibration_params
         
         self._test_execution_data[test_name] = exec_data
@@ -1996,20 +2010,41 @@ Max Error: {max_error:.4f}
 Mean Squared Error (MSE): {mse:.4f}
 Data Points Used: {data_points}"""
             
-            # Add gain adjustment factor if expected gain is specified in test config
-            if test_config:
+            # Add gain error percentage and adjustment factor if expected gain is specified
+            gain_error_percent = calibration_params.get('gain_error_percent')
+            expected_gain_stored = calibration_params.get('expected_gain')
+            
+            # Also check test_config as fallback
+            if gain_error_percent is None and test_config:
                 actuation = test_config.get('actuation', {})
                 expected_gain = actuation.get('expected_gain')
                 if expected_gain is not None:
                     try:
                         expected_gain = float(expected_gain)
                         if abs(expected_gain) > 1e-10 and abs(gain) > 1e-10:
-                            adjustment_factor = expected_gain / gain
-                            calib_info += f"\n\nExpected Gain: {expected_gain:.6f}"
-                            calib_info += f"\nGain Adjustment Factor: {adjustment_factor:.6f}"
-                            calib_info += f"\n(IPC Hardware Gain should be multiplied by {adjustment_factor:.6f})"
+                            gain_error_percent = ((gain - expected_gain) / expected_gain) * 100.0
+                            expected_gain_stored = expected_gain
                     except (ValueError, TypeError):
                         pass
+            
+            if gain_error_percent is not None and expected_gain_stored is not None:
+                calib_info += f"\n\nExpected Gain: {expected_gain_stored:.6f}"
+                calib_info += f"\nGain Error: {gain_error_percent:+.4f}%"
+                # Color code: negative = under-gain, positive = over-gain
+                if abs(gain_error_percent) < 1.0:
+                    calib_info += " (Excellent)"
+                elif abs(gain_error_percent) < 5.0:
+                    calib_info += " (Good)"
+                elif abs(gain_error_percent) < 10.0:
+                    calib_info += " (Acceptable)"
+                else:
+                    calib_info += " (Needs Adjustment)"
+                
+                # Calculate and display adjustment factor
+                if abs(gain) > 1e-10:
+                    adjustment_factor = expected_gain_stored / gain
+                    calib_info += f"\nGain Adjustment Factor: {adjustment_factor:.6f}"
+                    calib_info += f"\n(IPC Hardware Gain should be multiplied by {adjustment_factor:.6f})"
             
             calib_text.setPlainText(calib_info)
             layout.addWidget(calib_text)
