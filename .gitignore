@@ -60,3 +60,6 @@ Thumbs.db
 # Ignore DBC files copied into the project data directory (these are generated/loaded by the GUI)
 # Keep index.json tracked so the UI can list available DBCs
 /backend/data/dbcs/*.dbc
+
+# Generated test reports
+backend/data/reports/

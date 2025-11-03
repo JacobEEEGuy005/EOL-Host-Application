@@ -31,6 +31,7 @@ import time
 import os
 import shutil
 import copy
+import base64
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any
 
@@ -2370,14 +2371,997 @@ Data Points Used: {data_points}"""
             logger.error(f"Error updating plot: {e}", exc_info=True)
 
     def _build_test_report(self):
-        """Builds the Test Report tab widget and returns it."""
+        """Builds the Test Report tab widget with interactive UI and export capabilities."""
         tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        label = QtWidgets.QLabel('Test Report - Coming Soon')
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(label)
+        main_layout = QtWidgets.QVBoxLayout(tab)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Summary Section
+        summary_group = QtWidgets.QGroupBox('Summary')
+        summary_layout = QtWidgets.QFormLayout()
+        
+        self.report_total_tests_label = QtWidgets.QLabel('0')
+        self.report_pass_count_label = QtWidgets.QLabel('0')
+        self.report_fail_count_label = QtWidgets.QLabel('0')
+        self.report_error_count_label = QtWidgets.QLabel('0')
+        self.report_pass_rate_label = QtWidgets.QLabel('0%')
+        self.report_total_time_label = QtWidgets.QLabel('0.00s')
+        self.report_last_updated_label = QtWidgets.QLabel('Never')
+        
+        self.report_pass_count_label.setStyleSheet('color: green; font-weight: bold;')
+        self.report_fail_count_label.setStyleSheet('color: red; font-weight: bold;')
+        self.report_error_count_label.setStyleSheet('color: red; font-weight: bold;')
+        
+        summary_layout.addRow('Total Tests Executed:', self.report_total_tests_label)
+        summary_layout.addRow('Passed:', self.report_pass_count_label)
+        summary_layout.addRow('Failed:', self.report_fail_count_label)
+        summary_layout.addRow('Errors:', self.report_error_count_label)
+        summary_layout.addRow('Pass Rate:', self.report_pass_rate_label)
+        summary_layout.addRow('Total Execution Time:', self.report_total_time_label)
+        summary_layout.addRow('Last Updated:', self.report_last_updated_label)
+        
+        summary_group.setLayout(summary_layout)
+        main_layout.addWidget(summary_group)
+        
+        # Action Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        
+        self.report_refresh_btn = QtWidgets.QPushButton('Refresh Report')
+        self.report_export_html_btn = QtWidgets.QPushButton('Export as HTML')
+        self.report_export_pdf_btn = QtWidgets.QPushButton('Export as PDF')
+        self.report_export_json_btn = QtWidgets.QPushButton('Export as JSON')
+        
+        button_layout.addWidget(self.report_refresh_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(self.report_export_html_btn)
+        button_layout.addWidget(self.report_export_pdf_btn)
+        button_layout.addWidget(self.report_export_json_btn)
+        
+        main_layout.addLayout(button_layout)
+        
+        # Filter Section
+        filter_layout = QtWidgets.QHBoxLayout()
+        filter_layout.addWidget(QtWidgets.QLabel('Filter:'))
+        
+        self.report_status_filter = QtWidgets.QComboBox()
+        self.report_status_filter.addItems(['All', 'Pass', 'Fail', 'Error', 'Not Run'])
+        filter_layout.addWidget(self.report_status_filter)
+        
+        self.report_type_filter = QtWidgets.QComboBox()
+        self.report_type_filter.addItems(['All', 'Digital', 'Analog'])
+        filter_layout.addWidget(self.report_type_filter)
+        
+        filter_layout.addStretch()
+        main_layout.addLayout(filter_layout)
+        
+        # Test Results Section
+        results_group = QtWidgets.QGroupBox('Test Results')
+        results_layout = QtWidgets.QVBoxLayout()
+        
+        # Use QTreeWidget for expandable rows
+        self.report_tree = QtWidgets.QTreeWidget()
+        self.report_tree.setHeaderLabels(['Test Name', 'Type', 'Status', 'Execution Time'])
+        self.report_tree.setColumnWidth(0, 200)
+        self.report_tree.setColumnWidth(1, 80)
+        self.report_tree.setColumnWidth(2, 80)
+        self.report_tree.setColumnWidth(3, 120)
+        self.report_tree.setAlternatingRowColors(True)
+        self.report_tree.setExpandsOnDoubleClick(False)
+        self.report_tree.setItemsExpandable(True)
+        
+        results_layout.addWidget(self.report_tree)
+        results_group.setLayout(results_layout)
+        main_layout.addWidget(results_group, 1)
+        
+        # Wire buttons
+        self.report_refresh_btn.clicked.connect(self._refresh_test_report)
+        self.report_export_html_btn.clicked.connect(self._export_report_html)
+        self.report_export_pdf_btn.clicked.connect(self._export_report_pdf)
+        self.report_export_json_btn.clicked.connect(self._export_report_json)
+        
+        # Wire filters
+        self.report_status_filter.currentTextChanged.connect(self._refresh_test_report)
+        self.report_type_filter.currentTextChanged.connect(self._refresh_test_report)
+        
+        # Initial refresh
+        self._refresh_test_report()
+        
         return tab
-
+    
+    def _refresh_test_report(self):
+        """Refresh the test report with current execution data, applying filters."""
+        if not hasattr(self, 'report_tree'):
+            return
+        
+        # Clear existing items
+        self.report_tree.clear()
+        
+        # Get filter values
+        status_filter = self.report_status_filter.currentText() if hasattr(self, 'report_status_filter') else 'All'
+        type_filter = self.report_type_filter.currentText() if hasattr(self, 'report_type_filter') else 'All'
+        
+        # Check if there's any test data
+        if not self._test_execution_data and not self._tests:
+            # Show "No test results" message
+            if hasattr(self, 'report_total_tests_label'):
+                self.report_total_tests_label.setText('0')
+                self.report_pass_count_label.setText('0')
+                self.report_fail_count_label.setText('0')
+                self.report_error_count_label.setText('0')
+                self.report_pass_rate_label.setText('0%')
+                self.report_total_time_label.setText('0.00s')
+                self.report_last_updated_label.setText('Never')
+            
+            no_results_item = QtWidgets.QTreeWidgetItem(['No test results available', '', '', ''])
+            self.report_tree.addTopLevelItem(no_results_item)
+            return
+        
+        # Collect test data from execution data and test configurations
+        test_items = []
+        for test_name, exec_data in self._test_execution_data.items():
+            # Find matching test config
+            test_config = None
+            for test in self._tests:
+                if test.get('name', '') == test_name:
+                    test_config = test
+                    break
+            
+            status = exec_data.get('status', 'Not Run')
+            test_type = exec_data.get('test_type', 'Unknown')
+            
+            # Apply filters
+            if status_filter != 'All':
+                if status_filter == 'Pass' and status != 'PASS':
+                    continue
+                elif status_filter == 'Fail' and status != 'FAIL':
+                    continue
+                elif status_filter == 'Error' and status != 'ERROR':
+                    continue
+                elif status_filter == 'Not Run' and status != 'Not Run':
+                    continue
+            
+            if type_filter != 'All':
+                if type_filter == 'Digital' and test_type != 'Digital':
+                    continue
+                elif type_filter == 'Analog' and test_type != 'Analog':
+                    continue
+            
+            test_items.append((test_name, test_config, exec_data))
+        
+        # Also include tests from _tests that haven't been executed yet (if filter allows)
+        if status_filter == 'All' or status_filter == 'Not Run':
+            for test in self._tests:
+                test_name = test.get('name', '')
+                if test_name not in self._test_execution_data:
+                    act = test.get('actuation', {})
+                    test_type = act.get('type', 'Unknown').capitalize()
+                    
+                    if type_filter != 'All':
+                        if type_filter == 'Digital' and test_type != 'Digital':
+                            continue
+                        elif type_filter == 'Analog' and test_type != 'Analog':
+                            continue
+                    
+                    test_items.append((test_name, test, {'status': 'Not Run', 'test_type': test_type}))
+        
+        # Calculate summary statistics
+        total_executed = 0
+        pass_count = 0
+        fail_count = 0
+        error_count = 0
+        total_time = 0.0
+        
+        for _, _, exec_data in test_items:
+            status = exec_data.get('status', 'Not Run')
+            if status != 'Not Run':
+                total_executed += 1
+                if status == 'PASS':
+                    pass_count += 1
+                elif status == 'FAIL':
+                    fail_count += 1
+                elif status == 'ERROR':
+                    error_count += 1
+                
+                # Parse execution time
+                exec_time_str = exec_data.get('exec_time', '0s')
+                try:
+                    if exec_time_str.endswith('s'):
+                        total_time += float(exec_time_str[:-1])
+                except Exception:
+                    pass
+        
+        pass_rate = (pass_count / total_executed * 100) if total_executed > 0 else 0
+        
+        # Update summary labels
+        if hasattr(self, 'report_total_tests_label'):
+            self.report_total_tests_label.setText(str(total_executed))
+            self.report_pass_count_label.setText(str(pass_count))
+            self.report_fail_count_label.setText(str(fail_count))
+            self.report_error_count_label.setText(str(error_count))
+            self.report_pass_rate_label.setText(f"{pass_rate:.1f}%")
+            self.report_total_time_label.setText(f"{total_time:.2f}s")
+            self.report_last_updated_label.setText(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        
+        # Add test items to tree
+        for test_name, test_config, exec_data in test_items:
+            status = exec_data.get('status', 'Not Run')
+            test_type = exec_data.get('test_type', 'Unknown')
+            exec_time = exec_data.get('exec_time', 'N/A')
+            
+            # Create main test item
+            test_item = QtWidgets.QTreeWidgetItem([test_name, test_type, status, exec_time])
+            
+            # Color code status
+            if status == 'PASS':
+                test_item.setForeground(2, QtGui.QColor('green'))
+            elif status in ('FAIL', 'ERROR'):
+                test_item.setForeground(2, QtGui.QColor('red'))
+            
+            # Add details as child items
+            # Execution details
+            details_item = QtWidgets.QTreeWidgetItem(['Details', '', '', ''])
+            details_item.setExpanded(False)
+            
+            params = exec_data.get('parameters', 'N/A')
+            notes = exec_data.get('notes', 'N/A')
+            
+            params_item = QtWidgets.QTreeWidgetItem(['Parameters', params, '', ''])
+            details_item.addChild(params_item)
+            
+            notes_item = QtWidgets.QTreeWidgetItem(['Notes', notes, '', ''])
+            details_item.addChild(notes_item)
+            
+            test_item.addChild(details_item)
+            
+            # For analog tests, add calibration and plot sections
+            if test_type == 'Analog' and test_config:
+                exec_data_full = self._test_execution_data.get(test_name, exec_data)
+                calibration = exec_data_full.get('calibration')
+                plot_data = exec_data_full.get('plot_data')
+                
+                if calibration:
+                    calib_item = QtWidgets.QTreeWidgetItem(['Calibration Parameters', '', '', ''])
+                    calib_item.setExpanded(False)
+                    
+                    gain = calibration.get('gain', 0)
+                    offset = calibration.get('offset', 0)
+                    r_squared = calibration.get('r_squared', 0)
+                    mse = calibration.get('mse', 0)
+                    max_error = calibration.get('max_error', 0)
+                    mean_error = calibration.get('mean_error', 0)
+                    data_points = calibration.get('data_points', 0)
+                    
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain (Slope)', f"{gain:.6f} mV/mV", '', '']))
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Offset', f"{offset:.4f}", '', '']))
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['R² (Linearity)', f"{r_squared:.6f}", '', '']))
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Mean Error', f"{mean_error:.4f}", '', '']))
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Max Error', f"{max_error:.4f}", '', '']))
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['MSE', f"{mse:.4f}", '', '']))
+                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Data Points', str(data_points), '', '']))
+                    
+                    # Add gain error if available
+                    gain_error_percent = calibration.get('gain_error_percent')
+                    expected_gain = calibration.get('expected_gain')
+                    if gain_error_percent is not None and expected_gain is not None:
+                        calib_item.addChild(QtWidgets.QTreeWidgetItem(['Expected Gain', f"{expected_gain:.6f}", '', '']))
+                        calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error', f"{gain_error_percent:+.4f}%", '', '']))
+                        
+                        tolerance_check = calibration.get('tolerance_check')
+                        if tolerance_check:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance Check', tolerance_check, '', '']))
+                        
+                        # Gain adjustment factor
+                        if abs(gain) > 1e-10:
+                            adjustment_factor = expected_gain / gain
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Adjustment Factor', f"{adjustment_factor:.6f}", '', '']))
+                    
+                    test_item.addChild(calib_item)
+                
+                # Add plot widget if plot data is available
+                if plot_data and matplotlib_available:
+                    plot_item = QtWidgets.QTreeWidgetItem(['Plot', '', '', ''])
+                    plot_item.setExpanded(False)
+                    
+                    dac_voltages = plot_data.get('dac_voltages', [])
+                    feedback_values = plot_data.get('feedback_values', [])
+                    
+                    if dac_voltages and feedback_values and len(dac_voltages) == len(feedback_values):
+                        try:
+                            # Create plot widget
+                            plot_widget = QtWidgets.QWidget()
+                            plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                            plot_layout.setContentsMargins(0, 0, 0, 0)
+                            
+                            plot_figure = Figure(figsize=(5, 3))
+                            plot_canvas = FigureCanvasQTAgg(plot_figure)
+                            plot_axes = plot_figure.add_subplot(111)
+                            
+                            plot_axes.plot(dac_voltages, feedback_values, 'bo-', markersize=4, linewidth=1)
+                            plot_axes.set_xlabel('DAC Output Voltage (mV)')
+                            plot_axes.set_ylabel('Feedback Signal Value')
+                            plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
+                            plot_axes.grid(True, alpha=0.3)
+                            
+                            plot_figure.tight_layout()
+                            plot_layout.addWidget(plot_canvas)
+                            
+                            # Set widget as item widget
+                            self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                        except Exception as e:
+                            logger.error(f"Error creating plot in report: {e}", exc_info=True)
+                            plot_item.setText(1, f"Plot error: {e}")
+                    
+                    test_item.addChild(plot_item)
+            
+            self.report_tree.addTopLevelItem(test_item)
+        
+        # Expand all items by default (user can collapse)
+        self.report_tree.expandAll()
+    
+    def _generate_test_plot_image(self, test_name: str, dac_voltages: list, feedback_values: list, 
+                                  output_format: str = 'png') -> Optional[bytes]:
+        """Generate a plot image for export (PNG or other formats).
+        
+        Args:
+            test_name: Name of the test
+            dac_voltages: List of DAC voltage values
+            feedback_values: List of feedback signal values
+            output_format: Image format ('png', 'svg', etc.)
+            
+        Returns:
+            Image bytes if successful, None otherwise
+        """
+        if not matplotlib_available or not dac_voltages or not feedback_values:
+            return None
+        
+        if len(dac_voltages) != len(feedback_values):
+            return None
+        
+        try:
+            import io
+            from matplotlib.figure import Figure
+            
+            fig = Figure(figsize=(6, 4))
+            ax = fig.add_subplot(111)
+            
+            ax.plot(dac_voltages, feedback_values, 'bo-', markersize=6, linewidth=1)
+            ax.set_xlabel('DAC Output Voltage (mV)')
+            ax.set_ylabel('Feedback Signal Value')
+            ax.set_title(f'Feedback vs DAC Output: {test_name}')
+            ax.grid(True, alpha=0.3)
+            
+            fig.tight_layout()
+            
+            # Save to bytes buffer
+            buf = io.BytesIO()
+            fig.savefig(buf, format=output_format, dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            image_bytes = buf.read()
+            buf.close()
+            
+            return image_bytes
+        except Exception as e:
+            logger.error(f"Error generating plot image: {e}", exc_info=True)
+            return None
+    
+    def _generate_test_plot_base64(self, test_name: str, dac_voltages: list, feedback_values: list) -> Optional[str]:
+        """Generate a base64-encoded plot image for HTML embedding.
+        
+        Args:
+            test_name: Name of the test
+            dac_voltages: List of DAC voltage values
+            feedback_values: List of feedback signal values
+            
+        Returns:
+            Base64-encoded image string if successful, None otherwise
+        """
+        image_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
+        if image_bytes:
+            return base64.b64encode(image_bytes).decode('utf-8')
+        return None
+    
+    def _export_report_json(self):
+        """Export test report as JSON file."""
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'reports')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_filename = f'test_report_{timestamp}.json'
+        
+        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Export Test Report as JSON',
+            os.path.join(default_dir, default_filename),
+            'JSON Files (*.json);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        try:
+            # Collect all test data
+            report_data = {
+                'metadata': {
+                    'report_type': 'Test Report',
+                    'generated_at': datetime.now().isoformat() + 'Z',
+                    'application': 'EOL Host Application'
+                },
+                'summary': {},
+                'tests': []
+            }
+            
+            # Calculate summary
+            total_executed = 0
+            pass_count = 0
+            fail_count = 0
+            error_count = 0
+            total_time = 0.0
+            
+            test_results = []
+            for test_name, exec_data in self._test_execution_data.items():
+                status = exec_data.get('status', 'Not Run')
+                if status != 'Not Run':
+                    total_executed += 1
+                    if status == 'PASS':
+                        pass_count += 1
+                    elif status == 'FAIL':
+                        fail_count += 1
+                    elif status == 'ERROR':
+                        error_count += 1
+                    
+                    exec_time_str = exec_data.get('exec_time', '0s')
+                    try:
+                        if exec_time_str.endswith('s'):
+                            total_time += float(exec_time_str[:-1])
+                    except Exception:
+                        pass
+                
+                # Find test config
+                test_config = None
+                for test in self._tests:
+                    if test.get('name', '') == test_name:
+                        test_config = test
+                        break
+                
+                # Build test result entry
+                test_result = {
+                    'test_configuration': test_config if test_config else {'name': test_name},
+                    'execution_data': exec_data.copy()
+                }
+                
+                # Include plot data if analog test
+                if exec_data.get('test_type') == 'Analog':
+                    plot_data = exec_data.get('plot_data')
+                    if plot_data:
+                        test_result['plot_data'] = {
+                            'dac_voltages': list(plot_data.get('dac_voltages', [])),
+                            'feedback_values': list(plot_data.get('feedback_values', []))
+                        }
+                    
+                    calibration = exec_data.get('calibration')
+                    if calibration:
+                        test_result['calibration'] = calibration.copy()
+                
+                test_results.append(test_result)
+            
+            pass_rate = (pass_count / total_executed * 100) if total_executed > 0 else 0
+            
+            report_data['summary'] = {
+                'total_tests_executed': total_executed,
+                'pass_count': pass_count,
+                'fail_count': fail_count,
+                'error_count': error_count,
+                'pass_rate_percent': round(pass_rate, 2),
+                'total_execution_time_seconds': round(total_time, 2)
+            }
+            
+            report_data['tests'] = test_results
+            
+            # Write JSON file
+            with open(fname, 'w', encoding='utf-8') as f:
+                json.dump(report_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Exported test report to JSON: {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Export Successful', 
+                f'Test report exported to:\n{os.path.basename(fname)}')
+        except Exception as e:
+            logger.error(f"Failed to export JSON report: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Export Error', 
+                f'Failed to export JSON report:\n{e}')
+    
+    def _export_report_html(self):
+        """Export test report as HTML file with embedded plots and styled tables."""
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'reports')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_filename = f'test_report_{timestamp}.html'
+        
+        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Export Test Report as HTML',
+            os.path.join(default_dir, default_filename),
+            'HTML Files (*.html);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        try:
+            # Calculate summary
+            total_executed = 0
+            pass_count = 0
+            fail_count = 0
+            error_count = 0
+            total_time = 0.0
+            
+            for exec_data in self._test_execution_data.values():
+                status = exec_data.get('status', 'Not Run')
+                if status != 'Not Run':
+                    total_executed += 1
+                    if status == 'PASS':
+                        pass_count += 1
+                    elif status == 'FAIL':
+                        fail_count += 1
+                    elif status == 'ERROR':
+                        error_count += 1
+                    
+                    exec_time_str = exec_data.get('exec_time', '0s')
+                    try:
+                        if exec_time_str.endswith('s'):
+                            total_time += float(exec_time_str[:-1])
+                    except Exception:
+                        pass
+            
+            pass_rate = (pass_count / total_executed * 100) if total_executed > 0 else 0
+            
+            # Generate HTML
+            html_parts = []
+            html_parts.append('<!DOCTYPE html>')
+            html_parts.append('<html>')
+            html_parts.append('<head>')
+            html_parts.append('<meta charset="UTF-8">')
+            html_parts.append('<title>Test Report</title>')
+            html_parts.append('<style>')
+            html_parts.append('body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }')
+            html_parts.append('.header { background-color: #2c3e50; color: white; padding: 20px; border-radius: 5px; margin-bottom: 20px; }')
+            html_parts.append('.header h1 { margin: 0; }')
+            html_parts.append('.summary { background-color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }')
+            html_parts.append('.summary table { width: 100%; border-collapse: collapse; }')
+            html_parts.append('.summary td { padding: 8px; border-bottom: 1px solid #ddd; }')
+            html_parts.append('.summary td:first-child { font-weight: bold; width: 200px; }')
+            html_parts.append('.test-section { background-color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }')
+            html_parts.append('.test-section h2 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }')
+            html_parts.append('.status-pass { color: green; font-weight: bold; }')
+            html_parts.append('.status-fail { color: red; font-weight: bold; }')
+            html_parts.append('.status-error { color: red; font-weight: bold; }')
+            html_parts.append('.calibration-table { width: 100%; border-collapse: collapse; margin-top: 10px; }')
+            html_parts.append('.calibration-table th, .calibration-table td { padding: 8px; text-align: left; border: 1px solid #ddd; }')
+            html_parts.append('.calibration-table th { background-color: #3498db; color: white; }')
+            html_parts.append('.calibration-table tr:nth-child(even) { background-color: #f2f2f2; }')
+            html_parts.append('.plot-image { max-width: 100%; height: auto; margin-top: 10px; }')
+            html_parts.append('.details { margin-top: 10px; }')
+            html_parts.append('.details p { margin: 5px 0; }')
+            html_parts.append('</style>')
+            html_parts.append('</head>')
+            html_parts.append('<body>')
+            
+            # Header
+            html_parts.append('<div class="header">')
+            html_parts.append(f'<h1>Test Report</h1>')
+            html_parts.append(f'<p>Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>')
+            html_parts.append('</div>')
+            
+            # Summary
+            html_parts.append('<div class="summary">')
+            html_parts.append('<h2>Summary</h2>')
+            html_parts.append('<table>')
+            html_parts.append(f'<tr><td>Total Tests Executed:</td><td>{total_executed}</td></tr>')
+            html_parts.append(f'<tr><td>Passed:</td><td class="status-pass">{pass_count}</td></tr>')
+            html_parts.append(f'<tr><td>Failed:</td><td class="status-fail">{fail_count}</td></tr>')
+            html_parts.append(f'<tr><td>Errors:</td><td class="status-error">{error_count}</td></tr>')
+            html_parts.append(f'<tr><td>Pass Rate:</td><td>{pass_rate:.1f}%</td></tr>')
+            html_parts.append(f'<tr><td>Total Execution Time:</td><td>{total_time:.2f}s</td></tr>')
+            html_parts.append('</table>')
+            html_parts.append('</div>')
+            
+            # Test results
+            for test_name, exec_data in self._test_execution_data.items():
+                status = exec_data.get('status', 'Not Run')
+                test_type = exec_data.get('test_type', 'Unknown')
+                exec_time = exec_data.get('exec_time', 'N/A')
+                params = exec_data.get('parameters', 'N/A')
+                notes = exec_data.get('notes', 'N/A')
+                
+                status_class = 'status-pass' if status == 'PASS' else ('status-fail' if status == 'FAIL' else 'status-error')
+                
+                html_parts.append('<div class="test-section">')
+                html_parts.append(f'<h2>{test_name}</h2>')
+                html_parts.append('<div class="details">')
+                html_parts.append(f'<p><strong>Type:</strong> {test_type}</p>')
+                html_parts.append(f'<p><strong>Status:</strong> <span class="{status_class}">{status}</span></p>')
+                html_parts.append(f'<p><strong>Execution Time:</strong> {exec_time}</p>')
+                html_parts.append(f'<p><strong>Parameters:</strong> {params}</p>')
+                html_parts.append(f'<p><strong>Notes:</strong> {notes.replace(chr(10), "<br>")}</p>')
+                html_parts.append('</div>')
+                
+                # Calibration parameters for analog tests
+                if test_type == 'Analog':
+                    calibration = exec_data.get('calibration')
+                    if calibration:
+                        html_parts.append('<h3>Calibration Parameters</h3>')
+                        html_parts.append('<table class="calibration-table">')
+                        html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
+                        
+                        gain = calibration.get('gain', 0)
+                        offset = calibration.get('offset', 0)
+                        r_squared = calibration.get('r_squared', 0)
+                        mse = calibration.get('mse', 0)
+                        max_error = calibration.get('max_error', 0)
+                        mean_error = calibration.get('mean_error', 0)
+                        data_points = calibration.get('data_points', 0)
+                        
+                        html_parts.append(f'<tr><td>Gain (Slope)</td><td>{gain:.6f} mV/mV</td></tr>')
+                        html_parts.append(f'<tr><td>Offset</td><td>{offset:.4f}</td></tr>')
+                        html_parts.append(f'<tr><td>R² (Linearity)</td><td>{r_squared:.6f}</td></tr>')
+                        html_parts.append(f'<tr><td>Mean Error</td><td>{mean_error:.4f}</td></tr>')
+                        html_parts.append(f'<tr><td>Max Error</td><td>{max_error:.4f}</td></tr>')
+                        html_parts.append(f'<tr><td>MSE</td><td>{mse:.4f}</td></tr>')
+                        html_parts.append(f'<tr><td>Data Points</td><td>{data_points}</td></tr>')
+                        
+                        gain_error_percent = calibration.get('gain_error_percent')
+                        expected_gain = calibration.get('expected_gain')
+                        if gain_error_percent is not None and expected_gain is not None:
+                            html_parts.append(f'<tr><td>Expected Gain</td><td>{expected_gain:.6f}</td></tr>')
+                            html_parts.append(f'<tr><td>Gain Error</td><td>{gain_error_percent:+.4f}%</td></tr>')
+                            
+                            tolerance_check = calibration.get('tolerance_check')
+                            if tolerance_check:
+                                check_class = 'status-pass' if tolerance_check == 'PASS' else 'status-fail'
+                                html_parts.append(f'<tr><td>Tolerance Check</td><td class="{check_class}">{tolerance_check}</td></tr>')
+                            
+                            if abs(gain) > 1e-10:
+                                adjustment_factor = expected_gain / gain
+                                html_parts.append(f'<tr><td>Gain Adjustment Factor</td><td>{adjustment_factor:.6f}</td></tr>')
+                        
+                        html_parts.append('</table>')
+                    
+                    # Plot image
+                    plot_data = exec_data.get('plot_data')
+                    if plot_data:
+                        dac_voltages = plot_data.get('dac_voltages', [])
+                        feedback_values = plot_data.get('feedback_values', [])
+                        
+                        if dac_voltages and feedback_values:
+                            plot_base64 = self._generate_test_plot_base64(test_name, dac_voltages, feedback_values)
+                            if plot_base64:
+                                html_parts.append('<h3>Plot</h3>')
+                                html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Plot for {test_name}" class="plot-image">')
+                
+                html_parts.append('</div>')
+            
+            html_parts.append('</body>')
+            html_parts.append('</html>')
+            
+            # Write HTML file
+            with open(fname, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(html_parts))
+            
+            logger.info(f"Exported test report to HTML: {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Export Successful', 
+                f'Test report exported to:\n{os.path.basename(fname)}')
+        except Exception as e:
+            logger.error(f"Failed to export HTML report: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Export Error', 
+                f'Failed to export HTML report:\n{e}')
+    
+    def _export_report_pdf(self):
+        """Export test report as PDF file."""
+        # Check for reportlab
+        try:
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+            from reportlab.lib.units import inch
+            reportlab_available = True
+        except ImportError:
+            reportlab_available = False
+            logger.warning("reportlab not available, using matplotlib backend for PDF")
+        
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'reports')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_filename = f'test_report_{timestamp}.pdf'
+        
+        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Export Test Report as PDF',
+            os.path.join(default_dir, default_filename),
+            'PDF Files (*.pdf);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        try:
+            if reportlab_available:
+                # Use reportlab for professional PDF generation
+                doc = SimpleDocTemplate(fname, pagesize=letter)
+                story = []
+                styles = getSampleStyleSheet()
+                
+                # Title
+                title_style = ParagraphStyle(
+                    'CustomTitle',
+                    parent=styles['Heading1'],
+                    fontSize=18,
+                    textColor=colors.HexColor('#2c3e50'),
+                    spaceAfter=30
+                )
+                story.append(Paragraph('Test Report', title_style))
+                story.append(Paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
+                story.append(Spacer(1, 0.2*inch))
+                
+                # Summary
+                total_executed = 0
+                pass_count = 0
+                fail_count = 0
+                error_count = 0
+                total_time = 0.0
+                
+                for exec_data in self._test_execution_data.values():
+                    status = exec_data.get('status', 'Not Run')
+                    if status != 'Not Run':
+                        total_executed += 1
+                        if status == 'PASS':
+                            pass_count += 1
+                        elif status == 'FAIL':
+                            fail_count += 1
+                        elif status == 'ERROR':
+                            error_count += 1
+                        
+                        exec_time_str = exec_data.get('exec_time', '0s')
+                        try:
+                            if exec_time_str.endswith('s'):
+                                total_time += float(exec_time_str[:-1])
+                        except Exception:
+                            pass
+                
+                pass_rate = (pass_count / total_executed * 100) if total_executed > 0 else 0
+                
+                summary_data = [
+                    ['Metric', 'Value'],
+                    ['Total Tests Executed', str(total_executed)],
+                    ['Passed', str(pass_count)],
+                    ['Failed', str(fail_count)],
+                    ['Errors', str(error_count)],
+                    ['Pass Rate', f'{pass_rate:.1f}%'],
+                    ['Total Execution Time', f'{total_time:.2f}s']
+                ]
+                
+                summary_table = Table(summary_data)
+                summary_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                
+                story.append(Paragraph('<b>Summary</b>', styles['Heading2']))
+                story.append(summary_table)
+                story.append(Spacer(1, 0.3*inch))
+                
+                # Test results
+                for test_name, exec_data in self._test_execution_data.items():
+                    status = exec_data.get('status', 'Not Run')
+                    test_type = exec_data.get('test_type', 'Unknown')
+                    exec_time = exec_data.get('exec_time', 'N/A')
+                    params = exec_data.get('parameters', 'N/A')
+                    notes = exec_data.get('notes', 'N/A')
+                    
+                    story.append(Paragraph(f'<b>{test_name}</b>', styles['Heading2']))
+                    story.append(Spacer(1, 0.1*inch))
+                    
+                    test_details = [
+                        ['Field', 'Value'],
+                        ['Type', test_type],
+                        ['Status', status],
+                        ['Execution Time', exec_time],
+                        ['Parameters', params],
+                        ['Notes', notes.replace('\n', ' ')]
+                    ]
+                    
+                    test_table = Table(test_details)
+                    test_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ]))
+                    
+                    story.append(test_table)
+                    
+                    # Calibration for analog tests
+                    if test_type == 'Analog':
+                        calibration = exec_data.get('calibration')
+                        if calibration:
+                            story.append(Spacer(1, 0.1*inch))
+                            story.append(Paragraph('<b>Calibration Parameters</b>', styles['Heading3']))
+                            
+                            calib_data = [['Parameter', 'Value']]
+                            
+                            gain = calibration.get('gain', 0)
+                            offset = calibration.get('offset', 0)
+                            r_squared = calibration.get('r_squared', 0)
+                            mse = calibration.get('mse', 0)
+                            max_error = calibration.get('max_error', 0)
+                            mean_error = calibration.get('mean_error', 0)
+                            data_points = calibration.get('data_points', 0)
+                            
+                            calib_data.append(['Gain (Slope)', f'{gain:.6f} mV/mV'])
+                            calib_data.append(['Offset', f'{offset:.4f}'])
+                            calib_data.append(['R² (Linearity)', f'{r_squared:.6f}'])
+                            calib_data.append(['Mean Error', f'{mean_error:.4f}'])
+                            calib_data.append(['Max Error', f'{max_error:.4f}'])
+                            calib_data.append(['MSE', f'{mse:.4f}'])
+                            calib_data.append(['Data Points', str(data_points)])
+                            
+                            gain_error_percent = calibration.get('gain_error_percent')
+                            expected_gain = calibration.get('expected_gain')
+                            if gain_error_percent is not None and expected_gain is not None:
+                                calib_data.append(['Expected Gain', f'{expected_gain:.6f}'])
+                                calib_data.append(['Gain Error', f'{gain_error_percent:+.4f}%'])
+                                
+                                tolerance_check = calibration.get('tolerance_check')
+                                if tolerance_check:
+                                    calib_data.append(['Tolerance Check', tolerance_check])
+                                
+                                if abs(gain) > 1e-10:
+                                    adjustment_factor = expected_gain / gain
+                                    calib_data.append(['Gain Adjustment Factor', f'{adjustment_factor:.6f}'])
+                            
+                            calib_table = Table(calib_data)
+                            calib_table.setStyle(TableStyle([
+                                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                            ]))
+                            
+                            story.append(calib_table)
+                        
+                        # Plot image
+                        plot_data = exec_data.get('plot_data')
+                        if plot_data:
+                            dac_voltages = plot_data.get('dac_voltages', [])
+                            feedback_values = plot_data.get('feedback_values', [])
+                            
+                            if dac_voltages and feedback_values:
+                                # Save plot to temporary file
+                                import tempfile
+                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                    tmp_path = tmp_file.name
+                                
+                                plot_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
+                                if plot_bytes:
+                                    with open(tmp_path, 'wb') as f:
+                                        f.write(plot_bytes)
+                                    
+                                    story.append(Spacer(1, 0.1*inch))
+                                    story.append(Paragraph('<b>Plot</b>', styles['Heading3']))
+                                    img = Image(tmp_path, width=5*inch, height=3*inch)
+                                    story.append(img)
+                                    
+                                    # Clean up temp file
+                                    try:
+                                        os.unlink(tmp_path)
+                                    except Exception:
+                                        pass
+                    
+                    story.append(PageBreak())
+                
+                # Build PDF
+                doc.build(story)
+                
+            else:
+                # Fallback: Use matplotlib backend for simple PDF
+                if matplotlib_available:
+                    from matplotlib.backends.backend_pdf import PdfPages
+                    
+                    with PdfPages(fname) as pdf:
+                        # Title page
+                        fig = Figure(figsize=(8.5, 11))
+                        ax = fig.add_subplot(111)
+                        ax.axis('off')
+                        ax.text(0.5, 0.7, 'Test Report', ha='center', va='center', fontsize=24, fontweight='bold')
+                        ax.text(0.5, 0.6, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 
+                                ha='center', va='center', fontsize=12)
+                        pdf.savefig(fig, bbox_inches='tight')
+                        
+                        # Summary page
+                        total_executed = 0
+                        pass_count = 0
+                        fail_count = 0
+                        error_count = 0
+                        
+                        for exec_data in self._test_execution_data.values():
+                            status = exec_data.get('status', 'Not Run')
+                            if status != 'Not Run':
+                                total_executed += 1
+                                if status == 'PASS':
+                                    pass_count += 1
+                                elif status == 'FAIL':
+                                    fail_count += 1
+                                elif status == 'ERROR':
+                                    error_count += 1
+                        
+                        fig = Figure(figsize=(8.5, 11))
+                        ax = fig.add_subplot(111)
+                        ax.axis('off')
+                        y_pos = 0.9
+                        ax.text(0.1, y_pos, 'Summary', fontsize=18, fontweight='bold')
+                        y_pos -= 0.1
+                        ax.text(0.1, y_pos, f'Total Tests Executed: {total_executed}', fontsize=12)
+                        y_pos -= 0.08
+                        ax.text(0.1, y_pos, f'Passed: {pass_count}', fontsize=12, color='green')
+                        y_pos -= 0.08
+                        ax.text(0.1, y_pos, f'Failed: {fail_count}', fontsize=12, color='red')
+                        y_pos -= 0.08
+                        ax.text(0.1, y_pos, f'Errors: {error_count}', fontsize=12, color='red')
+                        pdf.savefig(fig, bbox_inches='tight')
+                        
+                        # Test results with plots
+                        for test_name, exec_data in self._test_execution_data.items():
+                            test_type = exec_data.get('test_type', 'Unknown')
+                            plot_data = exec_data.get('plot_data')
+                            
+                            if plot_data and test_type == 'Analog':
+                                dac_voltages = plot_data.get('dac_voltages', [])
+                                feedback_values = plot_data.get('feedback_values', [])
+                                
+                                if dac_voltages and feedback_values:
+                                    fig = Figure(figsize=(8.5, 11))
+                                    ax = fig.add_subplot(111)
+                                    ax.plot(dac_voltages, feedback_values, 'bo-', markersize=4, linewidth=1)
+                                    ax.set_xlabel('DAC Output Voltage (mV)')
+                                    ax.set_ylabel('Feedback Signal Value')
+                                    ax.set_title(f'{test_name}')
+                                    ax.grid(True, alpha=0.3)
+                                    pdf.savefig(fig, bbox_inches='tight')
+                else:
+                    raise RuntimeError("Neither reportlab nor matplotlib available for PDF export")
+            
+            logger.info(f"Exported test report to PDF: {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Export Successful', 
+                f'Test report exported to:\n{os.path.basename(fname)}')
+        except Exception as e:
+            logger.error(f"Failed to export PDF report: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Export Error', 
+                f'Failed to export PDF report:\n{e}')
+    
     def _build_toolbar(self):
         # Toolbar kept minimal; adapter selection is on Welcome page
         tb = self.addToolBar('Main')
