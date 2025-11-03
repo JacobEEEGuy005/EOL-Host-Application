@@ -30,6 +30,7 @@ import queue
 import time
 import os
 import shutil
+import copy
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any
 
@@ -1421,10 +1422,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         left = QtWidgets.QWidget()
         left_v = QtWidgets.QVBoxLayout(left)
         self.create_test_btn = QtWidgets.QPushButton('Create Test')
+        self.duplicate_test_btn = QtWidgets.QPushButton('Duplicate Selected Test')
         self.delete_test_btn = QtWidgets.QPushButton('Delete Selected Test')
         self.save_tests_btn = QtWidgets.QPushButton('Save Tests')
         self.load_tests_btn = QtWidgets.QPushButton('Load Tests')
         left_v.addWidget(self.create_test_btn)
+        left_v.addWidget(self.duplicate_test_btn)
         left_v.addWidget(self.delete_test_btn)
         left_v.addStretch()
         left_v.addWidget(self.save_tests_btn)
@@ -1471,6 +1474,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         # wire buttons
         self.dbc_load_btn.clicked.connect(self._on_load_dbc)
         self.create_test_btn.clicked.connect(self._on_create_test)
+        self.duplicate_test_btn.clicked.connect(self._on_duplicate_test)
         self.delete_test_btn.clicked.connect(self._on_delete_test)
         self.save_tests_btn.clicked.connect(self._on_save_tests)
         self.load_tests_btn.clicked.connect(self._on_load_tests)
@@ -3254,6 +3258,74 @@ Data Points Used: {data_points}"""
                 return False, "Digital test requires CAN ID"
         
         return True, ""
+    
+    def _on_duplicate_test(self):
+        """Duplicate the currently selected test with a unique name."""
+        it = self.test_list.currentRow()
+        if it < 0 or it >= len(self._tests):
+            QtWidgets.QMessageBox.information(self, 'Duplicate Test', 'No test selected')
+            return
+        
+        try:
+            # Get the test to duplicate
+            original_test = self._tests[it]
+            
+            # Create a deep copy of the test
+            duplicated_test = copy.deepcopy(original_test)
+            
+            # Generate a unique name
+            original_name = duplicated_test.get('name', 'Test').strip()
+            base_name = original_name
+            # Try different suffixes until we find a unique name
+            new_name = f"{base_name}_Copy"
+            counter = 1
+            while not self._is_test_name_unique(new_name):
+                new_name = f"{base_name}_Copy_{counter}"
+                counter += 1
+                # Safety limit to prevent infinite loop
+                if counter > 1000:
+                    new_name = f"{base_name}_Copy_{time.time():.0f}"
+                    break
+            
+            # Update the duplicated test with new name and timestamp
+            duplicated_test['name'] = new_name
+            duplicated_test['created_at'] = datetime.utcnow().isoformat() + 'Z'
+            
+            # Validate the duplicated test
+            is_valid, error_msg = self._validate_test(duplicated_test)
+            if not is_valid:
+                QtWidgets.QMessageBox.warning(
+                    self, 'Invalid Test Configuration',
+                    f'Cannot duplicate test: {error_msg}'
+                )
+                return
+            
+            # Add the duplicated test to the list
+            self._tests.append(duplicated_test)
+            self.test_list.addItem(new_name)
+            
+            # Select the newly duplicated test
+            try:
+                new_index = self.test_list.count() - 1
+                self.test_list.setCurrentRow(new_index)
+                self._on_select_test(None, None)
+            except Exception:
+                pass
+            
+            # Sync Test Plan
+            try:
+                self._populate_test_plan()
+            except Exception:
+                pass
+            
+            QtWidgets.QMessageBox.information(
+                self, 'Test Duplicated',
+                f'Test "{original_name}" duplicated as "{new_name}"'
+            )
+            logger.info(f"Duplicated test '{original_name}' as '{new_name}'")
+        except Exception as e:
+            logger.error(f"Error duplicating test: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to duplicate test: {e}')
     
     def _on_delete_test(self):
         it = self.test_list.currentRow()
