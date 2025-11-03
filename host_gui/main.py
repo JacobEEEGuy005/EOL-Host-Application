@@ -81,7 +81,7 @@ try:
     from host_gui.constants import (
         CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
         CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
-        POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DAC_PRE_STEP_DISCARD_TIME_MS,
+        POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
         MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
         MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
         CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
@@ -103,7 +103,7 @@ except ImportError:
     POLL_INTERVAL_MS = 50
     FRAME_POLL_INTERVAL_MS = 150
     DAC_SETTLING_TIME_MS = 20
-    DAC_PRE_STEP_DISCARD_TIME_MS = 20
+    DATA_COLLECTION_PERIOD_MS = 50
     MAX_MESSAGES_DEFAULT = 50
     MAX_FRAMES_DEFAULT = 50
     MSG_TYPE_SET_RELAY = 16
@@ -659,14 +659,15 @@ class TestRunner:
                         time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
                 
                 def _collect_data_points_during_dwell(dac_voltage: int, dwell_ms: int, dac_cmd_sig: str, fb_signal: str, fb_msg_id: int):
-                    """Collect all available feedback data points during dwell time, resending DAC command every 50ms.
+                    """Collect feedback data points during dwell time after settling period.
                     
-                    Data points are collected only during the stable region:
-                    - Discarded within DAC_SETTLING_TIME_MS after step change (settling period)
-                    - Discarded within DAC_PRE_STEP_DISCARD_TIME_MS before next step change (pre-transition period)
+                    Data collection strategy:
+                    - Wait for DAC_SETTLING_TIME_MS after step change (settling period)
+                    - Collect data for DATA_COLLECTION_PERIOD_MS (fixed period)
+                    - Periodically resend DAC command every 50ms during collection
                     
-                    This ensures only stable data points in the middle of the dwell period are collected,
-                    avoiding transition effects at both boundaries.
+                    The data collection period must be less than (Dwell Time - Settling Time)
+                    to ensure it fits within the available dwell window.
                     
                     Args:
                         dac_voltage: Current DAC voltage command value (mV)
@@ -678,79 +679,91 @@ class TestRunner:
                     if dwell_ms <= 0:
                         return
                     
-                    # Validate that stable window is positive
-                    total_discard_time = DAC_SETTLING_TIME_MS + DAC_PRE_STEP_DISCARD_TIME_MS
-                    if dwell_ms <= total_discard_time:
+                    # Validate that data collection period fits within dwell time
+                    min_dwell_required = DAC_SETTLING_TIME_MS + DATA_COLLECTION_PERIOD_MS
+                    if dwell_ms < min_dwell_required:
                         logger.warning(
-                            f"Dwell time {dwell_ms}ms is too short for stable data collection "
-                            f"(requires > {total_discard_time}ms for settling + pre-step discard). "
-                            f"Stable window: {dwell_ms - total_discard_time}ms"
+                            f"Dwell time {dwell_ms}ms is too short for data collection "
+                            f"(requires >= {min_dwell_required}ms: {DAC_SETTLING_TIME_MS}ms settling + {DATA_COLLECTION_PERIOD_MS}ms collection). "
+                            f"Available collection window: {max(0, dwell_ms - DAC_SETTLING_TIME_MS)}ms"
                         )
+                        # Adjust collection period to fit if possible, otherwise skip collection
+                        available_collection_time = max(0, dwell_ms - DAC_SETTLING_TIME_MS)
+                        if available_collection_time <= 0:
+                            logger.warning(f"Skipping data collection - no time available after settling period")
+                            return
+                        # Use available time, but cap at DATA_COLLECTION_PERIOD_MS
+                        actual_collection_period_ms = min(available_collection_time, DATA_COLLECTION_PERIOD_MS)
+                        logger.debug(f"Adjusting collection period from {DATA_COLLECTION_PERIOD_MS}ms to {actual_collection_period_ms}ms to fit dwell time")
+                    else:
+                        actual_collection_period_ms = DATA_COLLECTION_PERIOD_MS
                     
                     # Command periodicity: 50ms
                     COMMAND_PERIOD_MS = 50
                     command_interval_sec = COMMAND_PERIOD_MS / 1000.0
                     
-                    # Settling time after step change (convert to seconds)
+                    # Timing conversions
                     settling_time_sec = DAC_SETTLING_TIME_MS / 1000.0
-                    
-                    # Pre-step discard time before next step change (convert to seconds)
-                    pre_step_discard_time_sec = DAC_PRE_STEP_DISCARD_TIME_MS / 1000.0
+                    collection_period_sec = actual_collection_period_ms / 1000.0
                     
                     start_time = time.time()
-                    dwell_end_time = start_time + (dwell_ms / 1000.0)
                     last_command_time = start_time
-                    
-                    # Track the time of the initial step change (first command of this voltage level)
-                    step_change_time = start_time
-                    
-                    # Calculate stable data collection window boundaries
-                    stable_start_time = start_time + settling_time_sec
-                    stable_end_time = dwell_end_time - pre_step_discard_time_sec
-                    
-                    data_points_collected = 0
-                    data_points_ignored_settling = 0
-                    data_points_ignored_pre_step = 0
                     
                     # Send initial DAC command for this voltage level
                     try:
                         _encode_and_send({dac_cmd_sig: int(dac_voltage)})
                         step_change_time = time.time()  # Record when step change occurred
                         last_command_time = step_change_time
-                        # Update stable start time based on actual step change time
-                        stable_start_time = step_change_time + settling_time_sec
                     except Exception as e:
                         logger.debug(f"Error sending initial DAC command during dwell: {e}")
+                        step_change_time = time.time()
                     
-                    while time.time() < dwell_end_time:
+                    # Wait for settling period
+                    settling_end_time = step_change_time + settling_time_sec
+                    while time.time() < settling_end_time:
                         current_time = time.time()
                         
-                        # Send DAC command every 50ms (periodic resend of same command)
+                        # Send DAC command every 50ms during settling (to ensure reception)
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
                                 _encode_and_send({dac_cmd_sig: int(dac_voltage)})
                                 last_command_time = current_time
-                                # Note: Periodic resends don't reset settling time since voltage hasn't changed
                             except Exception as e:
-                                logger.debug(f"Error sending DAC command during dwell: {e}")
+                                logger.debug(f"Error sending DAC command during settling: {e}")
                         
-                        # Collect feedback data points on every loop iteration
-                        # Only collect if within stable window (after settling, before pre-step discard)
+                        # Process Qt events to keep UI responsive
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                    
+                    # Now collect data for the fixed collection period
+                    collection_start_time = time.time()
+                    collection_end_time = collection_start_time + collection_period_sec
+                    
+                    data_points_collected = 0
+                    
+                    while time.time() < collection_end_time:
+                        current_time = time.time()
+                        
+                        # Send DAC command every 50ms during collection (periodic resend)
+                        if (current_time - last_command_time) >= command_interval_sec:
+                            try:
+                                _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                                last_command_time = current_time
+                            except Exception as e:
+                                logger.debug(f"Error sending DAC command during collection: {e}")
+                        
+                        # Collect feedback data points on every loop iteration during collection period
                         if fb_signal and fb_msg_id:
                             try:
                                 ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                 if fb_val is not None:
-                                    # Check if within stable data collection window
-                                    if current_time < stable_start_time:
-                                        # Still in settling period after step change - disregard
-                                        data_points_ignored_settling += 1
-                                    elif current_time >= stable_end_time:
-                                        # Within pre-step discard window - disregard
-                                        data_points_ignored_pre_step += 1
-                                    else:
-                                        # Stable data point - collect it
-                                        gui._update_plot(dac_voltage, fb_val, test_name)
-                                        data_points_collected += 1
+                                    # Collect this data point (we're in the stable collection window)
+                                    gui._update_plot(dac_voltage, fb_val, test_name)
+                                    data_points_collected += 1
                             except Exception as e:
                                 logger.debug(f"Error collecting feedback during dwell: {e}")
                         
@@ -765,8 +778,8 @@ class TestRunner:
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
                     logger.debug(
-                        f"Collected {data_points_collected} data points during {dwell_ms}ms dwell at {dac_voltage}mV "
-                        f"(ignored {data_points_ignored_settling} during settling, {data_points_ignored_pre_step} before next step)"
+                        f"Collected {data_points_collected} data points during {actual_collection_period_ms}ms collection period "
+                        f"(after {DAC_SETTLING_TIME_MS}ms settling) at {dac_voltage}mV"
                     )
 
                 def _encode_and_send(signals: dict):
