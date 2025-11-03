@@ -739,13 +739,17 @@ class TestRunner:
                         
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
+                    # Calculate when the full dwell period ends
+                    dwell_end_time = step_change_time + (dwell_ms / 1000.0)
+                    
                     # Now collect data for the fixed collection period
                     collection_start_time = time.time()
                     collection_end_time = collection_start_time + collection_period_sec
                     
                     data_points_collected = 0
                     
-                    while time.time() < collection_end_time:
+                    # Phase 1: Data collection period (after settling, before end of collection period)
+                    while time.time() < collection_end_time and time.time() < dwell_end_time:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms during collection (periodic resend)
@@ -777,9 +781,30 @@ class TestRunner:
                         # This is minimal to maximize collection rate while maintaining system responsiveness
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
+                    # Phase 2: Continue holding DAC voltage for remaining dwell time (if any)
+                    # This ensures the DAC voltage is held for the full dwell period, even after data collection ends
+                    while time.time() < dwell_end_time:
+                        current_time = time.time()
+                        
+                        # Send DAC command every 50ms to maintain the voltage level
+                        if (current_time - last_command_time) >= command_interval_sec:
+                            try:
+                                _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                                last_command_time = current_time
+                            except Exception as e:
+                                logger.debug(f"Error sending DAC command during hold period: {e}")
+                        
+                        # Process Qt events to keep UI responsive
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                    
                     logger.debug(
                         f"Collected {data_points_collected} data points during {actual_collection_period_ms}ms collection period "
-                        f"(after {DAC_SETTLING_TIME_MS}ms settling) at {dac_voltage}mV"
+                        f"(after {DAC_SETTLING_TIME_MS}ms settling), held DAC at {dac_voltage}mV for full {dwell_ms}ms dwell"
                     )
 
                 def _encode_and_send(signals: dict):
