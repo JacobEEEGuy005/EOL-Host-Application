@@ -77,7 +77,10 @@ logger = logging.getLogger(__name__)
 # Note: Log level will be updated by ConfigManager after it's initialized
 
 # Import constants
+# Try multiple import strategies to handle different execution contexts
+constants_imported = False
 try:
+    # Strategy 1: Import as module (works when run as python -m host_gui.main or from package)
     from host_gui.constants import (
         CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
         CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
@@ -91,8 +94,72 @@ try:
         LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
         PLOT_GRID_ALPHA
     )
+    constants_imported = True
+    logger.debug("Successfully imported constants from host_gui.constants")
 except ImportError:
-    # Fallback constants if import fails
+    try:
+        # Strategy 2: Try relative import (works when host_gui is a package)
+        from .constants import (
+            CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
+            CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
+            POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
+            MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
+            MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
+            CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
+            WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
+            SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+            MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+            LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+            PLOT_GRID_ALPHA
+        )
+        constants_imported = True
+        logger.debug("Successfully imported constants using relative import")
+    except ImportError:
+        try:
+            # Strategy 3: Add parent directory to path and try again (works when run as script)
+            from pathlib import Path
+            parent_dir = Path(__file__).parent.parent
+            if str(parent_dir) not in sys.path:
+                sys.path.insert(0, str(parent_dir))
+            from host_gui.constants import (
+                CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
+                CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
+                POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
+                MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
+                MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
+                CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
+                WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
+                SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+                MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+                LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+                PLOT_GRID_ALPHA
+            )
+            constants_imported = True
+            logger.debug("Successfully imported constants after adding parent directory to sys.path")
+        except ImportError:
+            try:
+                # Strategy 4: Direct import when running from host_gui directory
+                from constants import (
+                    CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
+                    CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
+                    POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
+                    MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
+                    MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
+                    CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
+                    WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
+                    SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+                    MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+                    LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+                    PLOT_GRID_ALPHA
+                )
+                constants_imported = True
+                logger.debug("Successfully imported constants using direct import")
+            except ImportError:
+                pass
+
+if not constants_imported:
+    # Fallback constants if all import strategies fail
+    logger.warning("Could not import constants, using fallback values")
     CAN_ID_MIN = 0
     CAN_ID_MAX = 0x1FFFFFFF
     DAC_VOLTAGE_MIN = 0
@@ -714,9 +781,13 @@ class TestRunner:
                         _encode_and_send({dac_cmd_sig: int(dac_voltage)})
                         step_change_time = time.time()  # Record when step change occurred
                         last_command_time = step_change_time
+                        # Store DAC command timestamp for timestamp validation
+                        # Only feedback values received after this timestamp will be used
+                        dac_command_timestamp = step_change_time
                     except Exception as e:
                         logger.debug(f"Error sending initial DAC command during dwell: {e}")
                         step_change_time = time.time()
+                        dac_command_timestamp = step_change_time
                     
                     # Wait for settling period
                     settling_end_time = step_change_time + settling_time_sec
@@ -765,9 +836,37 @@ class TestRunner:
                             try:
                                 ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
                                 if fb_val is not None:
-                                    # Collect this data point (we're in the stable collection window)
-                                    gui._update_plot(dac_voltage, fb_val, test_name)
-                                    data_points_collected += 1
+                                    # Timestamp validation: only use feedback values received AFTER the DAC command
+                                    # This prevents using stale cached values from previous voltage steps
+                                    # Allow small tolerance (-10ms) to handle timing precision issues
+                                    TIMESTAMP_TOLERANCE_SEC = 0.01  # 10ms tolerance
+                                    
+                                    if ts is None:
+                                        # No timestamp available - collect anyway but log warning
+                                        # This can happen if frames don't have timestamps or cache is empty
+                                        logger.info(
+                                            f"Collecting feedback data point: DAC={dac_voltage}mV, "
+                                            f"Feedback={fb_val} (no timestamp available)"
+                                        )
+                                        gui._update_plot(dac_voltage, fb_val, test_name)
+                                        data_points_collected += 1
+                                    elif ts >= (dac_command_timestamp - TIMESTAMP_TOLERANCE_SEC):
+                                        # This feedback value is fresh enough (within tolerance window)
+                                        # Note: Allow small negative difference to handle timing precision
+                                        logger.debug(
+                                            f"Collecting feedback data point: DAC={dac_voltage}mV, "
+                                            f"Feedback={fb_val}, timestamp_age={(time.time() - ts)*1000:.1f}ms"
+                                        )
+                                        gui._update_plot(dac_voltage, fb_val, test_name)
+                                        data_points_collected += 1
+                                    else:
+                                        # Stale feedback value - skip it (logged at debug level only if significant)
+                                        age_ms = (dac_command_timestamp - ts) * 1000
+                                        if age_ms > 50:  # Only log if more than 50ms old
+                                            logger.debug(
+                                                f"Skipping stale feedback value: timestamp {ts} is "
+                                                f"{age_ms:.1f}ms older than DAC command time {dac_command_timestamp}"
+                                            )
                             except Exception as e:
                                 logger.debug(f"Error collecting feedback during dwell: {e}")
                         
@@ -1559,13 +1658,25 @@ class BaseGUI(QtWidgets.QMainWindow):
             feedback_value: IPC feedback signal value
             test_name: Optional test name for plot title
         """
-        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+        if not matplotlib_available:
+            logger.debug("Matplotlib not available, skipping plot update")
+            return
+        if not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            logger.debug("Plot axes not initialized, skipping plot update")
+            return
+        if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+            logger.debug("Plot canvas not initialized, skipping plot update")
             return
         try:
             # Add new data point
             if dac_voltage is not None and feedback_value is not None:
                 self.plot_dac_voltages.append(float(dac_voltage))
                 self.plot_feedback_values.append(float(feedback_value))
+                
+                logger.debug(
+                    f"Plot update: Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
+                    f"total points: {len(self.plot_dac_voltages)}"
+                )
                 
                 # Update plot line
                 self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
@@ -1578,10 +1689,13 @@ class BaseGUI(QtWidgets.QMainWindow):
                 if test_name and not self.plot_axes.get_title():
                     self.plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
                 
-                # Refresh canvas (use draw_idle for better performance)
+                # Force immediate redraw (draw_idle may not refresh fast enough)
+                self.plot_canvas.draw()
+                
+                # Also trigger draw_idle for Qt event processing
                 self.plot_canvas.draw_idle()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error updating plot: {e}", exc_info=True)
 
     def _build_test_report(self):
         """Builds the Test Report tab widget and returns it."""
@@ -4109,7 +4223,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Use SignalService if available
         if self.signal_service is not None:
             return self.signal_service.get_latest_signal(can_id, signal_name)
-            return (None, None)
+        
+        # Fallback to legacy cache if SignalService not available
+        if key in self._signal_values:
+            entry = self._signal_values.get(key)
+            if entry is not None:
+                ts, v = entry
+                return (ts, v)
+        
+        return (None, None)
 
     def _send_frame(self):
         """Send a CAN frame manually via the adapter.
