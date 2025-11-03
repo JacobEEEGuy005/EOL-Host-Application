@@ -1651,6 +1651,136 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         return ', '.join(params) if params else 'None'
     
+    def _calculate_calibration_parameters(self, dac_voltages: list, feedback_values: list) -> Optional[Dict[str, float]]:
+        """Calculate calibration parameters from DAC voltage and feedback signal data.
+        
+        Performs linear regression to calculate:
+        - Gain/Slope: mV feedback per mV DAC input
+        - Offset: Feedback value at DAC = 0mV
+        - R²: Correlation coefficient (linearity measure, 0-1)
+        - MSE: Mean Squared Error
+        - Max Error: Maximum deviation from linear fit
+        
+        Args:
+            dac_voltages: List of DAC output voltages in mV
+            feedback_values: List of corresponding feedback signal values
+            
+        Returns:
+            Dictionary with calibration parameters, or None if calculation fails
+        """
+        if not dac_voltages or not feedback_values:
+            return None
+        
+        if len(dac_voltages) != len(feedback_values):
+            logger.warning("DAC voltages and feedback values have different lengths")
+            return None
+        
+        if len(dac_voltages) < 2:
+            logger.warning("Need at least 2 data points for linear regression")
+            return None
+        
+        try:
+            import numpy as np
+            
+            x = np.array(dac_voltages, dtype=float)
+            y = np.array(feedback_values, dtype=float)
+            
+            # Linear regression: y = mx + b
+            # m = gain/slope, b = offset
+            n = len(x)
+            sum_x = np.sum(x)
+            sum_y = np.sum(y)
+            sum_xy = np.sum(x * y)
+            sum_x2 = np.sum(x * x)
+            sum_y2 = np.sum(y * y)
+            
+            # Calculate slope (gain)
+            denominator = n * sum_x2 - sum_x * sum_x
+            if abs(denominator) < 1e-10:
+                logger.warning("Cannot calculate gain: denominator too small (data may be constant)")
+                return None
+            
+            gain = (n * sum_xy - sum_x * sum_y) / denominator
+            
+            # Calculate offset (y-intercept)
+            offset = (sum_y - gain * sum_x) / n
+            
+            # Calculate R² (coefficient of determination)
+            y_predicted = gain * x + offset
+            ss_res = np.sum((y - y_predicted) ** 2)  # Sum of squared residuals
+            ss_tot = np.sum((y - np.mean(y)) ** 2)   # Total sum of squares
+            
+            if abs(ss_tot) < 1e-10:
+                r_squared = 1.0  # Perfect fit or constant data
+            else:
+                r_squared = 1 - (ss_res / ss_tot)
+            
+            # Calculate Mean Squared Error
+            mse = ss_res / n
+            
+            # Calculate maximum error
+            errors = np.abs(y - y_predicted)
+            max_error = np.max(errors)
+            mean_error = np.mean(errors)
+            
+            return {
+                'gain': float(gain),
+                'offset': float(offset),
+                'r_squared': float(r_squared),
+                'mse': float(mse),
+                'max_error': float(max_error),
+                'mean_error': float(mean_error),
+                'data_points': n
+            }
+        except ImportError:
+            # Fallback calculation without numpy
+            try:
+                n = len(dac_voltages)
+                sum_x = sum(dac_voltages)
+                sum_y = sum(feedback_values)
+                sum_xy = sum(x * y for x, y in zip(dac_voltages, feedback_values))
+                sum_x2 = sum(x * x for x in dac_voltages)
+                sum_y2 = sum(y * y for y in feedback_values)
+                
+                denominator = n * sum_x2 - sum_x * sum_x
+                if abs(denominator) < 1e-10:
+                    return None
+                
+                gain = (n * sum_xy - sum_x * sum_y) / denominator
+                offset = (sum_y - gain * sum_x) / n
+                
+                # Calculate R²
+                y_mean = sum_y / n
+                ss_res = sum((y - (gain * x + offset)) ** 2 for x, y in zip(dac_voltages, feedback_values))
+                ss_tot = sum((y - y_mean) ** 2 for y in feedback_values)
+                
+                if abs(ss_tot) < 1e-10:
+                    r_squared = 1.0
+                else:
+                    r_squared = 1 - (ss_res / ss_tot)
+                
+                # Calculate errors
+                errors = [abs(y - (gain * x + offset)) for x, y in zip(dac_voltages, feedback_values)]
+                mse = ss_res / n
+                max_error = max(errors)
+                mean_error = sum(errors) / n
+                
+                return {
+                    'gain': gain,
+                    'offset': offset,
+                    'r_squared': r_squared,
+                    'mse': mse,
+                    'max_error': max_error,
+                    'mean_error': mean_error,
+                    'data_points': n
+                }
+            except Exception as e:
+                logger.error(f"Error calculating calibration parameters: {e}", exc_info=True)
+                return None
+        except Exception as e:
+            logger.error(f"Error calculating calibration parameters: {e}", exc_info=True)
+            return None
+    
     def _update_test_plan_row(self, test: Dict[str, Any], status: str, exec_time: str, notes: str, 
                              plot_data: Optional[Dict[str, list]] = None) -> None:
         """Update or insert a test result row in the Test Plan table.
@@ -1682,10 +1812,19 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Store plot data for analog tests (make a copy to preserve data)
         if plot_data is not None:
+            dac_voltages = list(plot_data.get('dac_voltages', []))
+            feedback_values = list(plot_data.get('feedback_values', []))
+            
             exec_data['plot_data'] = {
-                'dac_voltages': list(plot_data.get('dac_voltages', [])),
-                'feedback_values': list(plot_data.get('feedback_values', []))
+                'dac_voltages': dac_voltages,
+                'feedback_values': feedback_values
             }
+            
+            # Calculate calibration parameters for analog tests
+            if dac_voltages and feedback_values and len(dac_voltages) == len(feedback_values):
+                calibration_params = self._calculate_calibration_parameters(dac_voltages, feedback_values)
+                if calibration_params:
+                    exec_data['calibration'] = calibration_params
         
         self._test_execution_data[test_name] = exec_data
         
@@ -1798,8 +1937,54 @@ class BaseGUI(QtWidgets.QMainWindow):
         notes_text.setReadOnly(True)
         layout.addWidget(notes_text)
         
-        # Plot section for analog tests
+        # Calibration Parameters section for analog tests
         is_analog = test_config and test_config.get('type') == 'analog'
+        calibration_params = exec_data.get('calibration')
+        
+        if is_analog and calibration_params:
+            calib_label = QtWidgets.QLabel(f'<b>Calibration Parameters (for IPC Hardware Gain Adjustment):</b>')
+            layout.addWidget(calib_label)
+            
+            # Create a formatted text display for calibration parameters
+            calib_text = QtWidgets.QTextEdit()
+            calib_text.setReadOnly(True)
+            calib_text.setMaximumHeight(150)
+            
+            gain = calibration_params.get('gain', 0)
+            offset = calibration_params.get('offset', 0)
+            r_squared = calibration_params.get('r_squared', 0)
+            mse = calibration_params.get('mse', 0)
+            max_error = calibration_params.get('max_error', 0)
+            mean_error = calibration_params.get('mean_error', 0)
+            data_points = calibration_params.get('data_points', 0)
+            
+            calib_info = f"""Gain (Slope): {gain:.6f} (mV feedback per mV DAC)
+Offset: {offset:.4f} (feedback value at DAC = 0mV)
+R² (Linearity): {r_squared:.6f} (1.0 = perfectly linear)
+Mean Error: {mean_error:.4f}
+Max Error: {max_error:.4f}
+Mean Squared Error (MSE): {mse:.4f}
+Data Points Used: {data_points}"""
+            
+            # Add gain adjustment factor if expected gain is specified in test config
+            if test_config:
+                actuation = test_config.get('actuation', {})
+                expected_gain = actuation.get('expected_gain')
+                if expected_gain is not None:
+                    try:
+                        expected_gain = float(expected_gain)
+                        if abs(expected_gain) > 1e-10 and abs(gain) > 1e-10:
+                            adjustment_factor = expected_gain / gain
+                            calib_info += f"\n\nExpected Gain: {expected_gain:.6f}"
+                            calib_info += f"\nGain Adjustment Factor: {adjustment_factor:.6f}"
+                            calib_info += f"\n(IPC Hardware Gain should be multiplied by {adjustment_factor:.6f})"
+                    except (ValueError, TypeError):
+                        pass
+            
+            calib_text.setPlainText(calib_info)
+            layout.addWidget(calib_text)
+        
+        # Plot section for analog tests
         plot_data = exec_data.get('plot_data')
         if is_analog and plot_data and matplotlib_available:
             plot_dac_voltages = plot_data.get('dac_voltages', [])
@@ -1846,10 +2031,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
         
-        # Adjust dialog size for plot if present
-        if is_analog and plot_data and matplotlib_available:
+        # Adjust dialog size for plot and calibration parameters if present
+        if is_analog and (plot_data and matplotlib_available or calibration_params):
             dialog.setMinimumWidth(700)
-            dialog.setMinimumHeight(600)
+            dialog.setMinimumHeight(650)
         else:
             dialog.setMinimumWidth(500)
             dialog.setMinimumHeight(300)
@@ -2658,6 +2843,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             dac_step_mv.setValidator(step_validator)
             dac_dwell_ms = QtWidgets.QLineEdit()
             dac_dwell_ms.setValidator(dwell_validator)
+            # Expected Gain input (optional, for calibration)
+            expected_gain_validator = QtGui.QDoubleValidator(0.000001, 1000000.0, 6, self)
+            expected_gain_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            expected_gain_edit = QtWidgets.QLineEdit()
+            expected_gain_edit.setValidator(expected_gain_validator)
+            expected_gain_edit.setPlaceholderText('Optional: for gain adjustment calculation')
             # digital dwell input
             dig_dwell_ms = QtWidgets.QLineEdit()
             dig_dwell_ms.setValidator(dwell_validator)
@@ -2678,6 +2869,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
             analog_layout.addRow('Step Change (mV):', dac_step_mv)
             analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
+            analog_layout.addRow('Expected Gain (optional):', expected_gain_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -2836,6 +3028,14 @@ class BaseGUI(QtWidgets.QMainWindow):
                     dac_max = _to_int_or_none(dac_max_mv.text() if hasattr(dac_max_mv, 'text') else '')
                     dac_step = _to_int_or_none(dac_step_mv.text() if hasattr(dac_step_mv, 'text') else '')
                     dac_dwell = _to_int_or_none(dac_dwell_ms.text() if hasattr(dac_dwell_ms, 'text') else '')
+                    # Read expected gain (optional float)
+                    expected_gain_val = None
+                    try:
+                        expected_gain_text = expected_gain_edit.text().strip() if hasattr(expected_gain_edit, 'text') else ''
+                        if expected_gain_text:
+                            expected_gain_val = float(expected_gain_text)
+                    except (ValueError, TypeError):
+                        pass
                     act = {
                         'type': 'analog',
                         'dac_can_id': dac_id,
@@ -2848,6 +3048,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                         'dac_step_mv': dac_step,
                         'dac_dwell_ms': dac_dwell,
                     }
+                    if expected_gain_val is not None:
+                        act['expected_gain'] = expected_gain_val
             else:
                 if t == 'digital':
                     try:
@@ -2891,6 +3093,14 @@ class BaseGUI(QtWidgets.QMainWindow):
                     dac_max = _to_int_or_none(dac_max_mv)
                     dac_step = _to_int_or_none(dac_step_mv)
                     dac_dwell = _to_int_or_none(dac_dwell_ms)
+                    # Read expected gain (optional float)
+                    expected_gain_val = None
+                    try:
+                        expected_gain_text = expected_gain_edit.text().strip() if hasattr(expected_gain_edit, 'text') else ''
+                        if expected_gain_text:
+                            expected_gain_val = float(expected_gain_text)
+                    except (ValueError, TypeError):
+                        pass
                     
                     act = {
                         'type': 'analog',
@@ -2902,6 +3112,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                         'dac_step_mv': dac_step,
                         'dac_dwell_ms': dac_dwell,
                     }
+                    if expected_gain_val is not None:
+                        act['expected_gain'] = expected_gain_val
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -3534,6 +3746,13 @@ class BaseGUI(QtWidgets.QMainWindow):
             analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
             analog_layout.addRow('Step Change (mV):', dac_step_mv)
             analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
+            # Expected Gain input (optional, for calibration)
+            expected_gain_validator = QtGui.QDoubleValidator(0.000001, 1000000.0, 6, self)
+            expected_gain_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            expected_gain_edit = QtWidgets.QLineEdit(str(act.get('expected_gain', '')))
+            expected_gain_edit.setValidator(expected_gain_validator)
+            expected_gain_edit.setPlaceholderText('Optional: for gain adjustment calculation')
+            analog_layout.addRow('Expected Gain (optional):', expected_gain_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -3563,6 +3782,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             dac_step_mv.setValidator(step_validator)
             dac_dwell_ms = QtWidgets.QLineEdit(str(act.get('dac_dwell_ms','')))
             dac_dwell_ms.setValidator(dwell_validator)
+            # Expected Gain input (optional, for calibration)
+            expected_gain_validator = QtGui.QDoubleValidator(0.000001, 1000000.0, 6, self)
+            expected_gain_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            expected_gain_edit = QtWidgets.QLineEdit(str(act.get('expected_gain', '')))
+            expected_gain_edit.setValidator(expected_gain_validator)
+            expected_gain_edit.setPlaceholderText('Optional: for gain adjustment calculation')
             analog_layout.addRow('Command Message (free-text):', mux_chan)
             analog_layout.addRow('DAC CAN ID (analog):', dac_can)
             analog_layout.addRow('DAC Command (hex):', dac_cmd)
@@ -3570,6 +3795,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
             analog_layout.addRow('Step Change (mV):', dac_step_mv)
             analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
+            analog_layout.addRow('Expected Gain (optional):', expected_gain_edit)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -3668,6 +3894,15 @@ class BaseGUI(QtWidgets.QMainWindow):
                     dac_max = _to_int_or_none(dac_max_mv.text() if 'dac_max_mv' in locals() else '')
                     dac_step = _to_int_or_none(dac_step_mv.text() if 'dac_step_mv' in locals() else '')
                     dac_dwell = _to_int_or_none(dac_dwell_ms.text() if 'dac_dwell_ms' in locals() else '')
+                    # Read expected gain (optional float)
+                    expected_gain_val = None
+                    try:
+                        if 'expected_gain_edit' in locals():
+                            expected_gain_text = expected_gain_edit.text().strip() if hasattr(expected_gain_edit, 'text') else ''
+                            if expected_gain_text:
+                                expected_gain_val = float(expected_gain_text)
+                    except (ValueError, TypeError):
+                        pass
                     data['actuation'] = {
                         'type':'analog',
                         'dac_can_id': dac_id,
@@ -3680,6 +3915,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                         'dac_step_mv': dac_step,
                         'dac_dwell_ms': dac_dwell,
                     }
+                    if expected_gain_val is not None:
+                        data['actuation']['expected_gain'] = expected_gain_val
             else:
                 if data['type'] == 'digital':
                     try:
@@ -3715,6 +3952,15 @@ class BaseGUI(QtWidgets.QMainWindow):
                     dac_max = _to_int_or_none(dac_max_mv)
                     dac_step = _to_int_or_none(dac_step_mv)
                     dac_dwell = _to_int_or_none(dac_dwell_ms)
+                    # Read expected gain (optional float)
+                    expected_gain_val = None
+                    try:
+                        if 'expected_gain_edit' in locals():
+                            expected_gain_text = expected_gain_edit.text().strip() if hasattr(expected_gain_edit, 'text') else ''
+                            if expected_gain_text:
+                                expected_gain_val = float(expected_gain_text)
+                    except (ValueError, TypeError):
+                        pass
                     
                     data['actuation'] = {
                         'type': 'analog',
@@ -3726,6 +3972,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                         'dac_step_mv': dac_step,
                         'dac_dwell_ms': dac_dwell,
                     }
+                    if expected_gain_val is not None:
+                        data['actuation']['expected_gain'] = expected_gain_val
 
             # Validate test before saving
             is_valid, error_msg = self._validate_test(data)
