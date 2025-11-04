@@ -6264,7 +6264,11 @@ Data Points Used: {data_points}"""
             pass
 
     def _on_repeat_test(self):
-        # Repeat the currently selected test
+        """Repeat the currently selected test.
+        
+        Note: DUT UID is not required for single test execution,
+        only for test sequences via Run Sequence button.
+        """
         self._on_run_selected()
 
     def _on_run_sequence(self) -> None:
