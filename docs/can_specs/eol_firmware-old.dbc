@@ -76,9 +76,9 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ BrakeVoltage m101 : 48|16@1+ (1,0) [0|65535] "mV"  Host_PC
  SG_ EncSineVoltage m102 : 16|16@1+ (1,0) [0|65535] "mV"  Host_PC
  SG_ EncCosineVoltage m102 : 32|16@1+ (1,0) [0|65535] "mV"  Host_PC
- SG_ Analog1Voltage m103 : 16|16@1+ (1,0) [0|65535] "mV"  Host_PC
- SG_ Analog2Voltage m103 : 32|16@1+ (1,0) [0|65535] "mV"  Host_PC
- SG_ MtrTempVoltage m103 : 48|16@1+ (1,0) [0|65535] "mV"  Host_PC
+ SG_ Analog1Voltage m103 : 16|16@1+ (1,0) [0|65535] "V"  Host_PC
+ SG_ Analog2Voltage m103 : 32|16@1+ (1,0) [0|65535] "V"  Host_PC
+ SG_ MtrTempVoltage m103 : 48|16@1+ (1,0) [0|65535] "V"  Host_PC
  SG_ DCBusVoltage m102 : 48|16@1+ (0.01,0) [0|655.35] "V"  Host_PC
  SG_ PhaseVCurrent m104 : 16|16@1- (0.1,0) [-3276.7|3276.7] "A"  Host_PC
  SG_ PhaseWCurrent m104 : 32|16@1- (0.1,0) [-3276.7|3276.7] "A"  Host_PC
