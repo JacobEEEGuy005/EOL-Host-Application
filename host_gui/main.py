@@ -1598,6 +1598,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Used to display details in popup when clicking Test Plan rows
         self._test_execution_data = {}
         
+        # DUT UID for current test sequence (set when sequence starts)
+        self.current_dut_uid = None
+        
         # Temporary storage for plot data captured at the end of run_single_test
         # Key: test_name -> plot_data dictionary
         # This prevents plot data from being lost when the next test clears the plot arrays
@@ -1637,12 +1640,24 @@ class BaseGUI(QtWidgets.QMainWindow):
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
 
-        # Run buttons
+        # Run buttons and DUT UID input
         btn_layout = QtWidgets.QHBoxLayout()
         self.run_test_btn = QtWidgets.QPushButton('Run Selected Test')
         self.run_seq_btn = QtWidgets.QPushButton('Run Sequence')
+        
+        # DUT UID input field
+        dut_uid_label = QtWidgets.QLabel('DUT UID:')
+        self.dut_uid_input = QtWidgets.QLineEdit()
+        self.dut_uid_input.setPlaceholderText('Enter IPC UID number')
+        self.dut_uid_input.setMaximumWidth(200)
+        # Add integer validator (only positive integers allowed)
+        validator = QtGui.QIntValidator(1, 2147483647, self.dut_uid_input)
+        self.dut_uid_input.setValidator(validator)
+        
         btn_layout.addWidget(self.run_test_btn)
         btn_layout.addWidget(self.run_seq_btn)
+        btn_layout.addWidget(dut_uid_label)
+        btn_layout.addWidget(self.dut_uid_input)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -1975,6 +1990,10 @@ class BaseGUI(QtWidgets.QMainWindow):
             'parameters': params_str,
             'test_type': test_type
         }
+        
+        # Add DUT UID metadata if available (from current test sequence)
+        if hasattr(self, 'current_dut_uid') and self.current_dut_uid is not None:
+            exec_data['dut_uid'] = self.current_dut_uid
         
         # Store plot data for analog tests (make a copy to preserve data)
         if plot_data is not None:
@@ -2782,13 +2801,24 @@ Data Points Used: {data_points}"""
             return
         
         try:
+            # Extract DUT UID from execution data (should be same for all tests in sequence)
+            dut_uid = None
+            for exec_data in self._test_execution_data.values():
+                if 'dut_uid' in exec_data:
+                    dut_uid = exec_data.get('dut_uid')
+                    break
+            
             # Collect all test data
+            metadata = {
+                'report_type': 'Test Report',
+                'generated_at': datetime.now().isoformat() + 'Z',
+                'application': 'EOL Host Application'
+            }
+            if dut_uid is not None:
+                metadata['dut_uid'] = dut_uid
+            
             report_data = {
-                'metadata': {
-                    'report_type': 'Test Report',
-                    'generated_at': datetime.now().isoformat() + 'Z',
-                    'application': 'EOL Host Application'
-                },
+                'metadata': metadata,
                 'summary': {},
                 'tests': []
             }
@@ -2951,16 +2981,27 @@ Data Points Used: {data_points}"""
             html_parts.append('</head>')
             html_parts.append('<body>')
             
+            # Extract DUT UID from execution data (should be same for all tests in sequence)
+            dut_uid = None
+            for exec_data in self._test_execution_data.values():
+                if 'dut_uid' in exec_data:
+                    dut_uid = exec_data.get('dut_uid')
+                    break
+            
             # Header
             html_parts.append('<div class="header">')
             html_parts.append(f'<h1>Test Report</h1>')
             html_parts.append(f'<p>Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>')
+            if dut_uid is not None:
+                html_parts.append(f'<p><strong>DUT UID:</strong> {dut_uid}</p>')
             html_parts.append('</div>')
             
             # Summary
             html_parts.append('<div class="summary">')
             html_parts.append('<h2>Summary</h2>')
             html_parts.append('<table>')
+            if dut_uid is not None:
+                html_parts.append(f'<tr><td>DUT UID:</td><td>{dut_uid}</td></tr>')
             html_parts.append(f'<tr><td>Total Tests Executed:</td><td>{total_executed}</td></tr>')
             html_parts.append(f'<tr><td>Passed:</td><td class="status-pass">{pass_count}</td></tr>')
             html_parts.append(f'<tr><td>Failed:</td><td class="status-fail">{fail_count}</td></tr>')
@@ -3099,6 +3140,13 @@ Data Points Used: {data_points}"""
                 story = []
                 styles = getSampleStyleSheet()
                 
+                # Extract DUT UID from execution data (should be same for all tests in sequence)
+                dut_uid = None
+                for exec_data_temp in self._test_execution_data.values():
+                    if 'dut_uid' in exec_data_temp:
+                        dut_uid = exec_data_temp.get('dut_uid')
+                        break
+                
                 # Title
                 title_style = ParagraphStyle(
                     'CustomTitle',
@@ -3109,6 +3157,8 @@ Data Points Used: {data_points}"""
                 )
                 story.append(Paragraph('Test Report', title_style))
                 story.append(Paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
+                if dut_uid is not None:
+                    story.append(Paragraph(f'<b>DUT UID:</b> {dut_uid}', styles['Normal']))
                 story.append(Spacer(1, 0.2*inch))
                 
                 # Summary
@@ -3139,14 +3189,18 @@ Data Points Used: {data_points}"""
                 pass_rate = (pass_count / total_executed * 100) if total_executed > 0 else 0
                 
                 summary_data = [
-                    ['Metric', 'Value'],
+                    ['Metric', 'Value']
+                ]
+                if dut_uid is not None:
+                    summary_data.append(['DUT UID', str(dut_uid)])
+                summary_data.extend([
                     ['Total Tests Executed', str(total_executed)],
                     ['Passed', str(pass_count)],
                     ['Failed', str(fail_count)],
                     ['Errors', str(error_count)],
                     ['Pass Rate', f'{pass_rate:.1f}%'],
                     ['Total Execution Time', f'{total_time:.2f}s']
-                ]
+                ])
                 
                 summary_table = Table(summary_data)
                 summary_table.setStyle(TableStyle([
@@ -6001,6 +6055,11 @@ Data Points Used: {data_points}"""
         self.test_log.clear()
         self.status_label.setText('Results cleared')
         
+        # Clear DUT UID (user must enter it again for next test sequence)
+        if hasattr(self, 'dut_uid_input'):
+            self.dut_uid_input.clear()
+        self.current_dut_uid = None
+        
         # Repopulate Test Plan with "Not Run" statuses
         try:
             self._populate_test_plan()
@@ -6041,6 +6100,27 @@ Data Points Used: {data_points}"""
             QtWidgets.QMessageBox.warning(self, 'No Tests', 'No tests loaded. Please load a test profile from Test Configurator tab first.')
             return
         
+        # Check if DUT UID is populated
+        dut_uid_text = self.dut_uid_input.text().strip()
+        if not dut_uid_text:
+            logger.warning("Run Sequence called but DUT UID is not entered")
+            self.status_label.setText('DUT UID required')
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
+            QtWidgets.QMessageBox.warning(self, 'DUT UID Required', 'Please enter a DUT UID before running the test sequence.')
+            return
+        
+        # Validate DUT UID is a valid integer
+        try:
+            dut_uid = int(dut_uid_text)
+            if dut_uid <= 0:
+                raise ValueError("DUT UID must be a positive integer")
+        except ValueError as e:
+            logger.warning(f"Invalid DUT UID entered: {dut_uid_text}")
+            self.status_label.setText('Invalid DUT UID')
+            self.tabs_main.setCurrentIndex(self.status_tab_index)
+            QtWidgets.QMessageBox.warning(self, 'Invalid DUT UID', 'DUT UID must be a valid positive integer. Please enter a valid IPC UID number.')
+            return
+        
         # Check if CAN adapter is connected
         can_connected = False
         if self.can_service is not None:
@@ -6058,6 +6138,9 @@ Data Points Used: {data_points}"""
         
         # Switch to Test Status tab
         self.tabs_main.setCurrentIndex(self.status_tab_index)
+        
+        # Store DUT UID for this test sequence (will be included in reports)
+        self.current_dut_uid = dut_uid
         
         # Create and configure TestExecutionThread
         runner = TestRunner(self)
