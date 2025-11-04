@@ -34,6 +34,7 @@ import copy
 import base64
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any
+from html import escape
 
 from PySide6 import QtCore, QtGui, QtWidgets
 try:
@@ -1599,7 +1600,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._test_execution_data = {}
         
         # DUT UID for current test sequence (set when sequence starts)
-        self.current_dut_uid = None
+        # Type: Optional[int] - ensures type safety
+        self.current_dut_uid: Optional[int] = None
+        
+        # DUT UID cache for performance optimization
+        self._cached_dut_uid: Optional[int] = None
+        self._dut_uid_cache_valid: bool = False
         
         # Temporary storage for plot data captured at the end of run_single_test
         # Key: test_name -> plot_data dictionary
@@ -1624,6 +1630,172 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         return tab
 
+    def _get_dut_uid_from_execution_data(self, use_cache: bool = True) -> Optional[int]:
+        """Extract DUT UID from test execution data.
+        
+        The DUT UID is stored in each test's execution data when a sequence runs.
+        This method retrieves it from the first test that has it, since all tests
+        in a sequence share the same DUT UID.
+        
+        Args:
+            use_cache: If True, use cached value if available (performance optimization)
+        
+        Returns:
+            DUT UID as integer if found in any execution data, None otherwise.
+            
+        Note:
+            Returns None if no tests have been executed or if DUT UID was not
+            set during sequence execution (e.g., for manually run single tests).
+        """
+        if use_cache and self._dut_uid_cache_valid and self._cached_dut_uid is not None:
+            return self._cached_dut_uid
+        
+        for exec_data in self._test_execution_data.values():
+            dut_uid = exec_data.get('dut_uid')
+            if dut_uid is not None:
+                # Ensure it's an integer (type safety)
+                try:
+                    result = int(dut_uid)
+                    # Cache the result
+                    self._cached_dut_uid = result
+                    self._dut_uid_cache_valid = True
+                    return result
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid DUT UID type found in execution data: {type(dut_uid)}")
+                    continue
+        
+        # Not found - cache the "not found" result too
+        self._cached_dut_uid = None
+        self._dut_uid_cache_valid = True
+        return None
+    
+    def _get_validated_dut_uid(self) -> Tuple[Optional[int], Optional[str]]:
+        """Get and validate DUT UID from input field.
+        
+        Returns:
+            Tuple of (validated_dut_uid: Optional[int], error_message: Optional[str])
+            - If valid: (int, None)
+            - If empty: (None, "Please enter a DUT UID...")
+            - If invalid: (None, "Invalid DUT UID format...")
+        """
+        if not hasattr(self, 'dut_uid_input'):
+            return None, "DUT UID input field not available"
+        
+        dut_uid_text = self.dut_uid_input.text().strip()
+        
+        # Check if empty
+        if not dut_uid_text:
+            return None, "Please enter a DUT UID before running the test sequence."
+        
+        # Use validator to check format
+        validator = self.dut_uid_input.validator()
+        if validator is None:
+            # Fallback validation if validator not set
+            try:
+                dut_uid = int(dut_uid_text)
+                if dut_uid <= 0:
+                    return None, f'DUT UID must be a positive integer. Received: {dut_uid_text}'
+                return dut_uid, None
+            except ValueError:
+                return None, f'DUT UID must be a valid integer. Received: "{dut_uid_text}"'
+        
+        # Check validator state
+        state, value, pos = validator.validate(dut_uid_text, 0)
+        
+        if state == QtGui.QValidator.Acceptable:
+            try:
+                dut_uid = int(value)
+                if dut_uid <= 0:
+                    return None, f'DUT UID must be a positive integer. Received: {dut_uid}'
+                return dut_uid, None
+            except (ValueError, TypeError):
+                return None, f'Could not convert DUT UID to integer: "{value}"'
+        elif state == QtGui.QValidator.Intermediate:
+            return None, f'DUT UID is incomplete or invalid: "{dut_uid_text}"'
+        else:  # Invalid
+            return None, f'Invalid DUT UID format: "{dut_uid_text}". Must be a positive integer.'
+    
+    def _show_dut_uid_error(self, error_type: str, details: str = "") -> None:
+        """Show user-friendly DUT UID error message.
+        
+        Args:
+            error_type: Type of error ('empty', 'invalid_format', 'invalid_range', 'type_error')
+            details: Additional error details
+        """
+        messages = {
+            'empty': (
+                'DUT UID Required',
+                'Please enter a DUT UID before running the test sequence.\n\n'
+                'The DUT UID is the IPC UID number that identifies the device under test.'
+            ),
+            'invalid_format': (
+                'Invalid DUT UID Format',
+                f'DUT UID must be a valid positive integer.\n\n'
+                f'Received: "{details}"\n\n'
+                f'Please enter a number between 1 and 2,147,483,647.'
+            ),
+            'invalid_range': (
+                'DUT UID Out of Range',
+                f'DUT UID must be a positive integer.\n\n'
+                f'Received: {details}\n\n'
+                f'Please enter a number between 1 and 2,147,483,647.'
+            ),
+            'type_error': (
+                'DUT UID Type Error',
+                f'An unexpected error occurred while validating DUT UID.\n\n'
+                f'Details: {details}\n\n'
+                f'Please try entering the UID again or restart the application.'
+            )
+        }
+        
+        title, message = messages.get(error_type, (
+            'DUT UID Error',
+            f'An error occurred with the DUT UID input.\n\n{details}'
+        ))
+        
+        self.status_label.setText('DUT UID error')
+        self.tabs_main.setCurrentIndex(self.status_tab_index)
+        QtWidgets.QMessageBox.warning(self, title, message)
+        
+        # Focus input field for better UX
+        if hasattr(self, 'dut_uid_input'):
+            self.dut_uid_input.setFocus()
+            self.dut_uid_input.selectAll()
+    
+    def _invalidate_dut_uid_cache(self) -> None:
+        """Invalidate DUT UID cache when execution data changes."""
+        self._dut_uid_cache_valid = False
+        self._cached_dut_uid = None
+    
+    def _on_dut_uid_changed(self, text: str) -> None:
+        """Provide visual feedback on DUT UID input validity.
+        
+        Args:
+            text: Current text in DUT UID input field
+        """
+        if not hasattr(self, 'dut_uid_input'):
+            return
+        
+        validator = self.dut_uid_input.validator()
+        if validator is None:
+            return
+        
+        state, _, _ = validator.validate(text, 0)
+        
+        # Visual feedback with stylesheet
+        if not text.strip():
+            # Empty - neutral
+            self.dut_uid_input.setStyleSheet("")
+        elif state == QtGui.QValidator.Acceptable:
+            # Valid - green border
+            self.dut_uid_input.setStyleSheet("border: 2px solid green;")
+        elif state == QtGui.QValidator.Intermediate:
+            # Partial - yellow border
+            self.dut_uid_input.setStyleSheet("border: 2px solid orange;")
+        else:
+            # Invalid - red border
+            self.dut_uid_input.setStyleSheet("border: 2px solid red;")
+
     def _build_test_status(self):
         """Builds the Test Status tab widget and returns it.
         
@@ -1645,14 +1817,21 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.run_test_btn = QtWidgets.QPushButton('Run Selected Test')
         self.run_seq_btn = QtWidgets.QPushButton('Run Sequence')
         
-        # DUT UID input field
+        # DUT UID input field - required for test sequence execution
+        # Located next to Run buttons for easy access
         dut_uid_label = QtWidgets.QLabel('DUT UID:')
         self.dut_uid_input = QtWidgets.QLineEdit()
         self.dut_uid_input.setPlaceholderText('Enter IPC UID number')
         self.dut_uid_input.setMaximumWidth(200)
-        # Add integer validator (only positive integers allowed)
+        self.dut_uid_input.setToolTip('Enter IPC UID number for the test sequence')
+        
+        # Restrict input to positive integers only (1 to max 32-bit signed int)
+        # This prevents invalid data entry and ensures type consistency
         validator = QtGui.QIntValidator(1, 2147483647, self.dut_uid_input)
         self.dut_uid_input.setValidator(validator)
+        
+        # Connect text changed signal for visual feedback
+        self.dut_uid_input.textChanged.connect(self._on_dut_uid_changed)
         
         btn_layout.addWidget(self.run_test_btn)
         btn_layout.addWidget(self.run_seq_btn)
@@ -1992,8 +2171,17 @@ class BaseGUI(QtWidgets.QMainWindow):
         }
         
         # Add DUT UID metadata if available (from current test sequence)
-        if hasattr(self, 'current_dut_uid') and self.current_dut_uid is not None:
-            exec_data['dut_uid'] = self.current_dut_uid
+        # Ensure type safety - always store as integer
+        if self.current_dut_uid is not None:
+            try:
+                exec_data['dut_uid'] = int(self.current_dut_uid)
+            except (ValueError, TypeError) as e:
+                logger.error(
+                    f"Invalid DUT UID type in current_dut_uid: {type(self.current_dut_uid)}. "
+                    f"Value: {self.current_dut_uid}. Error: {e}"
+                )
+                # Don't store invalid UID - invalidate cache
+                self._invalidate_dut_uid_cache()
         
         # Store plot data for analog tests (make a copy to preserve data)
         if plot_data is not None:
@@ -2055,6 +2243,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         exec_data['notes'] = notes
         
         self._test_execution_data[test_name] = exec_data
+        
+        # Invalidate DUT UID cache since execution data changed
+        self._invalidate_dut_uid_cache()
         
         # Find existing row by test name
         existing_row = None
@@ -2801,12 +2992,8 @@ Data Points Used: {data_points}"""
             return
         
         try:
-            # Extract DUT UID from execution data (should be same for all tests in sequence)
-            dut_uid = None
-            for exec_data in self._test_execution_data.values():
-                if 'dut_uid' in exec_data:
-                    dut_uid = exec_data.get('dut_uid')
-                    break
+            # Extract DUT UID from execution data using helper method
+            dut_uid = self._get_dut_uid_from_execution_data()
             
             # Collect all test data
             metadata = {
@@ -2981,19 +3168,17 @@ Data Points Used: {data_points}"""
             html_parts.append('</head>')
             html_parts.append('<body>')
             
-            # Extract DUT UID from execution data (should be same for all tests in sequence)
-            dut_uid = None
-            for exec_data in self._test_execution_data.values():
-                if 'dut_uid' in exec_data:
-                    dut_uid = exec_data.get('dut_uid')
-                    break
+            # Extract DUT UID from execution data using helper method
+            dut_uid = self._get_dut_uid_from_execution_data()
             
             # Header
             html_parts.append('<div class="header">')
             html_parts.append(f'<h1>Test Report</h1>')
-            html_parts.append(f'<p>Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>')
+            html_parts.append(f'<p>Generated: {escape(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</p>')
             if dut_uid is not None:
-                html_parts.append(f'<p><strong>DUT UID:</strong> {dut_uid}</p>')
+                # Escape DUT UID to prevent XSS (defense in depth)
+                escaped_uid = escape(str(dut_uid))
+                html_parts.append(f'<p><strong>DUT UID:</strong> {escaped_uid}</p>')
             html_parts.append('</div>')
             
             # Summary
@@ -3001,13 +3186,15 @@ Data Points Used: {data_points}"""
             html_parts.append('<h2>Summary</h2>')
             html_parts.append('<table>')
             if dut_uid is not None:
-                html_parts.append(f'<tr><td>DUT UID:</td><td>{dut_uid}</td></tr>')
-            html_parts.append(f'<tr><td>Total Tests Executed:</td><td>{total_executed}</td></tr>')
-            html_parts.append(f'<tr><td>Passed:</td><td class="status-pass">{pass_count}</td></tr>')
-            html_parts.append(f'<tr><td>Failed:</td><td class="status-fail">{fail_count}</td></tr>')
-            html_parts.append(f'<tr><td>Errors:</td><td class="status-error">{error_count}</td></tr>')
-            html_parts.append(f'<tr><td>Pass Rate:</td><td>{pass_rate:.1f}%</td></tr>')
-            html_parts.append(f'<tr><td>Total Execution Time:</td><td>{total_time:.2f}s</td></tr>')
+                # Escape DUT UID for safety
+                escaped_uid = escape(str(dut_uid))
+                html_parts.append(f'<tr><td>DUT UID:</td><td>{escaped_uid}</td></tr>')
+            html_parts.append(f'<tr><td>Total Tests Executed:</td><td>{escape(str(total_executed))}</td></tr>')
+            html_parts.append(f'<tr><td>Passed:</td><td class="status-pass">{escape(str(pass_count))}</td></tr>')
+            html_parts.append(f'<tr><td>Failed:</td><td class="status-fail">{escape(str(fail_count))}</td></tr>')
+            html_parts.append(f'<tr><td>Errors:</td><td class="status-error">{escape(str(error_count))}</td></tr>')
+            html_parts.append(f'<tr><td>Pass Rate:</td><td>{escape(f"{pass_rate:.1f}%")}</td></tr>')
+            html_parts.append(f'<tr><td>Total Execution Time:</td><td>{escape(f"{total_time:.2f}s")}</td></tr>')
             html_parts.append('</table>')
             html_parts.append('</div>')
             
@@ -3022,13 +3209,15 @@ Data Points Used: {data_points}"""
                 status_class = 'status-pass' if status == 'PASS' else ('status-fail' if status == 'FAIL' else 'status-error')
                 
                 html_parts.append('<div class="test-section">')
-                html_parts.append(f'<h2>{test_name}</h2>')
+                html_parts.append(f'<h2>{escape(test_name)}</h2>')
                 html_parts.append('<div class="details">')
-                html_parts.append(f'<p><strong>Type:</strong> {test_type}</p>')
-                html_parts.append(f'<p><strong>Status:</strong> <span class="{status_class}">{status}</span></p>')
-                html_parts.append(f'<p><strong>Execution Time:</strong> {exec_time}</p>')
-                html_parts.append(f'<p><strong>Parameters:</strong> {params}</p>')
-                html_parts.append(f'<p><strong>Notes:</strong> {notes.replace(chr(10), "<br>")}</p>')
+                html_parts.append(f'<p><strong>Type:</strong> {escape(str(test_type))}</p>')
+                html_parts.append(f'<p><strong>Status:</strong> <span class="{status_class}">{escape(status)}</span></p>')
+                html_parts.append(f'<p><strong>Execution Time:</strong> {escape(str(exec_time))}</p>')
+                html_parts.append(f'<p><strong>Parameters:</strong> {escape(str(params))}</p>')
+                # Notes may contain newlines, escape but preserve line breaks
+                escaped_notes = escape(str(notes)).replace(chr(10), "<br>")
+                html_parts.append(f'<p><strong>Notes:</strong> {escaped_notes}</p>')
                 html_parts.append('</div>')
                 
                 # Calibration parameters for analog tests
@@ -3140,12 +3329,8 @@ Data Points Used: {data_points}"""
                 story = []
                 styles = getSampleStyleSheet()
                 
-                # Extract DUT UID from execution data (should be same for all tests in sequence)
-                dut_uid = None
-                for exec_data_temp in self._test_execution_data.values():
-                    if 'dut_uid' in exec_data_temp:
-                        dut_uid = exec_data_temp.get('dut_uid')
-                        break
+                # Extract DUT UID from execution data using helper method
+                dut_uid = self._get_dut_uid_from_execution_data()
                 
                 # Title
                 title_style = ParagraphStyle(
@@ -6050,15 +6235,21 @@ Data Points Used: {data_points}"""
         # Clear execution data statuses (preserve execution history, just reset status)
         for test_name in self._test_execution_data:
             self._test_execution_data[test_name]['status'] = 'Not Run'
+            # Remove DUT UID from execution data to ensure clean state
+            if 'dut_uid' in self._test_execution_data[test_name]:
+                del self._test_execution_data[test_name]['dut_uid']
         
         # Clear execution log
         self.test_log.clear()
         self.status_label.setText('Results cleared')
         
-        # Clear DUT UID (user must enter it again for next test sequence)
+        # Clear DUT UID input and state (user must enter it again for next test sequence)
         if hasattr(self, 'dut_uid_input'):
             self.dut_uid_input.clear()
+            self.dut_uid_input.setStyleSheet("")  # Reset visual feedback
+            self.dut_uid_input.setEnabled(True)   # Ensure enabled
         self.current_dut_uid = None
+        self._invalidate_dut_uid_cache()
         
         # Repopulate Test Plan with "Not Run" statuses
         try:
@@ -6100,25 +6291,29 @@ Data Points Used: {data_points}"""
             QtWidgets.QMessageBox.warning(self, 'No Tests', 'No tests loaded. Please load a test profile from Test Configurator tab first.')
             return
         
-        # Check if DUT UID is populated
-        dut_uid_text = self.dut_uid_input.text().strip()
-        if not dut_uid_text:
-            logger.warning("Run Sequence called but DUT UID is not entered")
-            self.status_label.setText('DUT UID required')
-            self.tabs_main.setCurrentIndex(self.status_tab_index)
-            QtWidgets.QMessageBox.warning(self, 'DUT UID Required', 'Please enter a DUT UID before running the test sequence.')
-            return
-        
-        # Validate DUT UID is a valid integer
-        try:
-            dut_uid = int(dut_uid_text)
-            if dut_uid <= 0:
-                raise ValueError("DUT UID must be a positive integer")
-        except ValueError as e:
-            logger.warning(f"Invalid DUT UID entered: {dut_uid_text}")
-            self.status_label.setText('Invalid DUT UID')
-            self.tabs_main.setCurrentIndex(self.status_tab_index)
-            QtWidgets.QMessageBox.warning(self, 'Invalid DUT UID', 'DUT UID must be a valid positive integer. Please enter a valid IPC UID number.')
+        # Check if DUT UID is populated and valid
+        dut_uid, error_msg = self._get_validated_dut_uid()
+        if dut_uid is None:
+            # Determine error type for better messaging
+            text = self.dut_uid_input.text().strip()
+            if not text:
+                error_type = 'empty'
+                details = ""
+            else:
+                try:
+                    val = int(text)
+                    if val <= 0:
+                        error_type = 'invalid_range'
+                        details = str(val)
+                    else:
+                        error_type = 'invalid_format'
+                        details = text
+                except ValueError:
+                    error_type = 'invalid_format'
+                    details = text
+            
+            logger.warning(f"Run Sequence called but DUT UID is invalid: {error_type} - {details}")
+            self._show_dut_uid_error(error_type, details)
             return
         
         # Check if CAN adapter is connected
@@ -6140,7 +6335,12 @@ Data Points Used: {data_points}"""
         self.tabs_main.setCurrentIndex(self.status_tab_index)
         
         # Store DUT UID for this test sequence (will be included in reports)
-        self.current_dut_uid = dut_uid
+        # Explicitly ensure integer type
+        self.current_dut_uid = int(dut_uid)
+        
+        # Disable DUT UID input during sequence execution to prevent changes
+        self.dut_uid_input.setEnabled(False)
+        self.dut_uid_input.setToolTip('DUT UID is locked during test sequence execution')
         
         # Create and configure TestExecutionThread
         runner = TestRunner(self)
@@ -6334,6 +6534,11 @@ Data Points Used: {data_points}"""
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}')
         
+        # Re-enable DUT UID input
+        if hasattr(self, 'dut_uid_input'):
+            self.dut_uid_input.setEnabled(True)
+            self.dut_uid_input.setToolTip('Enter IPC UID number for the next test sequence')
+        
         # Restore run button
         try:
             if hasattr(self, 'run_seq_btn'):
@@ -6357,6 +6562,11 @@ Data Points Used: {data_points}"""
         
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Test sequence was cancelled by user')
+        
+        # Re-enable DUT UID input
+        if hasattr(self, 'dut_uid_input'):
+            self.dut_uid_input.setEnabled(True)
+            self.dut_uid_input.setToolTip('Enter IPC UID number for the next test sequence')
         
         # Restore run button
         try:
