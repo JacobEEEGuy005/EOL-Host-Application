@@ -1299,6 +1299,19 @@ class BaseGUI(QtWidgets.QMainWindow):
         dbc_service: DbcService instance for DBC operations
         signal_service: SignalService instance for signal decoding
         
+        # DUT UID management
+        current_dut_uid (Optional[int]): The DUT (Device Under Test) UID for the 
+            current test sequence. Set when Run Sequence is executed and cleared 
+            when results are cleared. This UID is stored as metadata in all test 
+            execution data and displayed in test reports.
+        dut_uid_input (QLineEdit): Input field for entering DUT UID. Located in 
+            Test Status tab next to Run buttons. Validates for positive integers 
+            only. Required before running test sequences.
+        _cached_dut_uid (Optional[int]): Cached DUT UID value for performance 
+            optimization when generating multiple reports.
+        _dut_uid_cache_valid (bool): Flag indicating whether the DUT UID cache 
+            is valid and can be used.
+        
         # Phase 2: Async test execution
         test_execution_thread: TestExecutionThread instance (None when not running)
         
