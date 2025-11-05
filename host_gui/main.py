@@ -33,7 +33,7 @@ import shutil
 import copy
 import base64
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from html import escape
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -287,6 +287,14 @@ class TestRunner:
             logger.error("Attempted to run test without adapter running")
             raise RuntimeError('Adapter not running')
         act = test.get('actuation', {})
+        
+        # Initialize oscilloscope before phase current tests
+        if act.get('type') == 'phase_current_calibration':
+            if gui.oscilloscope_service:
+                osc_init_success = gui._initialize_oscilloscope_for_test(test)
+                if not osc_init_success:
+                    logger.warning("Oscilloscope initialization failed, continuing test anyway")
+        
         try:
             if act.get('type') == 'digital' and act.get('can_id') is not None:
                 can_id = act.get('can_id')
@@ -1437,6 +1445,9 @@ class BaseGUI(QtWidgets.QMainWindow):
             except Exception as e:
                 logger.warning(f"Failed to perform initial oscilloscope scan: {e}")
 
+        # Auto-load last used oscilloscope configuration
+        self._load_last_osc_config()
+
         self._load_dbcs()
         
         # Signal lookup cache: key = f"{can_id}:{signal_name}" -> (message, signal)
@@ -1543,6 +1554,173 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         return tab
     
+    def _build_oscilloscope_configurator(self) -> QtWidgets.QWidget:
+        """Builds the Oscilloscope Configuration tab widget.
+        
+        This tab allows users to:
+        - Create new oscilloscope configurations
+        - Edit existing configurations
+        - Load saved configurations
+        - Save configurations to JSON
+        - Apply configurations to connected oscilloscope
+        
+        Configuration includes:
+        - Channel settings (CH1-CH4): Enable, Name, Probe Attenuation, Unit
+        - Trigger settings: Channel, Type, Setting, Noise Reject
+        
+        Returns:
+            QWidget containing the Oscilloscope Configuration layout
+        """
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        
+        # Top: Action buttons (Create, Edit, Load, Save, Apply)
+        button_layout = QtWidgets.QHBoxLayout()
+        self.osc_config_create_btn = QtWidgets.QPushButton('Create Oscilloscope Configuration')
+        self.osc_config_edit_btn = QtWidgets.QPushButton('Edit Configuration')
+        self.osc_config_load_btn = QtWidgets.QPushButton('Load Configuration')
+        self.osc_config_save_btn = QtWidgets.QPushButton('Save Configuration')
+        self.osc_config_apply_btn = QtWidgets.QPushButton('Apply to Oscilloscope')
+        self.osc_config_apply_btn.setStyleSheet('font-weight: bold;')
+        button_layout.addWidget(self.osc_config_create_btn)
+        button_layout.addWidget(self.osc_config_edit_btn)
+        button_layout.addWidget(self.osc_config_load_btn)
+        button_layout.addWidget(self.osc_config_save_btn)
+        button_layout.addWidget(self.osc_config_apply_btn)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # Middle: Configuration Parameters
+        config_group = QtWidgets.QGroupBox('Configuration Parameters')
+        config_layout = QtWidgets.QVBoxLayout()
+        
+        # Channel Configuration Section
+        channel_group = QtWidgets.QGroupBox('Channel Configuration')
+        channel_layout = QtWidgets.QVBoxLayout()
+        
+        # Channel widgets storage
+        self.osc_channel_widgets = {}
+        
+        for ch_num in [1, 2, 3, 4]:
+            ch_key = f'CH{ch_num}'
+            ch_widget = QtWidgets.QWidget()
+            ch_form = QtWidgets.QFormLayout(ch_widget)
+            
+            # Enable checkbox
+            enable_cb = QtWidgets.QCheckBox()
+            enable_cb.setObjectName(f'osc_ch{ch_num}_enable')
+            self.osc_channel_widgets[f'{ch_key}_enable'] = enable_cb
+            # Use a lambda with proper closure capture
+            def make_enable_handler(ch):
+                return lambda state: self._on_osc_channel_enable_changed(ch, state == 2)
+            enable_cb.stateChanged.connect(make_enable_handler(ch_num))
+            ch_form.addRow('Enable:', enable_cb)
+            
+            # Channel Name
+            name_edit = QtWidgets.QLineEdit()
+            name_edit.setObjectName(f'osc_ch{ch_num}_name')
+            name_edit.setPlaceholderText(f'Enter channel name (e.g., Phase W Current)')
+            self.osc_channel_widgets[f'{ch_key}_name'] = name_edit
+            ch_form.addRow('Channel Name:', name_edit)
+            
+            # Probe Attenuation
+            probe_spin = QtWidgets.QDoubleSpinBox()
+            probe_spin.setObjectName(f'osc_ch{ch_num}_probe')
+            probe_spin.setRange(0.1, 1000.0)
+            probe_spin.setDecimals(1)
+            probe_spin.setSingleStep(0.1)
+            probe_spin.setValue(1.0)
+            self.osc_channel_widgets[f'{ch_key}_probe'] = probe_spin
+            ch_form.addRow('Probe Attenuation:', probe_spin)
+            
+            # Unit
+            unit_combo = QtWidgets.QComboBox()
+            unit_combo.setObjectName(f'osc_ch{ch_num}_unit')
+            unit_combo.addItems(['V', 'A'])
+            unit_combo.setCurrentText('V')
+            self.osc_channel_widgets[f'{ch_key}_unit'] = unit_combo
+            ch_form.addRow('Unit:', unit_combo)
+            
+            # Initially disable non-enable fields (CH2-CH4 default to disabled)
+            if ch_num == 1:
+                enable_cb.setChecked(True)
+            else:
+                enable_cb.setChecked(False)
+                name_edit.setEnabled(False)
+                probe_spin.setEnabled(False)
+                unit_combo.setEnabled(False)
+            
+            channel_layout.addWidget(ch_widget)
+        
+        channel_group.setLayout(channel_layout)
+        config_layout.addWidget(channel_group)
+        
+        # Trigger Configuration Section
+        trigger_group = QtWidgets.QGroupBox('Trigger Configuration')
+        trigger_layout = QtWidgets.QFormLayout()
+        
+        # Trigger Channel
+        self.osc_trigger_channel = QtWidgets.QComboBox()
+        self.osc_trigger_channel.addItems(['CH1', 'CH2', 'CH3', 'CH4'])
+        self.osc_trigger_channel.setCurrentText('CH1')
+        trigger_layout.addRow('Trigger Channel:', self.osc_trigger_channel)
+        
+        # Trigger Type (readonly, default Edge)
+        self.osc_trigger_type = QtWidgets.QComboBox()
+        self.osc_trigger_type.addItems(['Edge'])
+        self.osc_trigger_type.setCurrentText('Edge')
+        self.osc_trigger_type.setEnabled(False)  # User cannot change
+        trigger_layout.addRow('Trigger Type:', self.osc_trigger_type)
+        
+        # Trigger Setting
+        self.osc_trigger_setting = QtWidgets.QComboBox()
+        self.osc_trigger_setting.addItems(['Rising', 'Falling', 'Alternate'])
+        self.osc_trigger_setting.setCurrentText('Rising')
+        trigger_layout.addRow('Trigger Setting:', self.osc_trigger_setting)
+        
+        # Noise Reject
+        self.osc_noise_reject = QtWidgets.QCheckBox()
+        self.osc_noise_reject.setChecked(False)
+        trigger_layout.addRow('Noise Reject:', self.osc_noise_reject)
+        
+        trigger_group.setLayout(trigger_layout)
+        config_layout.addWidget(trigger_group)
+        
+        config_group.setLayout(config_layout)
+        layout.addWidget(config_group)
+        
+        # Status label
+        status_layout = QtWidgets.QHBoxLayout()
+        self.osc_config_status_label = QtWidgets.QLabel('Status: Not Applied')
+        self.osc_config_status_label.setStyleSheet('color: gray; font-weight: bold;')
+        status_layout.addWidget(self.osc_config_status_label)
+        status_layout.addStretch()
+        layout.addLayout(status_layout)
+        
+        # Bottom: Saved configurations list
+        saved_group = QtWidgets.QGroupBox('Saved Configurations')
+        saved_layout = QtWidgets.QVBoxLayout()
+        saved_info = QtWidgets.QLabel('Double-click to load a saved configuration')
+        saved_info.setStyleSheet('color: gray; font-size: 10px;')
+        saved_layout.addWidget(saved_info)
+        self.osc_config_list = QtWidgets.QListWidget()
+        self.osc_config_list.itemDoubleClicked.connect(self._on_osc_config_list_double_clicked)
+        saved_layout.addWidget(self.osc_config_list)
+        saved_group.setLayout(saved_layout)
+        layout.addWidget(saved_group, 1)
+        
+        # Wire buttons
+        self.osc_config_create_btn.clicked.connect(self._on_create_osc_config)
+        self.osc_config_edit_btn.clicked.connect(self._on_edit_osc_config)
+        self.osc_config_load_btn.clicked.connect(self._on_load_osc_config)
+        self.osc_config_save_btn.clicked.connect(self._on_save_osc_config)
+        self.osc_config_apply_btn.clicked.connect(self._on_apply_osc_config)
+        
+        # Refresh saved configurations list
+        self._refresh_osc_config_list()
+        
+        return tab
+    
     def _build_test_configurator(self):
         """Builds the Test Configurator tab widget and returns it.
         
@@ -1625,6 +1803,49 @@ class BaseGUI(QtWidgets.QMainWindow):
             'created_at': None,
             'updated_at': None
         }
+        
+        # Oscilloscope Configuration (initialized in _build_oscilloscope_configurator)
+        # Pre-initialize here in case tab isn't built yet
+        self._oscilloscope_config = {
+            'name': None,
+            'version': '1.0',
+            'created_at': None,
+            'updated_at': None,
+            'channels': {
+                'CH1': {
+                    'enabled': True,
+                    'channel_name': 'CH1',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                },
+                'CH2': {
+                    'enabled': False,
+                    'channel_name': 'CH2',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                },
+                'CH3': {
+                    'enabled': False,
+                    'channel_name': 'CH3',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                },
+                'CH4': {
+                    'enabled': False,
+                    'channel_name': 'CH4',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                }
+            },
+            'trigger': {
+                'channel': 'CH1',
+                'type': 'Edge',
+                'setting': 'Rising',
+                'noise_reject': False
+            }
+        }
+        self._osc_config_file_path = None  # Path to currently loaded config file
+        self._osc_config_applied = False  # Track if config was successfully applied
         
         # Test execution data storage: test_name -> {exec_time, notes, parameters}
         # Used to display details in popup when clicking Test Plan rows
@@ -3900,6 +4121,14 @@ Data Points Used: {data_points}"""
         except Exception as e:
             logger.error(f"Failed to build EOL H/W Configuration tab: {e}", exc_info=True)
         
+        # build Oscilloscope Configuration tab and wire into main_tabs
+        try:
+            osc_config_tab = self._build_oscilloscope_configurator()
+            # add as a top-level tab after EOL H/W Configuration
+            self.tabs_main.addTab(osc_config_tab, 'Oscilloscope Configuration')
+        except Exception as e:
+            logger.error(f"Failed to build Oscilloscope Configuration tab: {e}", exc_info=True)
+        
         # build Test Configurator tab and wire into main_tabs
         try:
             test_tab = self._build_test_configurator()
@@ -4838,6 +5067,542 @@ Data Points Used: {data_points}"""
                 self.eol_config_list.addItem(item)
         except Exception as e:
             logger.debug(f"Error refreshing EOL config list: {e}", exc_info=True)
+    
+    # Oscilloscope Configuration handlers
+    def _on_create_osc_config(self):
+        """Reset to default oscilloscope configuration."""
+        self._oscilloscope_config = {
+            'name': None,
+            'version': '1.0',
+            'created_at': None,
+            'updated_at': None,
+            'channels': {
+                'CH1': {
+                    'enabled': True,
+                    'channel_name': 'CH1',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                },
+                'CH2': {
+                    'enabled': False,
+                    'channel_name': 'CH2',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                },
+                'CH3': {
+                    'enabled': False,
+                    'channel_name': 'CH3',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                },
+                'CH4': {
+                    'enabled': False,
+                    'channel_name': 'CH4',
+                    'probe_attenuation': 1.0,
+                    'unit': 'V'
+                }
+            },
+            'trigger': {
+                'channel': 'CH1',
+                'type': 'Edge',
+                'setting': 'Rising',
+                'noise_reject': False
+            }
+        }
+        self._osc_config_file_path = None
+        self._osc_config_applied = False
+        self._update_osc_config_ui()
+        self.osc_config_status_label.setText('Status: Not Applied')
+        self.osc_config_status_label.setStyleSheet('color: gray; font-weight: bold;')
+        logger.info("Created new oscilloscope configuration")
+    
+    def _on_edit_osc_config(self):
+        """Edit current oscilloscope configuration (same as create, just updates UI)."""
+        # Editing is done directly in the UI, this just ensures UI is up to date
+        self._update_osc_config_ui()
+        logger.info("Editing oscilloscope configuration")
+    
+    def _on_load_osc_config(self):
+        """Load oscilloscope configuration from file."""
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'oscilloscope_configs')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        fname, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Load Oscilloscope Configuration',
+            default_dir,
+            'JSON Files (*.json);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        self._load_osc_config_from_file(fname)
+    
+    def _load_osc_config_from_file(self, fname: str):
+        """Load oscilloscope configuration from file path."""
+        try:
+            with open(fname, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            # Validate structure
+            if 'channels' not in config_data or 'trigger' not in config_data:
+                QtWidgets.QMessageBox.warning(self, 'Invalid File', 
+                    'Configuration file is missing required fields (channels or trigger).')
+                return
+            
+            # Validate and fix channel structure
+            for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+                if ch_key not in config_data['channels']:
+                    # Add default channel if missing
+                    config_data['channels'][ch_key] = {
+                        'enabled': False,
+                        'channel_name': ch_key,
+                        'probe_attenuation': 1.0,
+                        'unit': 'V'
+                    }
+                else:
+                    # Ensure all required fields exist
+                    ch = config_data['channels'][ch_key]
+                    ch.setdefault('enabled', False)
+                    ch.setdefault('channel_name', ch_key)
+                    ch.setdefault('probe_attenuation', 1.0)
+                    ch.setdefault('unit', 'V')
+            
+            # Validate trigger structure
+            trigger = config_data.get('trigger', {})
+            trigger.setdefault('channel', 'CH1')
+            trigger.setdefault('type', 'Edge')
+            trigger.setdefault('setting', 'Rising')
+            trigger.setdefault('noise_reject', False)
+            config_data['trigger'] = trigger
+            
+            # Set defaults for missing top-level fields
+            config_data.setdefault('version', '1.0')
+            config_data.setdefault('name', os.path.basename(fname).replace('.json', ''))
+            
+            self._oscilloscope_config = config_data
+            self._osc_config_file_path = fname
+            self._osc_config_applied = False
+            self._update_osc_config_ui()
+            self.osc_config_status_label.setText('Status: Not Applied')
+            self.osc_config_status_label.setStyleSheet('color: gray; font-weight: bold;')
+            
+            # Save path to QSettings for auto-load
+            if self.config_manager and self.config_manager._qsettings:
+                self.config_manager._qsettings.setValue('oscilloscope/last_config_path', fname)
+            
+            logger.info(f"Loaded oscilloscope configuration from {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Success', 
+                f'Oscilloscope Configuration loaded from:\n{os.path.basename(fname)}')
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse oscilloscope config JSON: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to parse JSON file: {e}')
+        except Exception as e:
+            logger.error(f"Failed to load oscilloscope config: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load configuration: {e}')
+    
+    def _on_save_osc_config(self):
+        """Save current oscilloscope configuration to file."""
+        # Collect values from UI
+        self._collect_osc_config_from_ui()
+        
+        # Validate configuration
+        is_valid, errors = self._validate_osc_config()
+        if not is_valid:
+            error_msg = 'Configuration validation failed:\n' + '\n'.join(errors)
+            QtWidgets.QMessageBox.warning(self, 'Validation Error', error_msg)
+            return
+        
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'oscilloscope_configs')
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        config_name = self._oscilloscope_config.get('name', 'oscilloscope_config')
+        default_filename = f"{config_name.replace(' ', '_')}.json"
+        
+        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Save Oscilloscope Configuration',
+            os.path.join(default_dir, default_filename),
+            'JSON Files (*.json);;All Files (*)'
+        )
+        
+        if not fname:
+            return
+        
+        try:
+            # Update timestamp
+            self._oscilloscope_config['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            if not self._oscilloscope_config.get('created_at'):
+                self._oscilloscope_config['created_at'] = self._oscilloscope_config['updated_at']
+            
+            with open(fname, 'w', encoding='utf-8') as f:
+                json.dump(self._oscilloscope_config, f, indent=2, ensure_ascii=False)
+            
+            self._osc_config_file_path = fname
+            
+            # Save path to QSettings for auto-load
+            if self.config_manager and self.config_manager._qsettings:
+                self.config_manager._qsettings.setValue('oscilloscope/last_config_path', fname)
+            
+            logger.info(f"Saved oscilloscope configuration to {os.path.basename(fname)}")
+            QtWidgets.QMessageBox.information(self, 'Success', 
+                f'Oscilloscope Configuration saved to:\n{os.path.basename(fname)}')
+            
+            # Refresh saved configurations list
+            self._refresh_osc_config_list()
+        except Exception as e:
+            logger.error(f"Failed to save oscilloscope config: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save configuration: {e}')
+    
+    def _on_apply_osc_config(self):
+        """Apply current oscilloscope configuration to connected oscilloscope."""
+        if self.oscilloscope_service is None:
+            QtWidgets.QMessageBox.warning(self, 'Oscilloscope Service', 
+                'Oscilloscope service not available. Please install PyVISA.')
+            return
+        
+        if not self.oscilloscope_service.is_connected():
+            QtWidgets.QMessageBox.warning(self, 'Not Connected', 
+                'Oscilloscope is not connected. Please connect first.')
+            return
+        
+        # Collect values from UI
+        self._collect_osc_config_from_ui()
+        
+        # Validate configuration
+        is_valid, errors = self._validate_osc_config()
+        if not is_valid:
+            error_msg = 'Configuration validation failed:\n' + '\n'.join(errors)
+            QtWidgets.QMessageBox.warning(self, 'Validation Error', error_msg)
+            return
+        
+        # Show progress dialog
+        progress = QtWidgets.QProgressDialog('Applying oscilloscope configuration...', 'Cancel', 0, 0, self)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setCancelButton(None)  # Don't allow cancel
+        progress.show()
+        QtWidgets.QApplication.processEvents()
+        
+        try:
+            # Apply configuration
+            success, errors = self.oscilloscope_service.apply_configuration(self._oscilloscope_config)
+            
+            progress.close()
+            
+            if success:
+                self._osc_config_applied = True
+                self.osc_config_status_label.setText('Status: Applied')
+                self.osc_config_status_label.setStyleSheet('color: green; font-weight: bold;')
+                logger.info("Oscilloscope configuration applied successfully")
+                QtWidgets.QMessageBox.information(self, 'Success', 
+                    'Oscilloscope configuration applied successfully!')
+            else:
+                self._osc_config_applied = False
+                self.osc_config_status_label.setText('Status: Apply Failed')
+                self.osc_config_status_label.setStyleSheet('color: red; font-weight: bold;')
+                error_msg = 'Failed to apply some settings:\n' + '\n'.join(errors)
+                logger.warning(f"Oscilloscope configuration apply failed: {errors}")
+                QtWidgets.QMessageBox.warning(self, 'Apply Failed', error_msg)
+        except Exception as e:
+            progress.close()
+            self._osc_config_applied = False
+            self.osc_config_status_label.setText('Status: Apply Error')
+            self.osc_config_status_label.setStyleSheet('color: red; font-weight: bold;')
+            logger.error(f"Error applying oscilloscope configuration: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to apply configuration: {e}')
+    
+    def _on_osc_config_list_double_clicked(self, item: QtWidgets.QListWidgetItem):
+        """Load configuration when double-clicked in list."""
+        if not item:
+            return
+        
+        filepath = item.data(QtCore.Qt.UserRole)
+        if not filepath or not os.path.exists(filepath):
+            QtWidgets.QMessageBox.warning(self, 'File Not Found', 
+                'Configuration file no longer exists.')
+            self._refresh_osc_config_list()
+            return
+        
+        self._load_osc_config_from_file(filepath)
+    
+    def _on_osc_channel_enable_changed(self, channel_num: int, enabled: bool):
+        """Handle channel enable/disable checkbox change."""
+        ch_key = f'CH{channel_num}'
+        
+        # Get widgets for this channel
+        name_widget = self.osc_channel_widgets.get(f'{ch_key}_name')
+        probe_widget = self.osc_channel_widgets.get(f'{ch_key}_probe')
+        unit_widget = self.osc_channel_widgets.get(f'{ch_key}_unit')
+        
+        if name_widget and probe_widget and unit_widget:
+            # Enable/disable fields based on checkbox
+            name_widget.setEnabled(enabled)
+            probe_widget.setEnabled(enabled)
+            unit_widget.setEnabled(enabled)
+            
+            # Update styling when disabled
+            if not enabled:
+                name_widget.setStyleSheet('color: gray;')
+                probe_widget.setStyleSheet('color: gray;')
+                unit_widget.setStyleSheet('color: gray;')
+            else:
+                name_widget.setStyleSheet('')
+                probe_widget.setStyleSheet('')
+                unit_widget.setStyleSheet('')
+        
+        # Update trigger channel dropdown if this channel becomes disabled and is selected as trigger
+        if hasattr(self, 'osc_trigger_channel'):
+            trigger_ch = self.osc_trigger_channel.currentText()
+            if not enabled and trigger_ch == ch_key:
+                # Switch to CH1 if available, otherwise find first enabled channel
+                if self.osc_channel_widgets.get('CH1_enable').isChecked():
+                    self.osc_trigger_channel.setCurrentText('CH1')
+                else:
+                    # Find first enabled channel
+                    for ch in ['CH1', 'CH2', 'CH3', 'CH4']:
+                        enable_widget = self.osc_channel_widgets.get(f'{ch}_enable')
+                        if enable_widget and enable_widget.isChecked():
+                            self.osc_trigger_channel.setCurrentText(ch)
+                            break
+    
+    def _collect_osc_config_from_ui(self):
+        """Collect configuration values from UI widgets into _oscilloscope_config."""
+        if not hasattr(self, 'osc_channel_widgets'):
+            return
+        
+        # Collect channel settings
+        for ch_num in [1, 2, 3, 4]:
+            ch_key = f'CH{ch_num}'
+            enable_widget = self.osc_channel_widgets.get(f'{ch_key}_enable')
+            name_widget = self.osc_channel_widgets.get(f'{ch_key}_name')
+            probe_widget = self.osc_channel_widgets.get(f'{ch_key}_probe')
+            unit_widget = self.osc_channel_widgets.get(f'{ch_key}_unit')
+            
+            if enable_widget and name_widget and probe_widget and unit_widget:
+                self._oscilloscope_config['channels'][ch_key] = {
+                    'enabled': enable_widget.isChecked(),
+                    'channel_name': name_widget.text().strip() or ch_key,
+                    'probe_attenuation': probe_widget.value(),
+                    'unit': unit_widget.currentText()
+                }
+        
+        # Collect trigger settings
+        if hasattr(self, 'osc_trigger_channel'):
+            self._oscilloscope_config['trigger'] = {
+                'channel': self.osc_trigger_channel.currentText(),
+                'type': self.osc_trigger_type.currentText(),
+                'setting': self.osc_trigger_setting.currentText(),
+                'noise_reject': self.osc_noise_reject.isChecked()
+            }
+    
+    def _update_osc_config_ui(self):
+        """Update UI widgets from _oscilloscope_config dictionary."""
+        if not hasattr(self, 'osc_channel_widgets'):
+            return
+        
+        # Update channel widgets
+        for ch_num in [1, 2, 3, 4]:
+            ch_key = f'CH{ch_num}'
+            ch_config = self._oscilloscope_config.get('channels', {}).get(ch_key, {})
+            
+            enable_widget = self.osc_channel_widgets.get(f'{ch_key}_enable')
+            name_widget = self.osc_channel_widgets.get(f'{ch_key}_name')
+            probe_widget = self.osc_channel_widgets.get(f'{ch_key}_probe')
+            unit_widget = self.osc_channel_widgets.get(f'{ch_key}_unit')
+            
+            if enable_widget:
+                enabled = ch_config.get('enabled', ch_num == 1)
+                enable_widget.setChecked(enabled)
+                # Trigger enable/disable handler
+                self._on_osc_channel_enable_changed(ch_num, enabled)
+            
+            if name_widget:
+                name_widget.setText(ch_config.get('channel_name', ch_key))
+            
+            if probe_widget:
+                probe_widget.setValue(ch_config.get('probe_attenuation', 1.0))
+            
+            if unit_widget:
+                unit = ch_config.get('unit', 'V')
+                index = unit_widget.findText(unit)
+                if index >= 0:
+                    unit_widget.setCurrentIndex(index)
+        
+        # Update trigger widgets
+        trigger_config = self._oscilloscope_config.get('trigger', {})
+        if hasattr(self, 'osc_trigger_channel'):
+            trigger_ch = trigger_config.get('channel', 'CH1')
+            index = self.osc_trigger_channel.findText(trigger_ch)
+            if index >= 0:
+                self.osc_trigger_channel.setCurrentIndex(index)
+        
+        if hasattr(self, 'osc_trigger_setting'):
+            setting = trigger_config.get('setting', 'Rising')
+            index = self.osc_trigger_setting.findText(setting)
+            if index >= 0:
+                self.osc_trigger_setting.setCurrentIndex(index)
+        
+        if hasattr(self, 'osc_noise_reject'):
+            self.osc_noise_reject.setChecked(trigger_config.get('noise_reject', False))
+    
+    def _validate_osc_config(self) -> Tuple[bool, List[str]]:
+        """Validate oscilloscope configuration.
+        
+        Returns:
+            Tuple of (is_valid: bool, errors: List[str])
+        """
+        errors = []
+        
+        # 1. Check channel name uniqueness
+        channel_names = []
+        for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+            ch_config = self._oscilloscope_config.get('channels', {}).get(ch_key, {})
+            if ch_config.get('enabled', False):
+                name = ch_config.get('channel_name', '').strip()
+                if not name:
+                    errors.append(f"{ch_key}: Channel name cannot be empty when enabled")
+                elif name in channel_names:
+                    errors.append(f"{ch_key}: Channel name '{name}' must be unique")
+                else:
+                    channel_names.append(name)
+        
+        # 2. Check trigger channel is enabled
+        trigger_ch = self._oscilloscope_config.get('trigger', {}).get('channel', 'CH1')
+        trigger_ch_config = self._oscilloscope_config.get('channels', {}).get(trigger_ch, {})
+        if not trigger_ch_config.get('enabled', False):
+            errors.append(f"Trigger channel {trigger_ch} must be enabled")
+        
+        # 3. Validate probe attenuation (must be > 0)
+        for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+            ch_config = self._oscilloscope_config.get('channels', {}).get(ch_key, {})
+            if ch_config.get('enabled', False):
+                att = ch_config.get('probe_attenuation', 1.0)
+                if att <= 0:
+                    errors.append(f"{ch_key}: Probe attenuation must be greater than 0")
+        
+        # 4. Validate unit (must be V or A)
+        for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+            ch_config = self._oscilloscope_config.get('channels', {}).get(ch_key, {})
+            if ch_config.get('enabled', False):
+                unit = ch_config.get('unit', 'V')
+                if unit not in ['V', 'A']:
+                    errors.append(f"{ch_key}: Unit must be 'V' or 'A'")
+        
+        return len(errors) == 0, errors
+    
+    def _refresh_osc_config_list(self):
+        """Refresh the list of saved oscilloscope configurations."""
+        if not hasattr(self, 'osc_config_list'):
+            return
+        
+        self.osc_config_list.clear()
+        
+        try:
+            config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'oscilloscope_configs')
+            if not os.path.exists(config_dir):
+                return
+            
+            config_files = []
+            for filename in os.listdir(config_dir):
+                if filename.endswith('.json'):
+                    filepath = os.path.join(config_dir, filename)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            config_data = json.load(f)
+                            config_name = config_data.get('name', filename.replace('.json', ''))
+                            updated_at = config_data.get('updated_at', '')
+                            item_text = config_name
+                            if updated_at:
+                                try:
+                                    dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                    item_text += f" (Updated: {dt.strftime('%Y-%m-%d %H:%M')})"
+                                except Exception:
+                                    pass
+                            config_files.append((item_text, filepath, os.path.getmtime(filepath)))
+                    except Exception:
+                        continue
+            
+            # Sort by modification time (newest first)
+            config_files.sort(key=lambda x: x[2], reverse=True)
+            
+            for item_text, filepath, _ in config_files:
+                item = QtWidgets.QListWidgetItem(item_text)
+                item.setData(QtCore.Qt.UserRole, filepath)
+                self.osc_config_list.addItem(item)
+        except Exception as e:
+            logger.debug(f"Error refreshing oscilloscope config list: {e}", exc_info=True)
+    
+    def _load_last_osc_config(self):
+        """Load the last used oscilloscope configuration from QSettings."""
+        try:
+            if self.config_manager and self.config_manager._qsettings:
+                last_config = self.config_manager._qsettings.value('oscilloscope/last_config_path', None)
+                if last_config and os.path.exists(last_config):
+                    self._load_osc_config_from_file(last_config)
+                    logger.info(f"Auto-loaded last oscilloscope configuration: {last_config}")
+        except Exception as e:
+            logger.warning(f"Failed to auto-load last oscilloscope config: {e}")
+    
+    def _initialize_oscilloscope_for_test(self, test: Dict[str, Any]) -> bool:
+        """Initialize oscilloscope before phase current test execution.
+        
+        This method applies the current oscilloscope configuration to the connected
+        oscilloscope as part of test initialization. It is called automatically
+        before phase current calibration tests.
+        
+        Args:
+            test: Test configuration dictionary
+        
+        Returns:
+            True if oscilloscope initialized successfully, False otherwise
+            Note: Returns False if oscilloscope not connected or test is not phase_current
+        """
+        # Check if test type is phase_current_calibration
+        act = test.get('actuation', {})
+        if act.get('type') != 'phase_current_calibration':
+            return True  # Not a phase current test, no initialization needed
+        
+        # Check if oscilloscope service is available and connected
+        if self.oscilloscope_service is None:
+            logger.warning("Oscilloscope service not available for phase current test")
+            return False
+        
+        if not self.oscilloscope_service.is_connected():
+            logger.warning("Oscilloscope not connected, cannot initialize for phase current test")
+            return False
+        
+        # Collect current configuration from UI if tab exists
+        if hasattr(self, 'osc_channel_widgets'):
+            self._collect_osc_config_from_ui()
+        
+        # Validate configuration
+        is_valid, errors = self._validate_osc_config()
+        if not is_valid:
+            logger.warning(f"Oscilloscope configuration validation failed: {errors}")
+            # Continue anyway, but log warning
+        
+        # Apply configuration
+        try:
+            logger.info("Initializing oscilloscope for phase current test...")
+            success, errors = self.oscilloscope_service.apply_configuration(self._oscilloscope_config)
+            
+            if success:
+                self._osc_config_applied = True
+                logger.info("Oscilloscope initialized successfully for phase current test")
+                return True
+            else:
+                logger.warning(f"Oscilloscope initialization completed with errors: {errors}")
+                # Continue test execution even if some settings failed
+                return len(errors) == 0  # Return True only if no errors
+        except Exception as e:
+            logger.error(f"Error initializing oscilloscope for phase current test: {e}", exc_info=True)
+            # Continue test execution even if initialization fails
+            return False
     
     def _check_dbc_loaded(self) -> bool:
         """Check if DBC is loaded, show message if not."""
