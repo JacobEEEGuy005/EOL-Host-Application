@@ -1,0 +1,38 @@
+{
+  "name": "oscilloscope config1",
+  "version": "1.0",
+  "created_at": "2025-11-05T19:26:57.468184Z",
+  "updated_at": "2025-11-05T19:27:13.092741Z",
+  "channels": {
+    "CH1": {
+      "enabled": true,
+      "channel_name": "Phase V Current",
+      "probe_attenuation": 811.9,
+      "unit": "A"
+    },
+    "CH2": {
+      "enabled": true,
+      "channel_name": "Phase W Current",
+      "probe_attenuation": 811.9,
+      "unit": "A"
+    },
+    "CH3": {
+      "enabled": false,
+      "channel_name": "CH3",
+      "probe_attenuation": 1.0,
+      "unit": "V"
+    },
+    "CH4": {
+      "enabled": false,
+      "channel_name": "CH4",
+      "probe_attenuation": 1.0,
+      "unit": "V"
+    }
+  },
+  "trigger": {
+    "channel": "CH1",
+    "type": "Edge",
+    "setting": "Rising",
+    "noise_reject": true
+  }
+}
