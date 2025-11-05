@@ -5241,8 +5241,25 @@ Data Points Used: {data_points}"""
         except Exception:
             default_dir = os.path.expanduser('~')
         
-        config_name = self._oscilloscope_config.get('name', 'oscilloscope_config')
+        # Get config name - use existing name or prompt user
+        config_name = self._oscilloscope_config.get('name')
+        if not config_name or config_name.strip() == '':
+            # Prompt for configuration name
+            name, ok = QtWidgets.QInputDialog.getText(
+                self, 
+                'Configuration Name', 
+                'Enter a name for this configuration:',
+                text='oscilloscope_config'
+            )
+            if not ok or not name.strip():
+                # User cancelled or entered empty name
+                return
+            config_name = name.strip()
+        
+        # Ensure filename has .json extension
         default_filename = f"{config_name.replace(' ', '_')}.json"
+        if not default_filename.endswith('.json'):
+            default_filename += '.json'
         
         fname, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, 'Save Oscilloscope Configuration',
@@ -5253,12 +5270,25 @@ Data Points Used: {data_points}"""
         if not fname:
             return
         
+        # Ensure saved filename has .json extension
+        if not fname.endswith('.json'):
+            fname += '.json'
+        
+        # Extract config name from filename if it was changed
+        file_basename = os.path.basename(fname)
+        if file_basename.endswith('.json'):
+            config_name_from_file = file_basename[:-5].replace('_', ' ')
+            if config_name_from_file:
+                config_name = config_name_from_file
+        
         try:
-            # Update timestamp
+            # Update configuration with name and timestamp
+            self._oscilloscope_config['name'] = config_name
             self._oscilloscope_config['updated_at'] = datetime.utcnow().isoformat() + 'Z'
             if not self._oscilloscope_config.get('created_at'):
                 self._oscilloscope_config['created_at'] = self._oscilloscope_config['updated_at']
             
+            # Write to file
             with open(fname, 'w', encoding='utf-8') as f:
                 json.dump(self._oscilloscope_config, f, indent=2, ensure_ascii=False)
             
@@ -5274,6 +5304,14 @@ Data Points Used: {data_points}"""
             
             # Refresh saved configurations list
             self._refresh_osc_config_list()
+        except PermissionError as e:
+            logger.error(f"Permission denied saving oscilloscope config: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Permission Error', 
+                f'Permission denied saving to:\n{os.path.basename(fname)}\n\nPlease check file permissions.')
+        except OSError as e:
+            logger.error(f"OS error saving oscilloscope config: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', 
+                f'Failed to save configuration:\n{str(e)}\n\nPlease check if the directory exists and is writable.')
         except Exception as e:
             logger.error(f"Failed to save oscilloscope config: {e}", exc_info=True)
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save configuration: {e}')
