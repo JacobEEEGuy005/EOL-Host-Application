@@ -1,6 +1,7 @@
 python-can
 python-can-csscan-serial
 canalystii
+pyusb
 cantools
 pyserial
 pytest

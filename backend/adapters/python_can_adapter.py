@@ -29,10 +29,34 @@ class PythonCanAdapter:
         self._stop = threading.Event()
         self._out_queue: list[Frame] = []
         self._lock = threading.Lock()
+        
+        # Validate Canalystii-specific parameters
+        if interface == 'canalystii':
+            if channel not in ('0', '1', 0, 1):
+                raise ValueError(f"Invalid Canalystii channel: {channel}. Must be '0' or '1'")
+            # Normalize channel to string for consistency
+            if isinstance(channel, int):
+                self.channel = str(channel)
+            # Validate bitrate if provided (Canalyst-II supports: 10k, 20k, 50k, 125k, 250k, 500k, 800k, 1000k bps)
+            if bitrate is not None:
+                valid_bitrates = [10000, 20000, 50000, 125000, 250000, 500000, 800000, 1000000]
+                if bitrate not in valid_bitrates:
+                    logger.warning(f"Uncommon bitrate for Canalystii: {bitrate} bps. "
+                                 f"Common values: {', '.join(str(b) for b in valid_bitrates)} bps")
 
     def open(self) -> None:
         if can is None:
             raise RuntimeError('python-can library not available')
+        
+        # Check if canalystii package is available when using canalystii interface
+        if self.interface == 'canalystii':
+            try:
+                import canalystii
+            except ImportError:
+                raise RuntimeError('Canalystii adapter requires the "canalystii" package. '
+                                'Install it with: pip install canalystii')
+            logger.debug(f"Opening Canalystii adapter: channel={self.channel}, bitrate={self.bitrate} bps")
+        
         kwargs = {}
         if self.bitrate is not None:
             try:
@@ -41,7 +65,14 @@ class PythonCanAdapter:
                 pass
         # interface may be None for python-can to auto-select default backends
         if self.interface:
-            self._bus = can.Bus(channel=self.channel, interface=self.interface, **kwargs)
+            try:
+                self._bus = can.Bus(channel=self.channel, interface=self.interface, **kwargs)
+                logger.debug(f"Successfully opened python-can Bus: interface={self.interface}, channel={self.channel}")
+            except Exception as e:
+                if self.interface == 'canalystii':
+                    raise RuntimeError(f'Failed to open Canalystii adapter: {e}. '
+                                     'Ensure the Canalyst-II device is connected and drivers are installed.') from e
+                raise
         else:
             self._bus = can.Bus(channel=self.channel, **kwargs)
 

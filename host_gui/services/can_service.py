@@ -163,13 +163,20 @@ class CanService:
                 
                 elif adapter_type in ('PythonCAN', 'Canalystii'):
                     if PythonCanAdapter is None:
-                        raise ValueError("PythonCAN adapter not available (python-can may not be installed)")
+                        if adapter_type == 'Canalystii':
+                            raise ValueError("Canalystii adapter not available (python-can may not be installed)")
+                        else:
+                            raise ValueError("PythonCAN adapter not available (python-can may not be installed)")
                     # PythonCAN and Canalystii both use PythonCanAdapter with different interfaces
                     interface_name = 'canalystii' if adapter_type == 'Canalystii' else None
                     br = self.bitrate
                     # Canalystii expects bitrate in bps, convert from kbps
                     if adapter_type == 'Canalystii' and br is not None:
                         br = br * 1000
+                        logger.debug(f"Canalystii bitrate converted from {self.bitrate} kbps to {br} bps")
+                    # Validate channel for Canalystii
+                    if adapter_type == 'Canalystii' and self.channel not in ('0', '1'):
+                        raise ValueError(f"Invalid Canalystii channel: {self.channel}. Must be '0' or '1'")
                     self.adapter = PythonCanAdapter(channel=self.channel, bitrate=br, interface=interface_name)
                     self.adapter.open()
                     self.adapter_name = adapter_type
