@@ -67,6 +67,9 @@ BO_ 272 Command: 8 Host_PC
  SG_ CMD_Relay_2 m16 : 17|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ CMD_Relay_3 m16 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ CMD_Relay_4 m16 : 19|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Mctrl_Phase_I_Test_Enable m20 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Mctrl_Set_Iq_Ref m20 : 32|16@1- (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
+ SG_ Mctrl_Set_Id_Ref m20 : 48|16@1- (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
 
 BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ DeviceID : 0|8@1+ (1,0) [0|255] ""  Host_PC
@@ -138,6 +141,9 @@ CM_ SG_ 272 RequestIPCData "Request Data from IPC";
 CM_ SG_ 272 CMD_Relay_2 "0 = Relay Off, 1 = Relay On";
 CM_ SG_ 272 CMD_Relay_3 "0 = Relay Off, 1 = Relay On";
 CM_ SG_ 272 CMD_Relay_4 "0 = Relay Off, 1 = Relay On";
+CM_ SG_ 272 Mctrl_Phase_I_Test_Enable "Set Enable Flag to start Phase Current Calibration";
+CM_ SG_ 272 Mctrl_Set_Iq_Ref "Set Quadrature Axis Current Reference for Phase Current Testing";
+CM_ SG_ 272 Mctrl_Set_Id_Ref "Set Direct Axis Current Reference for Phase Current Testing";
 CM_ BO_ 250 "Status and data messages from IPC Hardware to Host PC (MessageType determines content)";
 CM_ SG_ 250 DeviceID "Device ID (0x03 for IPC Hardware)";
 CM_ SG_ 250 MessageType "Message type identifier (multiplexor for payload interpretation)";
