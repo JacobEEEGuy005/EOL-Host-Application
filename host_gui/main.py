@@ -1378,6 +1378,17 @@ class BaseGUI(QtWidgets.QMainWindow):
         else:
             self.can_service = None
         
+        # Initialize oscilloscope service
+        try:
+            from host_gui.services.oscilloscope_service import OscilloscopeService
+            self.oscilloscope_service = OscilloscopeService()
+        except ImportError:
+            logger.warning("OscilloscopeService not available - PyVISA may not be installed")
+            self.oscilloscope_service = None
+        except Exception as e:
+            logger.warning(f"Failed to initialize OscilloscopeService: {e}", exc_info=True)
+            self.oscilloscope_service = None
+        
         if DbcService is not None:
             self.dbc_service = DbcService()
         else:
@@ -1418,6 +1429,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._build_toolbar()
         self._build_central()
         self._build_statusbar()
+
+        # Perform initial oscilloscope scan if service is available
+        if self.oscilloscope_service is not None:
+            try:
+                self._refresh_oscilloscopes()
+            except Exception as e:
+                logger.warning(f"Failed to perform initial oscilloscope scan: {e}")
 
         self._load_dbcs()
         
@@ -3706,6 +3724,45 @@ Data Points Used: {data_points}"""
         cs_layout.addRow(apply_btn)
         left_layout.addWidget(can_settings)
 
+        # Oscilloscope Connection section
+        osc_group = QtWidgets.QGroupBox('Oscilloscope Connection')
+        osc_layout = QtWidgets.QVBoxLayout(osc_group)
+        
+        # Oscilloscope dropdown
+        self.oscilloscope_combo = QtWidgets.QComboBox()
+        self.oscilloscope_combo.setToolTip('Select an available USBTMC oscilloscope')
+        # Initialize with placeholder if service not available
+        if self.oscilloscope_service is None:
+            self.oscilloscope_combo.addItem('PyVISA not available')
+            self.oscilloscope_combo.setEnabled(False)
+        osc_layout.addWidget(self.oscilloscope_combo)
+        
+        # Buttons layout
+        osc_btn_layout = QtWidgets.QHBoxLayout()
+        
+        # Refresh button
+        self.osc_refresh_btn = QtWidgets.QPushButton('Refresh')
+        self.osc_refresh_btn.clicked.connect(self._refresh_oscilloscopes)
+        if self.oscilloscope_service is None:
+            self.osc_refresh_btn.setEnabled(False)
+        osc_btn_layout.addWidget(self.osc_refresh_btn)
+        
+        # Connect/Disconnect button (will toggle)
+        self.osc_connect_btn = QtWidgets.QPushButton('Connect')
+        self.osc_connect_btn.clicked.connect(self._toggle_oscilloscope_connection)
+        if self.oscilloscope_service is None:
+            self.osc_connect_btn.setEnabled(False)
+        osc_btn_layout.addWidget(self.osc_connect_btn)
+        
+        osc_layout.addLayout(osc_btn_layout)
+        
+        # Status label
+        self.osc_status_label = QtWidgets.QLabel('Status: Disconnected')
+        self.osc_status_label.setStyleSheet('color: gray;')
+        osc_layout.addWidget(self.osc_status_label)
+        
+        left_layout.addWidget(osc_group)
+
         # when adapter selection changes, update available channels
         def _on_device_changed(text: str):
             text = (text or '').strip()
@@ -3904,6 +3961,112 @@ Data Points Used: {data_points}"""
             return
         # otherwise start using selected device
         self.toggle_adapter()
+
+    def _refresh_oscilloscopes(self) -> None:
+        """Refresh the list of available oscilloscopes."""
+        if self.oscilloscope_service is None:
+            QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
+                'Oscilloscope service not available. Please install PyVISA.')
+            return
+        
+        try:
+            # Clear and repopulate dropdown
+            self.oscilloscope_combo.clear()
+            
+            # Scan for devices
+            devices = self.oscilloscope_service.scan_for_devices()
+            
+            if not devices:
+                self.oscilloscope_combo.addItem('No devices found')
+                self.oscilloscope_combo.setEnabled(False)
+                logger.info("No USBTMC oscilloscopes found")
+            else:
+                for device in devices:
+                    # Try to get device info for display
+                    try:
+                        temp_resource = self.oscilloscope_service.resource_manager.open_resource(device)
+                        try:
+                            idn = temp_resource.query('*IDN?')
+                            # Format: "Manufacturer,Model,Serial,Version"
+                            parts = idn.split(',')
+                            if len(parts) >= 2:
+                                display_name = f"{parts[0].strip()} {parts[1].strip()}"
+                            else:
+                                display_name = idn.strip()
+                            self.oscilloscope_combo.addItem(f"{display_name} ({device})", device)
+                        except Exception:
+                            self.oscilloscope_combo.addItem(device, device)
+                        finally:
+                            temp_resource.close()
+                    except Exception:
+                        self.oscilloscope_combo.addItem(device, device)
+                
+                self.oscilloscope_combo.setEnabled(True)
+                logger.info(f"Found {len(devices)} oscilloscope(s)")
+        except Exception as e:
+            logger.error(f"Error refreshing oscilloscopes: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', 
+                f'Failed to scan for oscilloscopes:\n{e}')
+    
+    def _toggle_oscilloscope_connection(self) -> None:
+        """Toggle oscilloscope connection/disconnection."""
+        if self.oscilloscope_service is None:
+            QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
+                'Oscilloscope service not available.')
+            return
+        
+        if self.oscilloscope_service.is_connected():
+            # Disconnect
+            self.oscilloscope_service.disconnect()
+            self.osc_connect_btn.setText('Connect')
+            self.osc_status_label.setText('Status: Disconnected')
+            self.osc_status_label.setStyleSheet('color: gray;')
+            self.oscilloscope_combo.setEnabled(True)
+            self.osc_refresh_btn.setEnabled(True)
+            logger.info("Oscilloscope disconnected")
+        else:
+            # Connect
+            current_index = self.oscilloscope_combo.currentIndex()
+            if current_index < 0:
+                QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
+                    'Please select an oscilloscope first.')
+                return
+            
+            # Get resource string from combo box
+            resource = self.oscilloscope_combo.itemData(current_index)
+            if resource is None:
+                # Fallback to display text if no data
+                resource = self.oscilloscope_combo.currentText()
+                # Extract resource string if it's in parentheses
+                if '(' in resource and ')' in resource:
+                    resource = resource.split('(')[1].rstrip(')')
+            
+            if not resource or resource == 'No devices found':
+                QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
+                    'No oscilloscope selected or available.')
+                return
+            
+            # Connect
+            if self.oscilloscope_service.connect(resource):
+                self.osc_connect_btn.setText('Disconnect')
+                device_info = self.oscilloscope_service.get_device_info()
+                if device_info:
+                    # Extract manufacturer and model for display
+                    parts = device_info.split(',')
+                    if len(parts) >= 2:
+                        short_info = f"{parts[0].strip()} {parts[1].strip()}"
+                    else:
+                        short_info = device_info.strip()
+                    self.osc_status_label.setText(f'Status: Connected\n{short_info}')
+                else:
+                    self.osc_status_label.setText('Status: Connected')
+                self.osc_status_label.setStyleSheet('color: green;')
+                self.oscilloscope_combo.setEnabled(False)
+                self.osc_refresh_btn.setEnabled(False)
+                logger.info(f"Oscilloscope connected: {resource}")
+            else:
+                QtWidgets.QMessageBox.critical(self, 'Connection Error', 
+                    f'Failed to connect to oscilloscope:\n{resource}')
 
     def _open_test_menu(self):
         # Switch to Live tab for quick access to running frames
@@ -6635,6 +6798,16 @@ Data Points Used: {data_points}"""
                     logger.info("CanService disconnected")
             except Exception as e:
                 logger.warning(f"Error disconnecting CanService: {e}", exc_info=True)
+        
+        # Disconnect oscilloscope if connected
+        if self.oscilloscope_service is not None:
+            try:
+                if self.oscilloscope_service.is_connected():
+                    self.oscilloscope_service.disconnect()
+                    logger.info("OscilloscopeService disconnected")
+                self.oscilloscope_service.cleanup()
+            except Exception as e:
+                logger.warning(f"Error cleaning up OscilloscopeService: {e}", exc_info=True)
         
         # Stop polling timer
         try:
