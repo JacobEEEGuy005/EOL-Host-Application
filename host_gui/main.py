@@ -1596,7 +1596,18 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Channel Configuration Section
         channel_group = QtWidgets.QGroupBox('Channel Configuration')
-        channel_layout = QtWidgets.QVBoxLayout()
+        channel_group_layout = QtWidgets.QVBoxLayout()
+        
+        # Create scroll area for channel configuration
+        channel_scroll = QtWidgets.QScrollArea()
+        channel_scroll.setWidgetResizable(True)
+        channel_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        channel_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        
+        # Create container widget for channels
+        channel_container = QtWidgets.QWidget()
+        channel_layout = QtWidgets.QVBoxLayout(channel_container)
+        channel_layout.setContentsMargins(5, 5, 5, 5)
         
         # Channel widgets storage
         self.osc_channel_widgets = {}
@@ -1652,7 +1663,15 @@ class BaseGUI(QtWidgets.QMainWindow):
             
             channel_layout.addWidget(ch_widget)
         
-        channel_group.setLayout(channel_layout)
+        # Add stretch to push widgets to top
+        channel_layout.addStretch()
+        
+        # Set the container widget as the scroll area's widget
+        channel_scroll.setWidget(channel_container)
+        
+        # Add scroll area to channel group layout
+        channel_group_layout.addWidget(channel_scroll)
+        channel_group.setLayout(channel_group_layout)
         config_layout.addWidget(channel_group)
         
         # Trigger Configuration Section
