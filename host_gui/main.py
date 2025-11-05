@@ -1638,7 +1638,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             probe_spin = QtWidgets.QDoubleSpinBox()
             probe_spin.setObjectName(f'osc_ch{ch_num}_probe')
             probe_spin.setRange(0.1, 1000.0)
-            probe_spin.setDecimals(1)
+            probe_spin.setDecimals(6)
             probe_spin.setSingleStep(0.1)
             probe_spin.setValue(1.0)
             self.osc_channel_widgets[f'{ch_key}_probe'] = probe_spin
