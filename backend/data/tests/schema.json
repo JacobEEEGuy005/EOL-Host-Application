@@ -10,13 +10,128 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["digital","analog"]},
+          "type": {"type":"string","enum":["digital","analog","phase_current_calibration"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
             "oneOf": [
               {"properties": {"type":{"const":"digital"}, "can_id":{"type":"integer"}, "signal":{"type":"string"}, "value":{"type":["string","integer"]}}, "required":["can_id"]},
-              {"properties": {"type":{"const":"analog"}, "mux_channel":{"type":["integer","null"]}, "dac_can_id":{"type":"integer"}, "dac_command":{"type":"string"}}, "required":["dac_can_id"]}
+              {"properties": {"type":{"const":"analog"}, "mux_channel":{"type":["integer","null"]}, "dac_can_id":{"type":"integer"}, "dac_command":{"type":"string"}}, "required":["dac_can_id"]},
+              {
+                "properties": {
+                  "type": {"const":"phase_current_calibration"},
+                  "can_id": {"type":"integer"},
+                  "message_type": {"type":"integer"},
+                  "device_id": {"type":"integer"},
+                  "enable_signal": {"type":"string"},
+                  "id_ref_signal": {"type":"string"},
+                  "iq_ref_signal": {"type":"string"},
+                  "test_points": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id_ref": {"type":"number"},
+                        "iq_ref": {"type":"number"}
+                      },
+                      "required": ["id_ref", "iq_ref"]
+                    },
+                    "minItems": 1
+                  },
+                  "oscilloscope": {
+                    "type": "object",
+                    "properties": {
+                      "model": {"type":"string"},
+                      "connection": {
+                        "type": "object",
+                        "properties": {
+                          "type": {"type":"string", "enum":["usb", "ethernet", "serial"]},
+                          "address": {"type":"string"}
+                        },
+                        "required": ["type", "address"]
+                      },
+                      "channels": {
+                        "type": "object",
+                        "properties": {
+                          "channel_1": {
+                            "type": "object",
+                            "properties": {
+                              "name": {"type":"string"},
+                              "unit": {"type":"string"},
+                              "probe_attenuation": {"type":"number"},
+                              "scale": {"type":"number"}
+                            },
+                            "required": ["name", "unit", "probe_attenuation", "scale"]
+                          },
+                          "channel_2": {
+                            "type": "object",
+                            "properties": {
+                              "name": {"type":"string"},
+                              "unit": {"type":"string"},
+                              "probe_attenuation": {"type":"number"},
+                              "scale": {"type":"number"}
+                            },
+                            "required": ["name", "unit", "probe_attenuation", "scale"]
+                          }
+                        },
+                        "required": ["channel_1", "channel_2"]
+                      },
+                      "trigger": {
+                        "type": "object",
+                        "properties": {
+                          "mode": {"type":"string", "enum":["single", "normal", "auto"]},
+                          "source": {"type":"string"},
+                          "level_percent": {"type":"number", "minimum":0, "maximum":100}
+                        },
+                        "required": ["mode"]
+                      }
+                    },
+                    "required": ["model", "connection", "channels", "trigger"]
+                  },
+                  "timing": {
+                    "type": "object",
+                    "properties": {
+                      "pre_trigger_wait_ms": {"type":"integer", "minimum":0},
+                      "test_duration_ms": {"type":"integer", "minimum":1000},
+                      "extended_collection_ms": {"type":"integer", "minimum":3000}
+                    },
+                    "required": ["pre_trigger_wait_ms", "test_duration_ms", "extended_collection_ms"]
+                  },
+                  "data_collection": {
+                    "type": "object",
+                    "properties": {
+                      "can_message_id": {"type":"integer"},
+                      "can_message_type": {"type":"integer"},
+                      "phase_v_signal": {"type":"string"},
+                      "phase_w_signal": {"type":"string"},
+                      "sampling_rate_hz": {"type":"integer"}
+                    },
+                    "required": ["can_message_id", "can_message_type", "phase_v_signal", "phase_w_signal"]
+                  },
+                  "steady_state_detection": {
+                    "type": "object",
+                    "properties": {
+                      "derivative_window_ms": {"type":"integer"},
+                      "ramp_threshold_a_per_sec": {"type":"number"},
+                      "stability_duration_ms": {"type":"integer"},
+                      "drop_threshold_percent": {"type":"number"},
+                      "minimum_steady_state_duration_ms": {"type":"integer"},
+                      "minimum_samples": {"type":"integer"},
+                      "max_std_threshold_percent": {"type":"number"},
+                      "time_sync_tolerance_ms": {"type":"integer"}
+                    }
+                  }
+                },
+                "required": [
+                  "can_id",
+                  "message_type",
+                  "device_id",
+                  "test_points",
+                  "oscilloscope",
+                  "timing",
+                  "data_collection"
+                ]
+              }
             ]
           }
         }
