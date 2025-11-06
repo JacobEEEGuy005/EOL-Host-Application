@@ -5363,8 +5363,23 @@ Data Points Used: {data_points}"""
                     actual_enabled = None
                 else:
                     # Parse response - expect ON/OFF or 1/0
-                    tra_response_upper = tra_response.strip().upper()
-                    actual_enabled = tra_response_upper in ['ON', '1', 'TRUE']
+                    # Response format: "C1:TRA ON\n" or "C1:TRA OFF\n"
+                    tra_str = tra_response.strip()
+                    tra_str_upper = tra_str.upper()
+                    # Check if response contains ON, OFF, 1, or 0
+                    if 'ON' in tra_str_upper or tra_str_upper == '1' or 'TRUE' in tra_str_upper:
+                        actual_enabled = True
+                    elif 'OFF' in tra_str_upper or tra_str_upper == '0' or 'FALSE' in tra_str_upper:
+                        actual_enabled = False
+                    else:
+                        # Try to extract from formats like "C1:TRA ON" or "C1:TRA 1"
+                        tra_match = re.search(r'TRA\s+(\w+)', tra_str, re.IGNORECASE)
+                        if tra_match:
+                            tra_val = tra_match.group(1).upper()
+                            actual_enabled = tra_val in ['ON', '1', 'TRUE']
+                        else:
+                            # Default: try to parse as boolean from the string
+                            actual_enabled = tra_str_upper in ['ON', '1', 'TRUE']
                 
                 # Query probe attenuation (C1:ATTN?, C2:ATTN?, etc.)
                 time.sleep(0.2)  # Delay between queries
@@ -5375,15 +5390,21 @@ Data Points Used: {data_points}"""
                     actual_attenuation = None
                 else:
                     # Parse response - extract numeric value
+                    # Response format: "C1:ATTN 811.97\n"
                     try:
-                        # Response might be "C1:ATTN 100" or just "100"
                         attn_str = attn_response.strip()
-                        # Extract numeric value (handle formats like "C1:ATTN 100" or "100")
-                        match = re.search(r'([\d.]+)', attn_str)
-                        if match:
-                            actual_attenuation = float(match.group(1))
+                        # Extract number after "ATTN " to avoid matching channel number
+                        attn_match = re.search(r'ATTN\s+([\d.]+)', attn_str, re.IGNORECASE)
+                        if attn_match:
+                            actual_attenuation = float(attn_match.group(1))
                         else:
-                            actual_attenuation = float(attn_str)
+                            # Fallback: find all numbers and take the last one (avoiding channel number)
+                            all_numbers = re.findall(r'([\d.]+)', attn_str)
+                            if all_numbers:
+                                # Take the last number (should be the attenuation value)
+                                actual_attenuation = float(all_numbers[-1])
+                            else:
+                                actual_attenuation = float(attn_str)
                     except (ValueError, AttributeError):
                         errors.append(f"Channel {ch_num}: Invalid probe attenuation response: {attn_response}")
                         actual_attenuation = None
