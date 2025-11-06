@@ -17,8 +17,18 @@ import time
 import logging
 import re
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
+
+# Import matplotlib for plotting (optional)
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib_available = True
+except ImportError:
+    matplotlib = None
+    plt = None
+    matplotlib_available = False
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -101,6 +111,11 @@ class PhaseCurrentTestStateMachine:
         # State data
         self.osc_resource: Optional[str] = None
         self.command_message = None  # Will be set when DBC is loaded
+        self.ip_status_message = None  # Will be set when DBC is loaded
+        
+        # CAN data logging
+        self.collecting_can_data = False
+        self.collected_frames = []  # List of (timestamp, frame) tuples
         
     def run(self) -> bool:
         """Run the state machine until completion or error.
@@ -243,6 +258,14 @@ class PhaseCurrentTestStateMachine:
                 return False
             
             logger.info(f"Found Command message: {self.command_message.name}")
+            
+            # Find IP_Status_Data message (ID 250 = 0xFA)
+            self.ip_status_message = self.dbc_service.find_message_by_id(250)
+            if self.ip_status_message is None:
+                logger.error("IP_Status_Data message (ID 250) not found in DBC")
+                return False
+            
+            logger.info(f"Found IP_Status_Data message: {self.ip_status_message.name}")
         except Exception as e:
             logger.error(f"Failed to load DBC: {e}", exc_info=True)
             return False
@@ -585,6 +608,28 @@ class PhaseCurrentTestStateMachine:
                 return False
             
             logger.info("Test trigger message sent successfully")
+            
+            # Try to set hardware CAN filter for IP_Status_Data (CAN ID 250) if supported
+            # Use CanService.set_filters() which provides proper abstraction
+            if hasattr(self.can_service, 'set_filters'):
+                try:
+                    # Set hardware filter to only receive CAN ID 250 (0xFA)
+                    # Standard CAN ID mask: 0x7FF for 11-bit IDs, extended=False for standard CAN
+                    filter_set = self.can_service.set_filters([{'can_id': 250, 'can_mask': 0x7FF, 'extended': False}])
+                    if filter_set:
+                        logger.info("Enabled CAN hardware filter for ID 250 (IP_Status_Data)")
+                    else:
+                        logger.debug("CAN adapter does not support hardware filters (using software filtering)")
+                except Exception as e:
+                    logger.debug(f"Could not set CAN hardware filters (using software filtering): {e}")
+            else:
+                logger.debug("CAN service does not support filter configuration (using software filtering)")
+            
+            # Start collecting CAN data for PhaseVCurrent and PhaseWCurrent
+            logger.info("Starting CAN data collection for PhaseVCurrent and PhaseWCurrent...")
+            self.collecting_can_data = True
+            self.collected_frames = []
+            
             self.state = TestState.WAIT_AND_STOP
             return True
             
@@ -601,13 +646,36 @@ class PhaseCurrentTestStateMachine:
             return False
         
         try:
-            # Wait 4 seconds
-            time.sleep(4.0)
+            # Wait 4 seconds while collecting CAN data
+            # Poll for CAN frames during this time
+            start_time = time.time()
+            while time.time() - start_time < 4.0:
+                # Get frames from CAN service (non-blocking)
+                frame = self.can_service.get_frame(timeout=None)  # Non-blocking
+                if frame:
+                    if self.collecting_can_data and frame.can_id == 250:
+                        # Only collect IP_Status_Data frames (CAN ID 250)
+                        # Use frame timestamp if available, otherwise use current time
+                        frame_timestamp = getattr(frame, 'timestamp', None) or time.time()
+                        self.collected_frames.append((frame_timestamp, frame))
+                    # If frame doesn't match or we're not collecting, continue immediately
+                    # to check for next frame without sleeping
+                else:
+                    # Only sleep when queue is empty to avoid busy-waiting
+                    # Use shorter sleep for better responsiveness
+                    time.sleep(0.001)  # 1ms sleep when no frames available
+            
+            # Stop collecting CAN data
+            self.collecting_can_data = False
+            logger.info(f"Collected {len(self.collected_frames)} IP_Status_Data frames")
             
             # Send STOP command
             logger.info("Sending STOP command to stop data acquisition")
             self.oscilloscope_service.send_command("STOP")
             time.sleep(0.2)
+            
+            # Process collected CAN data
+            self._process_can_data()
             
             logger.info("Data acquisition stopped")
             self.state = TestState.DONE
@@ -616,6 +684,540 @@ class PhaseCurrentTestStateMachine:
         except Exception as e:
             logger.error(f"Failed in wait_and_stop: {e}", exc_info=True)
             return False
+    
+    def _detect_steady_state_regions(self, phase_v_values: List[float], 
+                                     phase_w_values: List[float], 
+                                     timestamps: List[float]) -> Tuple[Optional[int], Optional[int]]:
+        """Detect steady state regions by analyzing data characteristics.
+        
+        This method analyzes the phase current data to intelligently identify:
+        - Ramp-up period: When values are changing/increasing
+        - Steady-state period: When values are stable
+        - Ramp-down period: When values are decreasing
+        
+        Uses multiple techniques:
+        1. Moving window variance analysis
+        2. Rate of change (derivative) detection
+        3. Statistical stability detection
+        
+        Args:
+            phase_v_values: List of Phase V current values
+            phase_w_values: List of Phase W current values
+            timestamps: List of timestamps for each data point
+            
+        Returns:
+            Tuple of (ramp_up_end_index, ramp_down_start_index) or (None, None) if detection fails
+        """
+        import statistics
+        
+        total_points = len(phase_v_values)
+        if total_points < 10:
+            logger.warning(f"Insufficient data points ({total_points}) for steady state detection")
+            return None, None
+        
+        # First, identify and discard initial low current period (<1A)
+        # Find the start of actual ramp-up when current exceeds 1A (absolute value)
+        initial_discard_end = 0
+        current_threshold = 1.0  # Amperes
+        
+        for i in range(total_points):
+            # Check if either phase current exceeds threshold (absolute value)
+            abs_v = abs(phase_v_values[i])
+            abs_w = abs(phase_w_values[i])
+            if abs_v >= current_threshold or abs_w >= current_threshold:
+                initial_discard_end = i
+                break
+        
+        # If no point exceeds threshold, use first point as start
+        if initial_discard_end == 0 and (abs(phase_v_values[0]) >= current_threshold or 
+                                         abs(phase_w_values[0]) >= current_threshold):
+            initial_discard_end = 0
+        
+        # Log initial discard information
+        if initial_discard_end > 0:
+            logger.info(f"Discarding initial {initial_discard_end} points with current < {current_threshold} A")
+            logger.debug(f"  Initial period: V range [{min(abs(v) for v in phase_v_values[:initial_discard_end]):.3f}, "
+                        f"{max(abs(v) for v in phase_v_values[:initial_discard_end]):.3f}] A, "
+                        f"W range [{min(abs(w) for w in phase_w_values[:initial_discard_end]):.3f}, "
+                        f"{max(abs(w) for w in phase_w_values[:initial_discard_end]):.3f}] A")
+        
+        # Slice data to start from ramp-up beginning
+        analysis_start = initial_discard_end
+        phase_v_analysis = phase_v_values[analysis_start:]
+        phase_w_analysis = phase_w_values[analysis_start:]
+        timestamps_analysis = timestamps[analysis_start:] if len(timestamps) > analysis_start else timestamps
+        
+        analysis_points = len(phase_v_analysis)
+        if analysis_points < 10:
+            logger.warning(f"Insufficient data points ({analysis_points}) after discarding initial low current period")
+            return None, None
+        
+        # Calculate window size for moving statistics (use 5% of remaining data or minimum 5 points)
+        window_size = max(5, int(analysis_points * 0.05))
+        window_size = min(window_size, analysis_points // 4)  # Don't use more than 25% of data
+        
+        logger.info(f"Analyzing {analysis_points} data points (after discarding {initial_discard_end} initial points) with window size {window_size}")
+        
+        # Calculate moving averages and standard deviations for both phases
+        # Also calculate rate of change (derivative approximation)
+        # Use the sliced data for analysis
+        moving_std_v = []
+        moving_std_w = []
+        rate_of_change_v = []
+        rate_of_change_w = []
+        
+        for i in range(analysis_points):
+            # Moving window statistics
+            start_idx = max(0, i - window_size // 2)
+            end_idx = min(analysis_points, i + window_size // 2 + 1)
+            window_v = phase_v_analysis[start_idx:end_idx]
+            window_w = phase_w_analysis[start_idx:end_idx]
+            
+            # Calculate standard deviation in window
+            if len(window_v) > 1:
+                std_v = statistics.stdev(window_v)
+                std_w = statistics.stdev(window_w)
+            else:
+                std_v = 0.0
+                std_w = 0.0
+            
+            moving_std_v.append(std_v)
+            moving_std_w.append(std_w)
+            
+            # Calculate rate of change (derivative approximation)
+            if i > 0:
+                # Use time difference if available, otherwise assume uniform spacing
+                if len(timestamps_analysis) > i and timestamps_analysis[i] > timestamps_analysis[i-1]:
+                    dt = timestamps_analysis[i] - timestamps_analysis[i-1]
+                else:
+                    dt = 1.0  # Assume 1 unit time
+                
+                dv_dt = abs((phase_v_analysis[i] - phase_v_analysis[i-1]) / dt)
+                dw_dt = abs((phase_w_analysis[i] - phase_w_analysis[i-1]) / dt)
+            else:
+                dv_dt = 0.0
+                dw_dt = 0.0
+            
+            rate_of_change_v.append(dv_dt)
+            rate_of_change_w.append(dw_dt)
+        
+        # Calculate thresholds for stability
+        # Use median + scaled median absolute deviation for robust threshold
+        def median_absolute_deviation(data):
+            if not data:
+                return 0.0
+            median = statistics.median(data)
+            deviations = [abs(x - median) for x in data]
+            return statistics.median(deviations) if deviations else 0.0
+        
+        # Combined metrics for both phases
+        combined_std = [(v + w) / 2.0 for v, w in zip(moving_std_v, moving_std_w)]
+        combined_rate = [(v + w) / 2.0 for v, w in zip(rate_of_change_v, rate_of_change_w)]
+        
+        # Calculate stability thresholds
+        median_std = statistics.median(combined_std)
+        mad_std = median_absolute_deviation(combined_std)
+        std_threshold = median_std + 2.0 * mad_std  # Threshold for "stable" variance
+        
+        median_rate = statistics.median(combined_rate)
+        mad_rate = median_absolute_deviation(combined_rate)
+        rate_threshold = median_rate + 2.0 * mad_rate  # Threshold for "stable" rate of change
+        
+        logger.debug(f"Stability thresholds - Std: {std_threshold:.4f}, Rate: {rate_threshold:.4f}")
+        
+        # Find ramp-up end (start of steady state)
+        # Look for point where both std and rate of change drop below thresholds
+        # Start from beginning and find first stable region
+        # Note: These indices are relative to the analysis_start
+        ramp_up_end_relative = None
+        stable_window_count = 0
+        required_stable_points = max(3, window_size // 2)
+        
+        for i in range(window_size, analysis_points - window_size):
+            # Check if this point and surrounding points are stable
+            is_stable_std = combined_std[i] <= std_threshold
+            is_stable_rate = combined_rate[i] <= rate_threshold
+            
+            if is_stable_std and is_stable_rate:
+                stable_window_count += 1
+                if stable_window_count >= required_stable_points:
+                    ramp_up_end_relative = i - required_stable_points
+                    break
+            else:
+                stable_window_count = 0
+        
+        # If no clear ramp-up end found, use a conservative estimate
+        if ramp_up_end_relative is None:
+            # Find point where rate of change first drops significantly
+            for i in range(window_size, analysis_points // 2):
+                if combined_rate[i] <= rate_threshold:
+                    # Check if next few points are also stable
+                    if all(combined_rate[j] <= rate_threshold 
+                           for j in range(i, min(i + required_stable_points, analysis_points))):
+                        ramp_up_end_relative = i
+                        break
+        
+        # Fallback: use 10% of remaining data if still not found
+        if ramp_up_end_relative is None:
+            ramp_up_end_relative = max(1, int(analysis_points * 0.1))
+            logger.warning(f"Could not detect ramp-up end, using conservative estimate: {ramp_up_end_relative}")
+        
+        # Find ramp-down start (end of steady state)
+        # Look backwards from end for point where std or rate increases
+        # Note: These indices are relative to the analysis_start
+        ramp_down_start_relative = None
+        stable_window_count = 0
+        
+        for i in range(analysis_points - window_size, ramp_up_end_relative + window_size, -1):
+            # Check if this point and surrounding points are stable
+            is_stable_std = combined_std[i] <= std_threshold
+            is_stable_rate = combined_rate[i] <= rate_threshold
+            
+            if is_stable_std and is_stable_rate:
+                stable_window_count += 1
+                if stable_window_count >= required_stable_points:
+                    ramp_down_start_relative = i + required_stable_points
+                    break
+            else:
+                stable_window_count = 0
+        
+        # If no clear ramp-down start found, look for increasing rate of change
+        if ramp_down_start_relative is None:
+            for i in range(analysis_points - window_size, ramp_up_end_relative + window_size, -1):
+                if combined_rate[i] > rate_threshold * 1.5:  # Significant increase
+                    # Check if this is sustained (look at points after i)
+                    check_end = min(i + required_stable_points, analysis_points)
+                    if all(combined_rate[j] > rate_threshold 
+                           for j in range(i, check_end)):
+                        ramp_down_start_relative = i
+                        break
+        
+        # Fallback: use 90% of remaining data if still not found
+        if ramp_down_start_relative is None:
+            ramp_down_start_relative = min(analysis_points - 1, int(analysis_points * 0.9))
+            logger.warning(f"Could not detect ramp-down start, using conservative estimate: {ramp_down_start_relative}")
+        
+        # Ensure we have a valid steady state region
+        if ramp_up_end_relative >= ramp_down_start_relative:
+            # Use middle 60% of remaining data as fallback
+            ramp_up_end_relative = int(analysis_points * 0.2)
+            ramp_down_start_relative = int(analysis_points * 0.8)
+            logger.warning("Steady state region too small, using fallback boundaries")
+        
+        # Convert relative indices back to absolute indices (accounting for initial discard)
+        ramp_up_end = analysis_start + ramp_up_end_relative
+        ramp_down_start = analysis_start + ramp_down_start_relative
+        
+        # Log detection results
+        steady_state_points = ramp_down_start - ramp_up_end
+        logger.info(f"Steady state detection results:")
+        if initial_discard_end > 0:
+            logger.info(f"  Initial low current discarded: {initial_discard_end} points ({initial_discard_end/total_points*100:.1f}%)")
+        logger.info(f"  Ramp-up end: index {ramp_up_end} ({ramp_up_end/total_points*100:.1f}%)")
+        logger.info(f"  Ramp-down start: index {ramp_down_start} ({ramp_down_start/total_points*100:.1f}%)")
+        logger.info(f"  Steady state points: {steady_state_points} ({steady_state_points/total_points*100:.1f}%)")
+        
+        # Calculate and log statistics of detected regions
+        if initial_discard_end > 0:
+            initial_v = phase_v_values[:initial_discard_end]
+            initial_w = phase_w_values[:initial_discard_end]
+            logger.debug(f"  Initial low current: {len(initial_v)} points, V range: [{min(initial_v):.3f}, {max(initial_v):.3f}] A, "
+                        f"W range: [{min(initial_w):.3f}, {max(initial_w):.3f}] A")
+        
+        if ramp_up_end > initial_discard_end:
+            ramp_up_v = phase_v_values[initial_discard_end:ramp_up_end]
+            ramp_up_w = phase_w_values[initial_discard_end:ramp_up_end]
+            logger.debug(f"  Ramp-up: {len(ramp_up_v)} points, V range: [{min(ramp_up_v):.3f}, {max(ramp_up_v):.3f}] A, "
+                        f"W range: [{min(ramp_up_w):.3f}, {max(ramp_up_w):.3f}] A")
+        
+        steady_v = phase_v_values[ramp_up_end:ramp_down_start]
+        steady_w = phase_w_values[ramp_up_end:ramp_down_start]
+        if steady_v:
+            logger.debug(f"  Steady state: {len(steady_v)} points, V range: [{min(steady_v):.3f}, {max(steady_v):.3f}] A, "
+                        f"W range: [{min(steady_w):.3f}, {max(steady_w):.3f}] A")
+        
+        if ramp_down_start < total_points:
+            ramp_down_v = phase_v_values[ramp_down_start:]
+            ramp_down_w = phase_w_values[ramp_down_start:]
+            logger.debug(f"  Ramp-down: {len(ramp_down_v)} points, V range: [{min(ramp_down_v):.3f}, {max(ramp_down_v):.3f}] A, "
+                        f"W range: [{min(ramp_down_w):.3f}, {max(ramp_down_w):.3f}] A")
+        
+        return ramp_up_end, ramp_down_start
+    
+    def _process_can_data(self) -> None:
+        """Process collected CAN data to extract steady-state PhaseVCurrent and PhaseWCurrent.
+        
+        Discards data during ramp up and ramp down periods, then calculates
+        average steady-state current values.
+        """
+        if not self.collected_frames:
+            logger.warning("No CAN data collected to process")
+            return
+        
+        if self.ip_status_message is None:
+            logger.error("IP_Status_Data message not available for decoding")
+            return
+        
+        logger.info("=" * 70)
+        logger.info("Processing CAN Data - Phase Current Analysis")
+        logger.info("=" * 70)
+        
+        # Pre-allocate lists with estimated size for better performance
+        estimated_frames = len(self.collected_frames)
+        phase_v_values = []
+        phase_w_values = []
+        timestamps = []
+        # Reserve space if possible (Python lists don't have reserve, but this documents intent)
+        
+        # Extract PhaseVCurrent and PhaseWCurrent from collected frames
+        decode_errors = 0
+        for timestamp, frame in self.collected_frames:
+            # Quick validation before decoding
+            if not hasattr(frame, 'data') or not frame.data or len(frame.data) == 0:
+                decode_errors += 1
+                continue
+            
+            try:
+                # Decode the frame using DBC service
+                decoded = self.dbc_service.decode_message(self.ip_status_message, frame.data)
+                
+                # Check for required signals before appending
+                if 'PhaseVCurrent' in decoded and 'PhaseWCurrent' in decoded:
+                    phase_v_values.append(decoded['PhaseVCurrent'])
+                    phase_w_values.append(decoded['PhaseWCurrent'])
+                    timestamps.append(timestamp)
+                else:
+                    # Missing required signals - log only if unexpected
+                    decode_errors += 1
+                    logger.debug(f"Frame at {timestamp} missing PhaseVCurrent or PhaseWCurrent signals")
+            except Exception as e:
+                # Only log if it's not a common/expected error
+                decode_errors += 1
+                error_str = str(e)
+                if 'PhaseVCurrent' not in error_str and 'PhaseWCurrent' not in error_str:
+                    logger.debug(f"Failed to decode frame at {timestamp}: {e}")
+                continue
+        
+        if decode_errors > 0:
+            logger.debug(f"Encountered {decode_errors} decode errors or missing signals (out of {len(self.collected_frames)} frames)")
+        
+        if not phase_v_values or not phase_w_values:
+            logger.warning("No valid PhaseVCurrent/PhaseWCurrent data found in collected frames")
+            return
+        
+        logger.info(f"Total data points collected: {len(phase_v_values)}")
+        
+        # Analyze data to intelligently detect steady state regions
+        # This replaces hardcoded 20%/80% discard logic with data-driven analysis
+        ramp_up_end, ramp_down_start = self._detect_steady_state_regions(
+            phase_v_values, phase_w_values, timestamps
+        )
+        
+        if ramp_up_end is None or ramp_down_start is None:
+            logger.warning("Could not identify steady state regions from data")
+            return
+        
+        if ramp_up_end >= ramp_down_start:
+            logger.warning("Not enough data points to identify steady state")
+            return
+        
+        # Extract steady state data based on detected boundaries
+        steady_state_v = phase_v_values[ramp_up_end:ramp_down_start]
+        steady_state_w = phase_w_values[ramp_up_end:ramp_down_start]
+        
+        if not steady_state_v or not steady_state_w:
+            logger.warning("No steady state data available after filtering")
+            return
+        
+        # Calculate averages
+        avg_phase_v = sum(steady_state_v) / len(steady_state_v)
+        avg_phase_w = sum(steady_state_w) / len(steady_state_w)
+        
+        # Calculate standard deviations for quality check
+        import statistics
+        try:
+            std_phase_v = statistics.stdev(steady_state_v) if len(steady_state_v) > 1 else 0.0
+            std_phase_w = statistics.stdev(steady_state_w) if len(steady_state_w) > 1 else 0.0
+        except Exception:
+            std_phase_v = 0.0
+            std_phase_w = 0.0
+        
+        # Print results
+        total_points = len(phase_v_values)
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("STEADY STATE CURRENT ANALYSIS RESULTS")
+        logger.info("=" * 70)
+        logger.info(f"Total data points: {total_points}")
+        logger.info(f"Ramp up period (discarded): {ramp_up_end} points ({ramp_up_end/total_points*100:.1f}%)")
+        logger.info(f"Steady state period: {len(steady_state_v)} points ({len(steady_state_v)/total_points*100:.1f}%)")
+        logger.info(f"Ramp down period (discarded): {total_points - ramp_down_start} points ({(total_points - ramp_down_start)/total_points*100:.1f}%)")
+        logger.info("")
+        logger.info(f"Average Phase V Current: {avg_phase_v:.3f} A (std: {std_phase_v:.3f} A)")
+        logger.info(f"Average Phase W Current: {avg_phase_w:.3f} A (std: {std_phase_w:.3f} A)")
+        logger.info("")
+        logger.info("=" * 70)
+        
+        # Also print to console for easy visibility
+        print("\n" + "=" * 70)
+        print("STEADY STATE CURRENT ANALYSIS RESULTS")
+        print("=" * 70)
+        print(f"Average Phase V Current: {avg_phase_v:.3f} A")
+        print(f"Average Phase W Current: {avg_phase_w:.3f} A")
+        print("=" * 70 + "\n")
+        
+        # Plot the phase currents vs time
+        self._plot_phase_currents(timestamps, phase_v_values, phase_w_values, 
+                                   ramp_up_end, ramp_down_start)
+    
+    def _plot_phase_currents(self, timestamps: List[float], phase_v_values: List[float], 
+                             phase_w_values: List[float], ramp_up_end: int, ramp_down_start: int) -> None:
+        """Plot PhaseVCurrent and PhaseWCurrent vs time.
+        
+        Args:
+            timestamps: List of timestamps for each data point
+            phase_v_values: List of PhaseVCurrent values
+            phase_w_values: List of PhaseWCurrent values
+            ramp_up_end: Index where ramp up ends (steady state starts)
+            ramp_down_start: Index where steady state ends (ramp down starts)
+        """
+        if not matplotlib_available:
+            logger.warning("Matplotlib not available - skipping plot generation")
+            logger.warning("Install matplotlib to enable plotting: pip install matplotlib")
+            return
+        
+        if not timestamps or not phase_v_values or not phase_w_values:
+            logger.warning("No data available for plotting")
+            return
+        
+        try:
+            # Calculate relative time (seconds from first timestamp)
+            if len(timestamps) > 1:
+                start_time = timestamps[0]
+                time_relative = [(t - start_time) for t in timestamps]
+            else:
+                time_relative = [0.0]
+            
+            # Create figure with subplots
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+            
+            # Plot Phase V Current
+            ax1.plot(time_relative, phase_v_values, 'b-', linewidth=1.5, label='Phase V Current', alpha=0.7)
+            
+            # Identify initial low current period (<1A) to show as discarded
+            current_threshold = 1.0
+            initial_discard_end = 0
+            for i in range(len(phase_v_values)):
+                if abs(phase_v_values[i]) >= current_threshold or abs(phase_w_values[i]) >= current_threshold:
+                    initial_discard_end = i
+                    break
+            
+            # Plot regions: Red for discarded (initial low current, ramp-up, and ramp-down), Green for steady-state
+            # Initial low current region (discarded): from start to where current exceeds 1A
+            if initial_discard_end > 0 and initial_discard_end < len(time_relative):
+                ax1.axvspan(time_relative[0], time_relative[initial_discard_end],
+                           alpha=0.3, color='orange', label='Initial Low Current <1A (discarded)')
+            
+            # Ramp-up region (discarded): from initial_discard_end to ramp_up_end
+            if ramp_up_end > initial_discard_end and ramp_up_end < len(time_relative):
+                ax1.axvspan(time_relative[initial_discard_end], time_relative[ramp_up_end],
+                           alpha=0.3, color='red', label='Ramp Up (discarded)')
+            
+            # Steady-state region (used): from ramp_up_end to ramp_down_start
+            if ramp_up_end < ramp_down_start and ramp_down_start <= len(time_relative):
+                steady_start_idx = min(ramp_up_end, len(time_relative) - 1)
+                steady_end_idx = min(ramp_down_start - 1, len(time_relative) - 1)
+                if steady_start_idx <= steady_end_idx:
+                    ax1.axvspan(time_relative[steady_start_idx], time_relative[steady_end_idx],
+                               alpha=0.3, color='green', label='Steady State (used)')
+            
+            # Ramp-down region (discarded): from ramp_down_start to end
+            if ramp_down_start < len(time_relative):
+                ax1.axvspan(time_relative[ramp_down_start], time_relative[-1],
+                           alpha=0.3, color='red', label='Ramp Down (discarded)')
+            
+            ax1.set_ylabel('Phase V Current (A)', fontsize=12)
+            ax1.set_title('Phase Currents vs Time (from CAN Data)', fontsize=14, fontweight='bold')
+            ax1.grid(True, alpha=0.3)
+            ax1.legend(loc='best')
+            
+            # Plot Phase W Current
+            ax2.plot(time_relative, phase_w_values, 'r-', linewidth=1.5, label='Phase W Current', alpha=0.7)
+            
+            # Plot regions: Red for discarded (initial low current, ramp-up, and ramp-down), Green for steady-state
+            # Initial low current region (discarded): from start to where current exceeds 1A
+            if initial_discard_end > 0 and initial_discard_end < len(time_relative):
+                ax2.axvspan(time_relative[0], time_relative[initial_discard_end],
+                           alpha=0.3, color='orange', label='Initial Low Current <1A (discarded)')
+            
+            # Ramp-up region (discarded): from initial_discard_end to ramp_up_end
+            if ramp_up_end > initial_discard_end and ramp_up_end < len(time_relative):
+                ax2.axvspan(time_relative[initial_discard_end], time_relative[ramp_up_end],
+                           alpha=0.3, color='red', label='Ramp Up (discarded)')
+            
+            # Steady-state region (used): from ramp_up_end to ramp_down_start
+            if ramp_up_end < ramp_down_start and ramp_down_start <= len(time_relative):
+                steady_start_idx = min(ramp_up_end, len(time_relative) - 1)
+                steady_end_idx = min(ramp_down_start - 1, len(time_relative) - 1)
+                if steady_start_idx <= steady_end_idx:
+                    ax2.axvspan(time_relative[steady_start_idx], time_relative[steady_end_idx],
+                               alpha=0.3, color='green', label='Steady State (used)')
+            
+            # Ramp-down region (discarded): from ramp_down_start to end
+            if ramp_down_start < len(time_relative):
+                ax2.axvspan(time_relative[ramp_down_start], time_relative[-1],
+                           alpha=0.3, color='red', label='Ramp Down (discarded)')
+            
+            ax2.set_xlabel('Time (seconds)', fontsize=12)
+            ax2.set_ylabel('Phase W Current (A)', fontsize=12)
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(loc='best')
+            
+            # Adjust layout
+            plt.tight_layout()
+            
+            # Save plot to file
+            plot_filename = f'phase_currents_plot_{int(time.time())}.png'
+            plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
+            logger.info(f"Plot saved to: {plot_filename}")
+            print(f"\nPlot saved to: {plot_filename}")
+            
+            # Show plot (blocking to ensure window stays open)
+            try:
+                # Check if we have a display
+                import os
+                has_display = ('DISPLAY' in os.environ or 
+                             sys.platform == 'win32' or 
+                             sys.platform == 'darwin')
+                
+                if has_display:
+                    logger.info("Displaying plot window...")
+                    print("\n" + "=" * 70)
+                    print("DISPLAYING PLOT WINDOW")
+                    print("=" * 70)
+                    print("A plot window should appear showing Phase V and Phase W currents vs time.")
+                    print("Close the plot window to continue.")
+                    print("=" * 70 + "\n")
+                    plt.show(block=True)  # Block to keep window open until user closes it
+                    logger.info("Plot window closed by user")
+                    print("Plot window closed.\n")
+                else:
+                    plt.close()
+                    logger.info("No display available - plot saved only")
+                    print("No display available - plot saved to file only")
+            except Exception as e:
+                # If display is not available, just save the file
+                plt.close()
+                logger.warning(f"Could not display plot (saved to file): {e}")
+                print(f"Could not display plot window: {e}")
+                print(f"Plot saved to file: {plot_filename}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create plot: {e}", exc_info=True)
+            try:
+                plt.close('all')
+            except Exception:
+                pass
     
     def _cleanup(self):
         """Clean up resources."""
