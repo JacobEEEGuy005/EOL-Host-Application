@@ -660,12 +660,14 @@ class PhaseCurrentTestStateMachine:
         self.ipc_test_duration_ms = self.act.get('ipc_test_duration_ms', 1000)
         
         # CAN message and signal configuration
-        self.cmd_msg_id = self.act.get('cmd_msg_id')
+        # Default to 272 (0x110) if not specified, matching test script
+        self.cmd_msg_id = self.act.get('cmd_msg_id', 272)
         self.trigger_signal = self.act.get('trigger_test_signal', 'Mctrl_Phase_I_Test_Enable')
         self.iq_ref_signal = self.act.get('iq_ref_signal', 'Mctrl_Set_Iq_Ref')
         self.id_ref_signal = self.act.get('id_ref_signal', 'Mctrl_Set_Id_Ref')
         
-        self.phase_current_can_id = self.act.get('phase_current_can_id')
+        # Default to 250 (0xFA) if not specified, matching test script
+        self.phase_current_can_id = self.act.get('phase_current_can_id', 250)
         self.phase_current_v_signal = self.act.get('phase_current_v_signal', 'PhaseVCurrent')
         self.phase_current_w_signal = self.act.get('phase_current_w_signal', 'PhaseWCurrent')
         
@@ -676,7 +678,7 @@ class PhaseCurrentTestStateMachine:
         
         # CAN data collection
         self.collecting_can_data = False
-        self.collected_frames = []  # List of (timestamp, frame) tuples
+        self.collected_signals = []  # List of (timestamp, phase_v_value, phase_w_value) tuples
         
         # Oscilloscope waveform data
         self.ch1_waveform_data = None
@@ -723,23 +725,58 @@ class PhaseCurrentTestStateMachine:
                     self._stop_acquisition_and_logging()
                     continue
                 
-                # Step 6: Wait for test duration (collect CAN frames during wait)
+                # Step 6: Wait for test duration (collect CAN signals during wait)
                 wait_start = time.time()
                 wait_duration = self.ipc_test_duration_ms / 1000.0
                 poll_interval = 0.1  # Poll every 100ms
                 
+                logger.info(f"Starting signal collection for {wait_duration:.2f}s (CAN ID: {self.phase_current_can_id}, "
+                           f"Signals: {self.phase_current_v_signal}, {self.phase_current_w_signal})")
+                
                 while time.time() - wait_start < wait_duration:
-                    # Collect CAN frames during wait
-                    if self.collecting_can_data and self.can_service:
-                        frames_collected = 0
-                        max_frames_per_poll = 50
-                        while frames_collected < max_frames_per_poll and not self.can_service.frame_queue.empty():
-                            try:
-                                frame = self.can_service.frame_queue.get_nowait()
-                                self.collected_frames.append((time.time(), frame))
-                                frames_collected += 1
-                            except queue.Empty:
-                                break
+                    # Collect decoded signals from SignalService cache during wait
+                    # Note: Frames are decoded by _poll_frames() and cached in SignalService,
+                    # so we collect from the cache instead of competing for raw frames
+                    if self.collecting_can_data and self.signal_service:
+                        try:
+                            # Get latest signal values from cache
+                            v_timestamp, v_val = self.signal_service.get_latest_signal(
+                                self.phase_current_can_id, 
+                                self.phase_current_v_signal
+                            )
+                            w_timestamp, w_val = self.signal_service.get_latest_signal(
+                                self.phase_current_can_id,
+                                self.phase_current_w_signal
+                            )
+                            
+                            # Debug: Log if signals are missing
+                            if v_val is None:
+                                logger.debug(f"Phase V Current not found in cache (CAN ID: {self.phase_current_can_id}, Signal: {self.phase_current_v_signal})")
+                            if w_val is None:
+                                logger.debug(f"Phase W Current not found in cache (CAN ID: {self.phase_current_can_id}, Signal: {self.phase_current_w_signal})")
+                            
+                            # If both signals are available and we haven't collected this sample yet
+                            if v_val is not None and w_val is not None:
+                                # Use the most recent timestamp
+                                signal_timestamp = max(
+                                    v_timestamp or time.time(),
+                                    w_timestamp or time.time()
+                                )
+                                
+                                # Check if this is a new sample (avoid duplicates)
+                                # Compare with last collected sample if available
+                                is_new_sample = True
+                                if self.collected_signals:
+                                    last_timestamp, last_v, last_w = self.collected_signals[-1]
+                                    # If timestamps are very close (< 1ms), likely the same sample
+                                    if abs(signal_timestamp - last_timestamp) < 0.001:
+                                        is_new_sample = False
+                                
+                                if is_new_sample:
+                                    logger.info(f"Phase V Current: {v_val} A, Phase W Current: {w_val} A")
+                                    self.collected_signals.append((signal_timestamp, v_val, w_val))
+                        except Exception as e:
+                            logger.warning(f"Failed to collect signals from cache: {e}", exc_info=True)
                     
                     # Process Qt events to keep UI responsive
                     if hasattr(self.gui, 'processEvents'):
@@ -747,6 +784,7 @@ class PhaseCurrentTestStateMachine:
                     elif hasattr(QtCore.QCoreApplication, 'processEvents'):
                         QtCore.QCoreApplication.processEvents()
                     
+                    # Sleep to avoid excessive polling (frames are decoded by _poll_frames periodically)
                     time.sleep(poll_interval)
                 
                 # Step 7: Stop oscilloscope and CAN logging
@@ -949,7 +987,7 @@ class PhaseCurrentTestStateMachine:
         # Start CAN data logging
         if self.can_service and self.can_service.is_connected():
             self.collecting_can_data = True
-            self.collected_frames = []
+            self.collected_signals = []
             logger.info("Started CAN data logging")
         
         return True
@@ -1026,7 +1064,7 @@ class PhaseCurrentTestStateMachine:
         
         # Stop CAN data logging
         self.collecting_can_data = False
-        logger.info(f"Stopped CAN data logging (collected {len(self.collected_frames)} frames)")
+        logger.info(f"Stopped CAN data logging (collected {len(self.collected_signals)} signal samples)")
     
     def _analyze_data(self) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
         """Analyze oscilloscope and CAN data to compute steady state averages.
@@ -1195,56 +1233,22 @@ class PhaseCurrentTestStateMachine:
         Returns:
             Tuple of (v_avg, w_avg)
         """
-        if not self.signal_service or not self.dbc_service:
+        if not self.collected_signals:
+            logger.warning("No CAN signals collected")
             return None, None
         
-        if not self.collected_frames:
-            logger.warning("No CAN frames collected")
-            return None, None
-        
-        # Find phase current message if not cached
-        if self.phase_current_message is None:
-            if self.phase_current_can_id is None:
-                logger.error("Phase current message ID not specified")
-                return None, None
-            self.phase_current_message = self.dbc_service.find_message_by_id(self.phase_current_can_id)
-            if self.phase_current_message is None:
-                logger.error(f"Phase current message (ID {self.phase_current_can_id}) not found in DBC")
-                return None, None
-        
-        # Decode frames and extract signal values
+        # Extract signal values and timestamps (already decoded)
         v_values = []
         w_values = []
         timestamps = []
         
-        for timestamp, frame in self.collected_frames:
-            # Only process frames matching the phase current message ID
-            if getattr(frame, 'can_id', None) != self.phase_current_can_id:
-                continue
-            
-            try:
-                # Decode frame using signal service
-                signal_values = self.signal_service.decode_frame(frame)
-                
-                # Extract phase current signals
-                v_val = None
-                w_val = None
-                for sv in signal_values:
-                    if sv.signal_name == self.phase_current_v_signal:
-                        v_val = sv.value
-                    elif sv.signal_name == self.phase_current_w_signal:
-                        w_val = sv.value
-                
-                if v_val is not None and w_val is not None:
-                    v_values.append(v_val)
-                    w_values.append(w_val)
-                    timestamps.append(sv.timestamp if hasattr(sv, 'timestamp') else timestamp)
-            except Exception as e:
-                logger.debug(f"Failed to decode frame: {e}")
-                continue
+        for timestamp, v_val, w_val in self.collected_signals:
+            v_values.append(v_val)
+            w_values.append(w_val)
+            timestamps.append(timestamp)
         
         if not v_values or not w_values:
-            logger.warning("No valid phase current data found in CAN frames")
+            logger.warning("No valid phase current data found in collected signals")
             return None, None
         
         # Analyze steady state
@@ -1346,47 +1350,16 @@ class TestRunner:
             try:
                 state_machine = PhaseCurrentTestStateMachine(gui, test)
                 
-                # Hook CAN frame collection during test
-                original_poll = getattr(gui, '_poll_frames', None)
-                if original_poll:
-                    def _poll_frames_with_collection():
-                        original_poll()
-                        # Collect frames for phase current test
-                        if hasattr(gui, '_phase_current_state_machine'):
-                            sm = gui._phase_current_state_machine
-                            if sm and sm.collecting_can_data and gui.can_service:
-                                # Collect frames from queue
-                                frames_collected = 0
-                                max_frames_per_poll = 100
-                                while frames_collected < max_frames_per_poll and not gui.can_service.frame_queue.empty():
-                                    try:
-                                        frame = gui.can_service.frame_queue.get_nowait()
-                                        sm.collected_frames.append((time.time(), frame))
-                                        frames_collected += 1
-                                    except queue.Empty:
-                                        break
-                    
-                    gui._phase_current_state_machine = state_machine
-                    gui._poll_frames = _poll_frames_with_collection
-                    
-                    try:
-                        success, info = state_machine.run()
-                        return success, info
-                    finally:
-                        # Restore original poll function
-                        if original_poll:
-                            gui._poll_frames = original_poll
-                        if hasattr(gui, '_phase_current_state_machine'):
-                            delattr(gui, '_phase_current_state_machine')
-                else:
-                    # Fallback: collect frames directly during test
-                    gui._phase_current_state_machine = state_machine
-                    try:
-                        success, info = state_machine.run()
-                        return success, info
-                    finally:
-                        if hasattr(gui, '_phase_current_state_machine'):
-                            delattr(gui, '_phase_current_state_machine')
+                # Store state machine reference for potential future use
+                gui._phase_current_state_machine = state_machine
+                
+                try:
+                    success, info = state_machine.run()
+                    return success, info
+                finally:
+                    # Clean up state machine reference
+                    if hasattr(gui, '_phase_current_state_machine'):
+                        delattr(gui, '_phase_current_state_machine')
             except Exception as e:
                 logger.error(f"Phase current test execution failed: {e}", exc_info=True)
                 return False, f"Phase current test error: {e}"

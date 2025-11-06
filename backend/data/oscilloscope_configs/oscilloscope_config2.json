@@ -2,7 +2,7 @@
   "name": "oscilloscope config2",
   "version": "1.0",
   "created_at": "2025-11-05T19:26:57.468184Z",
-  "updated_at": "2025-11-05T19:32:34.575494Z",
+  "updated_at": "2025-11-06T21:15:52.679980Z",
   "channels": {
     "CH1": {
       "enabled": true,
@@ -30,9 +30,12 @@
     }
   },
   "trigger": {
-    "channel": "CH2",
+    "channel": "CH1",
     "type": "Edge",
     "setting": "Rising",
-    "noise_reject": false
+    "noise_reject": true
+  },
+  "acquisition": {
+    "timebase_ms": 500.0
   }
 }
