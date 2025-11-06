@@ -19,6 +19,23 @@ import re
 from enum import Enum
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Import numpy for optimized array operations (optional but recommended)
+try:
+    import numpy as np
+    numpy_available = True
+except ImportError:
+    numpy = None
+    numpy_available = False
+
+# Pre-compile regex patterns for better performance
+REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+REGEX_TDIV = re.compile(r'TDIV\s+([\d.]+)', re.IGNORECASE)
+REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
 
 # Import matplotlib for plotting (optional)
 try:
@@ -338,13 +355,13 @@ class PhaseCurrentTestStateMachine:
                 errors.append("C1:ATTN? - No response")
             else:
                 # Parse attenuation value
-                attn_match = re.search(r'ATTN\s+([\d.]+)', resp, re.IGNORECASE)
+                attn_match = REGEX_ATTN.search(resp)
                 if attn_match:
                     c1_attn = float(attn_match.group(1))
                     logger.info(f"C1:ATTN? = {c1_attn}")
                 else:
                     # Fallback: extract last number
-                    numbers = re.findall(r'([\d.]+)', resp)
+                    numbers = REGEX_NUMBER_SIMPLE.findall(resp)
                     if numbers:
                         c1_attn = float(numbers[-1])
                         logger.info(f"C1:ATTN? = {c1_attn} (parsed from: {resp.strip()})")
@@ -361,13 +378,13 @@ class PhaseCurrentTestStateMachine:
                 errors.append("C2:ATTN? - No response")
             else:
                 # Parse attenuation value
-                attn_match = re.search(r'ATTN\s+([\d.]+)', resp, re.IGNORECASE)
+                attn_match = REGEX_ATTN.search(resp)
                 if attn_match:
                     c2_attn = float(attn_match.group(1))
                     logger.info(f"C2:ATTN? = {c2_attn}")
                 else:
                     # Fallback: extract last number
-                    numbers = re.findall(r'([\d.]+)', resp)
+                    numbers = REGEX_NUMBER_SIMPLE.findall(resp)
                     if numbers:
                         c2_attn = float(numbers[-1])
                         logger.info(f"C2:ATTN? = {c2_attn} (parsed from: {resp.strip()})")
@@ -405,12 +422,12 @@ class PhaseCurrentTestStateMachine:
                 return False
             
             # Parse timebase value
-            tdiv_match = re.search(r'TDIV\s+([\d.]+)', resp, re.IGNORECASE)
+            tdiv_match = REGEX_TDIV.search(resp)
             if tdiv_match:
                 tdiv_value = float(tdiv_match.group(1))
             else:
                 # Fallback: extract number
-                numbers = re.findall(r'([\d.]+)', resp)
+                numbers = REGEX_NUMBER_SIMPLE.findall(resp)
                 if numbers:
                     tdiv_value = float(numbers[-1])
                 else:
@@ -457,7 +474,7 @@ class PhaseCurrentTestStateMachine:
             else:
                 # Parse vertical scale value (handles exponential format like 1.5e-2, 5.0e+1)
                 # Pattern matches: optional sign, digits, optional decimal, optional exponent
-                vdiv_match = re.search(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                vdiv_match = REGEX_VDIV.search(resp)
                 if vdiv_match:
                     try:
                         c1_vdiv = float(vdiv_match.group(1))
@@ -466,7 +483,7 @@ class PhaseCurrentTestStateMachine:
                         c1_vdiv = None
                 else:
                     # Fallback: try to find any number (including exponential) in the response
-                    numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                    numbers = REGEX_NUMBER.findall(resp)
                     if numbers:
                         try:
                             c1_vdiv = float(numbers[-1])
@@ -498,7 +515,7 @@ class PhaseCurrentTestStateMachine:
             else:
                 # Parse vertical scale value (handles exponential format like 1.5e-2, 5.0e+1)
                 # Pattern matches: optional sign, digits, optional decimal, optional exponent
-                vdiv_match = re.search(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                vdiv_match = REGEX_VDIV.search(resp)
                 if vdiv_match:
                     try:
                         c2_vdiv = float(vdiv_match.group(1))
@@ -507,7 +524,7 @@ class PhaseCurrentTestStateMachine:
                         c2_vdiv = None
                 else:
                     # Fallback: try to find any number (including exponential) in the response
-                    numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                    numbers = REGEX_NUMBER.findall(resp)
                     if numbers:
                         try:
                             c2_vdiv = float(numbers[-1])
@@ -870,8 +887,65 @@ class PhaseCurrentTestStateMachine:
             logger.error(f"Error retrieving Channel {channel} waveform: {e}", exc_info=True)
             return None
     
+    def _process_channel_cpu_ops(self, waveform_data: bytes, vertical_gain: Optional[float], 
+                                  vertical_offset: Optional[float], channel: int) -> Tuple[Optional[float], Optional[float], Optional[int], Optional[int]]:
+        """Process CPU-intensive operations for a channel: decode, filter, and analyze.
+        
+        This method is designed to be called in parallel for multiple channels.
+        
+        Args:
+            waveform_data: Raw binary waveform data
+            vertical_gain: Vertical gain value (from query)
+            vertical_offset: Vertical offset value (from query)
+            channel: Channel number (for logging)
+            
+        Returns:
+            Tuple of (steady_avg, steady_std, steady_start, steady_end) or
+            (None, None, None, None) if processing fails
+        """
+        try:
+            # Decode waveform
+            decoder = WaveformDecoder(waveform_data)
+            descriptor, time_values, voltage_values = decoder.decode(
+                vertical_gain=vertical_gain,
+                vertical_offset=vertical_offset
+            )
+            logger.info(f"CH{channel} decoded: {len(voltage_values)} points")
+            
+            # Apply 10kHz low-pass filter
+            try:
+                filtered = apply_lowpass_filter(time_values, voltage_values, cutoff_freq=10000.0)
+                logger.info(f"CH{channel} filter applied: {len(filtered)} points")
+            except Exception as e:
+                logger.warning(f"Failed to filter CH{channel}: {e}, using unfiltered data")
+                filtered = voltage_values
+            
+            # Analyze steady state
+            steady_avg = None
+            steady_std = None
+            steady_start = None
+            steady_end = None
+            try:
+                steady_start, steady_end, steady_avg, steady_std = analyze_steady_state(
+                    time_values, filtered,
+                    variance_threshold_percent=5.0,
+                    skip_initial_percent=30.0
+                )
+                logger.info(f"CH{channel} Steady State: {steady_avg:.6f} V (std: {steady_std:.6f} V)")
+            except Exception as e:
+                logger.error(f"Failed to analyze CH{channel} steady state: {e}", exc_info=True)
+            
+            return (steady_avg, steady_std, steady_start, steady_end)
+            
+        except Exception as e:
+            logger.error(f"Error processing CH{channel} CPU operations: {e}", exc_info=True)
+            return (None, None, None, None)
+    
     def _state_retrieve_waveforms(self) -> bool:
-        """Retrieve and analyze CH1 and CH2 waveforms, compute steady state averages."""
+        """Retrieve and analyze CH1 and CH2 waveforms, compute steady state averages.
+        
+        Optimized: Parallelizes processing after waveform retrieval.
+        """
         logger.info("Retrieving and analyzing oscilloscope waveforms...")
         
         if not self.oscilloscope_service.is_connected():
@@ -879,172 +953,109 @@ class PhaseCurrentTestStateMachine:
             return False
         
         try:
-            import struct
-            
-            # Retrieve CH1 waveform
+            # Retrieve waveforms sequentially (oscilloscope communication must be sequential)
             logger.info("")
             logger.info("=" * 70)
-            logger.info("Retrieving Channel 1 Waveform")
+            logger.info("Retrieving Channel Waveforms (Sequential)")
             logger.info("=" * 70)
-            ch1_waveform_data = self._retrieve_channel_waveform(1)
             
+            ch1_waveform_data = self._retrieve_channel_waveform(1)
             if ch1_waveform_data is None:
                 logger.error("Failed to retrieve CH1 waveform")
                 return False
             
-            logger.info(f"Retrieved {len(ch1_waveform_data)} bytes of CH1 waveform data")
+            ch2_waveform_data = self._retrieve_channel_waveform(2)
+            if ch2_waveform_data is None:
+                logger.error("Failed to retrieve CH2 waveform")
+                return False
+            
+            # Query vertical parameters sequentially (oscilloscope I/O must be sequential)
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Querying Vertical Parameters (Sequential)")
+            logger.info("=" * 70)
             
             # Query CH1 vertical gain and offset
             logger.info("Querying CH1 vertical gain and offset...")
             ch1_vertical_gain = None
             ch1_vertical_offset = None
-            
             try:
-                # Query C1:VDIV?
                 resp = self.oscilloscope_service.send_command("C1:VDIV?")
                 if resp:
-                    vdiv_match = re.search(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    vdiv_match = REGEX_VDIV.search(resp)
                     if vdiv_match:
                         ch1_vertical_gain = float(vdiv_match.group(1))
                     else:
-                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        numbers = REGEX_NUMBER.findall(resp)
                         if numbers:
                             ch1_vertical_gain = float(numbers[-1])
                 
-                # Query C1:OFST?
                 resp = self.oscilloscope_service.send_command("C1:OFST?")
                 if resp:
-                    ofst_match = re.search(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    ofst_match = REGEX_OFST.search(resp)
                     if ofst_match:
                         ch1_vertical_offset = float(ofst_match.group(1))
                     else:
-                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        numbers = REGEX_NUMBER.findall(resp)
                         if numbers:
                             ch1_vertical_offset = float(numbers[-1])
             except Exception as e:
                 logger.warning(f"Failed to query CH1 vertical parameters: {e}")
             
-            # Decode CH1 waveform
-            try:
-                ch1_decoder = WaveformDecoder(ch1_waveform_data)
-                ch1_descriptor, ch1_time_values, ch1_voltage_values = ch1_decoder.decode(
-                    vertical_gain=ch1_vertical_gain,
-                    vertical_offset=ch1_vertical_offset
-                )
-                logger.info(f"CH1 decoded: {len(ch1_voltage_values)} points")
-            except Exception as e:
-                logger.error(f"Failed to decode CH1 waveform: {e}", exc_info=True)
-                return False
-            
-            # Retrieve CH2 waveform
-            logger.info("")
-            logger.info("=" * 70)
-            logger.info("Retrieving Channel 2 Waveform")
-            logger.info("=" * 70)
-            ch2_waveform_data = self._retrieve_channel_waveform(2)
-            
-            if ch2_waveform_data is None:
-                logger.error("Failed to retrieve CH2 waveform")
-                return False
-            
-            logger.info(f"Retrieved {len(ch2_waveform_data)} bytes of CH2 waveform data")
-            
             # Query CH2 vertical gain and offset
             logger.info("Querying CH2 vertical gain and offset...")
             ch2_vertical_gain = None
             ch2_vertical_offset = None
-            
             try:
-                # Query C2:VDIV?
                 resp = self.oscilloscope_service.send_command("C2:VDIV?")
                 if resp:
-                    vdiv_match = re.search(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    vdiv_match = REGEX_VDIV.search(resp)
                     if vdiv_match:
                         ch2_vertical_gain = float(vdiv_match.group(1))
                     else:
-                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        numbers = REGEX_NUMBER.findall(resp)
                         if numbers:
                             ch2_vertical_gain = float(numbers[-1])
                 
-                # Query C2:OFST?
                 resp = self.oscilloscope_service.send_command("C2:OFST?")
                 if resp:
-                    ofst_match = re.search(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    ofst_match = REGEX_OFST.search(resp)
                     if ofst_match:
                         ch2_vertical_offset = float(ofst_match.group(1))
                     else:
-                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        numbers = REGEX_NUMBER.findall(resp)
                         if numbers:
                             ch2_vertical_offset = float(numbers[-1])
             except Exception as e:
                 logger.warning(f"Failed to query CH2 vertical parameters: {e}")
             
-            # Decode CH2 waveform
-            try:
-                ch2_decoder = WaveformDecoder(ch2_waveform_data)
-                ch2_descriptor, ch2_time_values, ch2_voltage_values = ch2_decoder.decode(
-                    vertical_gain=ch2_vertical_gain,
-                    vertical_offset=ch2_vertical_offset
-                )
-                logger.info(f"CH2 decoded: {len(ch2_voltage_values)} points")
-            except Exception as e:
-                logger.error(f"Failed to decode CH2 waveform: {e}", exc_info=True)
-                return False
-            
-            # Apply 10kHz low-pass filter to both waveforms
+            # Process CPU-intensive operations in parallel (decode, filter, analyze)
             logger.info("")
             logger.info("=" * 70)
-            logger.info("Applying 10kHz Low-Pass Filter to Both Channels")
+            logger.info("Processing Channels in Parallel (Decode, Filter, Analyze)")
             logger.info("=" * 70)
             
-            try:
-                ch1_filtered = apply_lowpass_filter(ch1_time_values, ch1_voltage_values, cutoff_freq=10000.0)
-                logger.info(f"CH1 filter applied: {len(ch1_filtered)} points")
-            except Exception as e:
-                logger.warning(f"Failed to filter CH1: {e}, using unfiltered data")
-                ch1_filtered = ch1_voltage_values
+            results = {}
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both channels for parallel CPU processing
+                future_to_channel = {
+                    executor.submit(self._process_channel_cpu_ops, ch1_waveform_data, ch1_vertical_gain, ch1_vertical_offset, 1): 1,
+                    executor.submit(self._process_channel_cpu_ops, ch2_waveform_data, ch2_vertical_gain, ch2_vertical_offset, 2): 2
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_channel):
+                    channel = future_to_channel[future]
+                    try:
+                        result = future.result()
+                        results[channel] = result
+                    except Exception as e:
+                        logger.error(f"CH{channel} processing failed: {e}", exc_info=True)
+                        results[channel] = (None, None, None, None)
             
-            try:
-                ch2_filtered = apply_lowpass_filter(ch2_time_values, ch2_voltage_values, cutoff_freq=10000.0)
-                logger.info(f"CH2 filter applied: {len(ch2_filtered)} points")
-            except Exception as e:
-                logger.warning(f"Failed to filter CH2: {e}, using unfiltered data")
-                ch2_filtered = ch2_voltage_values
-            
-            # Analyze steady state for both channels
-            logger.info("")
-            logger.info("=" * 70)
-            logger.info("Steady State Analysis - Channel 1")
-            logger.info("=" * 70)
-            
-            ch1_steady_avg = None
-            ch1_steady_std = None
-            try:
-                ch1_steady_start, ch1_steady_end, ch1_steady_avg, ch1_steady_std = analyze_steady_state(
-                    ch1_time_values, ch1_filtered,
-                    variance_threshold_percent=5.0,
-                    skip_initial_percent=30.0
-                )
-                logger.info(f"CH1 Steady State: {ch1_steady_avg:.6f} V (std: {ch1_steady_std:.6f} V)")
-            except Exception as e:
-                logger.error(f"Failed to analyze CH1 steady state: {e}", exc_info=True)
-            
-            logger.info("")
-            logger.info("=" * 70)
-            logger.info("Steady State Analysis - Channel 2")
-            logger.info("=" * 70)
-            
-            ch2_steady_avg = None
-            ch2_steady_std = None
-            try:
-                ch2_steady_start, ch2_steady_end, ch2_steady_avg, ch2_steady_std = analyze_steady_state(
-                    ch2_time_values, ch2_filtered,
-                    variance_threshold_percent=5.0,
-                    skip_initial_percent=30.0
-                )
-                logger.info(f"CH2 Steady State: {ch2_steady_avg:.6f} V (std: {ch2_steady_std:.6e} V)")
-            except Exception as e:
-                logger.error(f"Failed to analyze CH2 steady state: {e}", exc_info=True)
+            # Extract results
+            ch1_steady_avg, ch1_steady_std, ch1_steady_start, ch1_steady_end = results.get(1, (None, None, None, None))
+            ch2_steady_avg, ch2_steady_std, ch2_steady_start, ch2_steady_end = results.get(2, (None, None, None, None))
             
             # Print results
             logger.info("")
@@ -1116,16 +1127,29 @@ class PhaseCurrentTestStateMachine:
         
         # First, identify and discard initial low current period (<1A)
         # Find the start of actual ramp-up when current exceeds 1A (absolute value)
-        initial_discard_end = 0
+        # Optimized: use NumPy for vectorized operations
         current_threshold = 1.0  # Amperes
         
-        for i in range(total_points):
-            # Check if either phase current exceeds threshold (absolute value)
-            abs_v = abs(phase_v_values[i])
-            abs_w = abs(phase_w_values[i])
-            if abs_v >= current_threshold or abs_w >= current_threshold:
-                initial_discard_end = i
-                break
+        if numpy_available:
+            phase_v_array = np.array(phase_v_values)
+            phase_w_array = np.array(phase_w_values)
+            abs_v_array = np.abs(phase_v_array)
+            abs_w_array = np.abs(phase_w_array)
+            # Find first index where either exceeds threshold
+            mask = (abs_v_array >= current_threshold) | (abs_w_array >= current_threshold)
+            if np.any(mask):
+                initial_discard_end = int(np.argmax(mask))
+            else:
+                initial_discard_end = 0
+        else:
+            initial_discard_end = 0
+            for i in range(total_points):
+                # Check if either phase current exceeds threshold (absolute value)
+                abs_v = abs(phase_v_values[i])
+                abs_w = abs(phase_w_values[i])
+                if abs_v >= current_threshold or abs_w >= current_threshold:
+                    initial_discard_end = i
+                    break
         
         # If no point exceeds threshold, use first point as start
         if initial_discard_end == 0 and (abs(phase_v_values[0]) >= current_threshold or 
@@ -1159,68 +1183,135 @@ class PhaseCurrentTestStateMachine:
         
         # Calculate moving averages and standard deviations for both phases
         # Also calculate rate of change (derivative approximation)
-        # Use the sliced data for analysis
-        moving_std_v = []
-        moving_std_w = []
-        rate_of_change_v = []
-        rate_of_change_w = []
-        
-        for i in range(analysis_points):
-            # Moving window statistics
-            start_idx = max(0, i - window_size // 2)
-            end_idx = min(analysis_points, i + window_size // 2 + 1)
-            window_v = phase_v_analysis[start_idx:end_idx]
-            window_w = phase_w_analysis[start_idx:end_idx]
+        # Optimized: use NumPy for vectorized operations when available
+        if numpy_available:
+            phase_v_array = np.array(phase_v_analysis, dtype=np.float64)
+            phase_w_array = np.array(phase_w_analysis, dtype=np.float64)
             
-            # Calculate standard deviation in window
-            if len(window_v) > 1:
-                std_v = statistics.stdev(window_v)
-                std_w = statistics.stdev(window_w)
+            # Calculate rate of change using NumPy diff (much faster)
+            if len(timestamps_analysis) > 1:
+                dt_array = np.diff(timestamps_analysis)
+                # Handle zero or negative dt
+                dt_array = np.where(dt_array > 0, dt_array, 1.0)
             else:
-                std_v = 0.0
-                std_w = 0.0
+                dt_array = np.array([1.0])
             
-            moving_std_v.append(std_v)
-            moving_std_w.append(std_w)
+            dv_array = np.diff(phase_v_array)
+            dw_array = np.diff(phase_w_array)
+            rate_of_change_v_array = np.abs(dv_array / dt_array)
+            rate_of_change_w_array = np.abs(dw_array / dt_array)
+            # Pad with zero at the beginning
+            rate_of_change_v = [0.0] + rate_of_change_v_array.tolist()
+            rate_of_change_w = [0.0] + rate_of_change_w_array.tolist()
             
-            # Calculate rate of change (derivative approximation)
-            if i > 0:
-                # Use time difference if available, otherwise assume uniform spacing
-                if len(timestamps_analysis) > i and timestamps_analysis[i] > timestamps_analysis[i-1]:
-                    dt = timestamps_analysis[i] - timestamps_analysis[i-1]
-                else:
-                    dt = 1.0  # Assume 1 unit time
+            # Calculate moving window standard deviations using NumPy
+            # Use a more efficient approach with rolling window
+            moving_std_v = []
+            moving_std_w = []
+            half_window = window_size // 2
+            
+            for i in range(analysis_points):
+                start_idx = max(0, i - half_window)
+                end_idx = min(analysis_points, i + half_window + 1)
+                window_v = phase_v_array[start_idx:end_idx]
+                window_w = phase_w_array[start_idx:end_idx]
                 
-                dv_dt = abs((phase_v_analysis[i] - phase_v_analysis[i-1]) / dt)
-                dw_dt = abs((phase_w_analysis[i] - phase_w_analysis[i-1]) / dt)
-            else:
-                dv_dt = 0.0
-                dw_dt = 0.0
+                if len(window_v) > 1:
+                    std_v = float(np.std(window_v))
+                    std_w = float(np.std(window_w))
+                else:
+                    std_v = 0.0
+                    std_w = 0.0
+                
+                moving_std_v.append(std_v)
+                moving_std_w.append(std_w)
+        else:
+            # Fallback to Python implementation
+            moving_std_v = []
+            moving_std_w = []
+            rate_of_change_v = []
+            rate_of_change_w = []
             
-            rate_of_change_v.append(dv_dt)
-            rate_of_change_w.append(dw_dt)
+            for i in range(analysis_points):
+                # Moving window statistics
+                start_idx = max(0, i - window_size // 2)
+                end_idx = min(analysis_points, i + window_size // 2 + 1)
+                window_v = phase_v_analysis[start_idx:end_idx]
+                window_w = phase_w_analysis[start_idx:end_idx]
+                
+                # Calculate standard deviation in window
+                if len(window_v) > 1:
+                    std_v = statistics.stdev(window_v)
+                    std_w = statistics.stdev(window_w)
+                else:
+                    std_v = 0.0
+                    std_w = 0.0
+                
+                moving_std_v.append(std_v)
+                moving_std_w.append(std_w)
+                
+                # Calculate rate of change (derivative approximation)
+                if i > 0:
+                    # Use time difference if available, otherwise assume uniform spacing
+                    if len(timestamps_analysis) > i and timestamps_analysis[i] > timestamps_analysis[i-1]:
+                        dt = timestamps_analysis[i] - timestamps_analysis[i-1]
+                    else:
+                        dt = 1.0  # Assume 1 unit time
+                    
+                    dv_dt = abs((phase_v_analysis[i] - phase_v_analysis[i-1]) / dt)
+                    dw_dt = abs((phase_w_analysis[i] - phase_w_analysis[i-1]) / dt)
+                else:
+                    dv_dt = 0.0
+                    dw_dt = 0.0
+                
+                rate_of_change_v.append(dv_dt)
+                rate_of_change_w.append(dw_dt)
         
         # Calculate thresholds for stability
         # Use median + scaled median absolute deviation for robust threshold
-        def median_absolute_deviation(data):
-            if not data:
-                return 0.0
-            median = statistics.median(data)
-            deviations = [abs(x - median) for x in data]
-            return statistics.median(deviations) if deviations else 0.0
+        # Optimized: use NumPy for statistics when available
+        if numpy_available:
+            def median_absolute_deviation(data_array):
+                if len(data_array) == 0:
+                    return 0.0
+                median = np.median(data_array)
+                deviations = np.abs(data_array - median)
+                return float(np.median(deviations))
+        else:
+            def median_absolute_deviation(data):
+                if not data:
+                    return 0.0
+                median = statistics.median(data)
+                deviations = [abs(x - median) for x in data]
+                return statistics.median(deviations) if deviations else 0.0
         
         # Combined metrics for both phases
-        combined_std = [(v + w) / 2.0 for v, w in zip(moving_std_v, moving_std_w)]
-        combined_rate = [(v + w) / 2.0 for v, w in zip(rate_of_change_v, rate_of_change_w)]
-        
-        # Calculate stability thresholds
-        median_std = statistics.median(combined_std)
-        mad_std = median_absolute_deviation(combined_std)
-        std_threshold = median_std + 2.0 * mad_std  # Threshold for "stable" variance
-        
-        median_rate = statistics.median(combined_rate)
-        mad_rate = median_absolute_deviation(combined_rate)
-        rate_threshold = median_rate + 2.0 * mad_rate  # Threshold for "stable" rate of change
+        if numpy_available:
+            combined_std = ((np.array(moving_std_v) + np.array(moving_std_w)) / 2.0).tolist()
+            combined_rate = ((np.array(rate_of_change_v) + np.array(rate_of_change_w)) / 2.0).tolist()
+            combined_std_array = np.array(combined_std)
+            combined_rate_array = np.array(combined_rate)
+            
+            # Calculate stability thresholds using NumPy
+            median_std = float(np.median(combined_std_array))
+            mad_std = median_absolute_deviation(combined_std_array)
+            std_threshold = median_std + 2.0 * mad_std  # Threshold for "stable" variance
+            
+            median_rate = float(np.median(combined_rate_array))
+            mad_rate = median_absolute_deviation(combined_rate_array)
+            rate_threshold = median_rate + 2.0 * mad_rate  # Threshold for "stable" rate of change
+        else:
+            combined_std = [(v + w) / 2.0 for v, w in zip(moving_std_v, moving_std_w)]
+            combined_rate = [(v + w) / 2.0 for v, w in zip(rate_of_change_v, rate_of_change_w)]
+            
+            # Calculate stability thresholds
+            median_std = statistics.median(combined_std)
+            mad_std = median_absolute_deviation(combined_std)
+            std_threshold = median_std + 2.0 * mad_std  # Threshold for "stable" variance
+            
+            median_rate = statistics.median(combined_rate)
+            mad_rate = median_absolute_deviation(combined_rate)
+            rate_threshold = median_rate + 2.0 * mad_rate  # Threshold for "stable" rate of change
         
         logger.debug(f"Stability thresholds - Std: {std_threshold:.4f}, Rate: {rate_threshold:.4f}")
         
@@ -1428,18 +1519,33 @@ class PhaseCurrentTestStateMachine:
             logger.warning("No steady state data available after filtering")
             return
         
-        # Calculate averages
-        avg_phase_v = sum(steady_state_v) / len(steady_state_v)
-        avg_phase_w = sum(steady_state_w) / len(steady_state_w)
-        
-        # Calculate standard deviations for quality check
-        import statistics
-        try:
-            std_phase_v = statistics.stdev(steady_state_v) if len(steady_state_v) > 1 else 0.0
-            std_phase_w = statistics.stdev(steady_state_w) if len(steady_state_w) > 1 else 0.0
-        except Exception:
-            std_phase_v = 0.0
-            std_phase_w = 0.0
+        # Calculate averages - optimized with NumPy when available
+        if numpy_available:
+            steady_v_array = np.array(steady_state_v, dtype=np.float64)
+            steady_w_array = np.array(steady_state_w, dtype=np.float64)
+            avg_phase_v = float(np.mean(steady_v_array))
+            avg_phase_w = float(np.mean(steady_w_array))
+            
+            # Calculate standard deviations for quality check
+            try:
+                std_phase_v = float(np.std(steady_v_array)) if len(steady_state_v) > 1 else 0.0
+                std_phase_w = float(np.std(steady_w_array)) if len(steady_state_w) > 1 else 0.0
+            except Exception:
+                std_phase_v = 0.0
+                std_phase_w = 0.0
+        else:
+            # Fallback to Python implementation
+            avg_phase_v = sum(steady_state_v) / len(steady_state_v)
+            avg_phase_w = sum(steady_state_w) / len(steady_state_w)
+            
+            # Calculate standard deviations for quality check
+            import statistics
+            try:
+                std_phase_v = statistics.stdev(steady_state_v) if len(steady_state_v) > 1 else 0.0
+                std_phase_w = statistics.stdev(steady_state_w) if len(steady_state_w) > 1 else 0.0
+            except Exception:
+                std_phase_v = 0.0
+                std_phase_w = 0.0
         
         # Print results
         total_points = len(phase_v_values)

@@ -230,25 +230,35 @@ class WaveformDecoder:
         else:
             logger.info(f"Using vertical offset from C1:OFST?: {vertical_offset}")
         
-        voltage_values = []
-        for data_point in raw_data_points:
-            # Formula: vertical_gain * data - vertical_offset
-            # Note: If using VDIV (volts per division), the conversion may need adjustment
-            # VDIV is typically the full-scale range divided by 8 divisions
-            # For byte format (-128 to 127), full range is 256 counts
-            # So: voltage = (VDIV * 8 / 256) * data_point - OFST = (VDIV / 32) * data_point - OFST
-            # However, using VDIV directly as requested by user
-            voltage = (vertical_gain * data_point)/25.0 - vertical_offset
-            voltage_values.append(voltage)
+        # Optimized voltage conversion using NumPy vectorization
+        if numpy_available:
+            raw_data_array = np.array(raw_data_points, dtype=np.float32)
+            voltage_values = ((vertical_gain * raw_data_array) / 25.0 - vertical_offset).tolist()
+        else:
+            # Fallback to Python loop if NumPy not available
+            voltage_values = []
+            for data_point in raw_data_points:
+                # Formula: vertical_gain * data - vertical_offset
+                # Note: If using VDIV (volts per division), the conversion may need adjustment
+                # VDIV is typically the full-scale range divided by 8 divisions
+                # For byte format (-128 to 127), full range is 256 counts
+                # So: voltage = (VDIV * 8 / 256) * data_point - OFST = (VDIV / 32) * data_point - OFST
+                # However, using VDIV directly as requested by user
+                voltage = (vertical_gain * data_point)/25.0 - vertical_offset
+                voltage_values.append(voltage)
         
-        # Calculate time values
+        # Calculate time values - optimized using NumPy
         horiz_interval = descriptor['HORIZ_INTERVAL']
         horiz_offset = descriptor['HORIZ_OFFSET']
         
-        time_values = []
-        for i in range(num_points):
-            time = (i * horiz_interval) + horiz_offset
-            time_values.append(time)
+        if numpy_available:
+            time_values = (np.arange(num_points, dtype=np.float64) * horiz_interval + horiz_offset).tolist()
+        else:
+            # Fallback to Python loop if NumPy not available
+            time_values = []
+            for i in range(num_points):
+                time = (i * horiz_interval) + horiz_offset
+                time_values.append(time)
         
         return descriptor, time_values, voltage_values
     
@@ -810,22 +820,23 @@ def analyze_steady_state(
     reference_mean = best_mean
     
     # Extend backward - but check for trends to avoid ramp-up
+    # Optimized: use faster first-order difference instead of polyfit
     while steady_start > search_start:  # Don't extend before search_start
         if steady_start + window_size <= len(voltages):
             test_data = voltages[steady_start - 1:steady_start + window_size - 1]
             if numpy_available:
                 test_std = np.std(test_data)
                 test_mean = np.mean(test_data)
-                # Calculate rate of change (derivative) to detect ramps
+                # Optimized: use first-order difference instead of polyfit (much faster)
                 if len(test_data) > 10:
-                    # Use linear regression to detect trend
-                    indices = np.arange(len(test_data))
-                    slope = np.polyfit(indices, test_data, 1)[0]
-                    # Normalize slope by mean to get relative change rate
+                    # Calculate average rate of change using first-order difference
+                    diff = np.diff(test_data)
+                    avg_diff = np.mean(np.abs(diff))
+                    # Normalize by mean to get relative change rate
                     if abs(test_mean) > 1e-10:
-                        relative_slope = abs(slope / test_mean) * 100  # Percentage change per sample
+                        relative_slope = abs(avg_diff / test_mean) * 100  # Percentage change per sample
                     else:
-                        relative_slope = abs(slope) * 100
+                        relative_slope = abs(avg_diff) * 100
                 else:
                     relative_slope = 0
             else:
@@ -863,20 +874,22 @@ def analyze_steady_state(
             break
     
     # Extend forward - also check for trends
+    # Optimized: use faster first-order difference instead of polyfit
     while steady_end < len(voltages):
         if steady_end - window_size >= 0:
             test_data = voltages[steady_end - window_size:steady_end]
             if numpy_available:
                 test_std = np.std(test_data)
                 test_mean = np.mean(test_data)
-                # Calculate rate of change to detect ramps
+                # Optimized: use first-order difference instead of polyfit (much faster)
                 if len(test_data) > 10:
-                    indices = np.arange(len(test_data))
-                    slope = np.polyfit(indices, test_data, 1)[0]
+                    # Calculate average rate of change using first-order difference
+                    diff = np.diff(test_data)
+                    avg_diff = np.mean(np.abs(diff))
                     if abs(test_mean) > 1e-10:
-                        relative_slope = abs(slope / test_mean) * 100
+                        relative_slope = abs(avg_diff / test_mean) * 100
                     else:
-                        relative_slope = abs(slope) * 100
+                        relative_slope = abs(avg_diff) * 100
                 else:
                     relative_slope = 0
             else:
@@ -1015,6 +1028,13 @@ def _apply_moving_average_filter(voltage_values: List[float], window_size: int =
     if len(voltage_values) < window_size:
         return voltage_values
     
+    # Optimized: use NumPy convolution if available (much faster)
+    if numpy_available:
+        window = np.ones(window_size, dtype=np.float32) / window_size
+        filtered = np.convolve(voltage_values, window, mode='same')
+        return filtered.tolist()
+    
+    # Fallback to Python loop if NumPy not available
     filtered = []
     half_window = window_size // 2
     
