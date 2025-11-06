@@ -539,13 +539,27 @@ class _WaveformDecoder:
         raw_data_points = struct.unpack(f'<{num_points}{data_format}', 
                                        data_array_bytes[:num_points * data_size])
         
-        # Use provided values or descriptor values
+        # Use provided values from C{channel}:VDIV? and C{channel}:OFST? if available,
+        # otherwise fall back to descriptor values
         if vertical_gain is None:
             vertical_gain = descriptor['VERTICAL_GAIN']
+            logger.debug(f"Using VERTICAL_GAIN from descriptor: {vertical_gain}")
+        else:
+            logger.debug(f"Using vertical gain from VDIV? query: {vertical_gain}")
+        
         if vertical_offset is None:
             vertical_offset = descriptor['VERTICAL_OFFSET']
+            logger.debug(f"Using VERTICAL_OFFSET from descriptor: {vertical_offset}")
+        else:
+            logger.debug(f"Using vertical offset from OFST? query: {vertical_offset}")
         
-        # Convert to voltage values
+        # Convert raw values to physical voltage values using:
+        # voltage = (vertical_gain * raw_value) / 25.0 - vertical_offset
+        # where:
+        # - vertical_gain is from C{channel}:VDIV? (V/div) or descriptor
+        # - vertical_offset is from C{channel}:OFST? (V) or descriptor
+        # - raw_value is the signed integer from the waveform data
+        # - The /25.0 factor converts the raw value to the correct scale
         if numpy_available:
             raw_data_array = np.array(raw_data_points, dtype=np.float32)
             voltage_values = ((vertical_gain * raw_data_array) / 25.0 - vertical_offset).tolist()
@@ -1124,87 +1138,243 @@ class PhaseCurrentTestStateMachine:
         return ch1_avg, ch2_avg
     
     def _retrieve_channel_waveform(self, channel: int) -> Optional[bytes]:
-        """Retrieve waveform data for a channel.
+        """Retrieve waveform data for a specific channel.
+        
+        This method uses chunked reading to handle large waveform data transfers,
+        similar to the test script implementation. It supports both SCPI binary
+        block format and direct binary format.
         
         Args:
             channel: Channel number (1 or 2)
             
         Returns:
-            Waveform data bytes or None if failed
+            Binary waveform data or None if retrieval fails
         """
+        if not self.oscilloscope_service or not self.oscilloscope_service.is_connected():
+            logger.error("Oscilloscope not connected")
+            return None
+        
         try:
-            # Send waveform query command
-            cmd = f"C{channel}:WF? ALL"
-            response = self.oscilloscope_service.send_command(cmd, timeout=10.0)
+            logger.info(f"Retrieving Channel {channel} waveform data (C{channel}:WF? ALL)...")
             
-            if not response:
-                logger.error(f"Failed to retrieve CH{channel} waveform")
-                return None
+            oscilloscope = self.oscilloscope_service.oscilloscope
             
-            # Parse SCPI binary block format: #N<length><data>
-            if isinstance(response, str):
-                raw_data = response.encode('latin-1')
-            else:
-                raw_data = response
+            # Set timeout for large data transfer
+            original_timeout = oscilloscope.timeout
+            oscilloscope.timeout = 10000  # 10 seconds for large waveform data
             
-            # Check if data starts with WAVEDESC (direct binary)
-            if raw_data[:8].startswith(b'WAVEDESC'):
-                return raw_data
-            
-            # Try to find WAVEDESC in the data
-            wavedesc_pos = raw_data.find(b'WAVEDESC')
-            if wavedesc_pos >= 0:
-                return raw_data[wavedesc_pos:]
-            
-            # If starts with '#', parse SCPI binary block
-            if len(raw_data) >= 2 and raw_data[0] == ord('#'):
-                # Format: #N<length><data>
-                n_digits = int(chr(raw_data[1]))
-                if len(raw_data) < 2 + n_digits:
+            try:
+                import struct
+                
+                # Send query command - waveform data is binary
+                oscilloscope.write(f"C{channel}:WF? ALL")
+                
+                # Read binary data - may need to read in chunks for large waveforms
+                raw_data = b''
+                max_reads = 1000  # Safety limit
+                
+                # Read first chunk to see format
+                try:
+                    first_chunk = oscilloscope.read_raw()
+                    raw_data += first_chunk
+                    logger.info(f"Read first chunk: {len(first_chunk)} bytes")
+                except Exception as e:
+                    logger.error(f"Failed to read first chunk: {e}")
+                    return None
+                
+                # Check if it's SCPI binary block format
+                if len(raw_data) >= 2 and raw_data[0] == ord('#'):
+                    # Parse length from SCPI header
+                    num_digits = int(chr(raw_data[1]))
+                    if 1 <= num_digits <= 9:
+                        length_str = raw_data[2:2+num_digits].decode('ascii')
+                        total_length = int(length_str)
+                        header_size = 2 + num_digits
+                        logger.info(f"SCPI binary block format: total length={total_length}, header={header_size}")
+                        
+                        # Read remaining data
+                        remaining = total_length + header_size - len(raw_data) + 1  # +1 for newline
+                        if remaining > 0:
+                            logger.info(f"Reading remaining {remaining} bytes...")
+                            read_count = 0
+                            while len(raw_data) < total_length + header_size + 1 and read_count < max_reads:
+                                try:
+                                    chunk = oscilloscope.read_raw()
+                                    if not chunk:
+                                        break
+                                    raw_data += chunk
+                                    read_count += 1
+                                    if read_count % 10 == 0:
+                                        logger.debug(f"Read {len(raw_data)} bytes so far...")
+                                except Exception as e:
+                                    logger.warning(f"Error reading chunk: {e}")
+                                    break
+                else:
+                    # Direct binary - read until we get WAVEDESC and then parse to determine length
+                    logger.info("Direct binary format, reading in chunks...")
+                    read_count = 0
+                    while read_count < max_reads:
+                        try:
+                            chunk = oscilloscope.read_raw()
+                            if not chunk:
+                                break
+                            raw_data += chunk
+                            read_count += 1
+                            # Check if we have enough to parse WAVEDESC
+                            if len(raw_data) >= 400:
+                                wavedesc_pos = raw_data.find(b'WAVEDESC')
+                                if wavedesc_pos >= 0:
+                                    # Try to parse WAVE_ARRAY_1 length to know how much more to read
+                                    try:
+                                        wave_array_1_offset = wavedesc_pos + 60
+                                        if len(raw_data) >= wave_array_1_offset + 4:
+                                            wave_array_1_length = struct.unpack('<I', 
+                                                raw_data[wave_array_1_offset:wave_array_1_offset + 4])[0]
+                                            wave_descriptor_length = struct.unpack('<I',
+                                                raw_data[wavedesc_pos + 36:wavedesc_pos + 40])[0]
+                                            user_text_length = struct.unpack('<I',
+                                                raw_data[wavedesc_pos + 40:wavedesc_pos + 44])[0]
+                                            
+                                            expected_total = (wavedesc_pos + wave_descriptor_length + 
+                                                             user_text_length + wave_array_1_length)
+                                            if len(raw_data) >= expected_total:
+                                                logger.info(f"Read complete waveform: {len(raw_data)} bytes")
+                                                break
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            logger.debug(f"Read complete or error: {e}")
+                            break
+                
+                logger.info(f"Retrieved {len(raw_data)} bytes of raw data total")
+                
+                # Parse SCPI binary block format: #<n><length><data>
+                if len(raw_data) < 2 or raw_data[0] != ord('#'):
+                    # Data might be direct binary (no SCPI header)
+                    # Check if it starts with WAVEDESC
+                    if raw_data[:8].startswith(b'WAVEDESC'):
+                        logger.info("Waveform data is direct binary (starts with WAVEDESC)")
+                        return raw_data
+                    else:
+                        logger.warning("Waveform data doesn't start with '#' or 'WAVEDESC'")
+                        # Try to find WAVEDESC in the data
+                        wavedesc_pos = raw_data.find(b'WAVEDESC')
+                        if wavedesc_pos >= 0:
+                            logger.info(f"Found WAVEDESC at position {wavedesc_pos}, extracting from there")
+                            return raw_data[wavedesc_pos:]
+                        return raw_data
+                
+                # Parse SCPI binary block format
+                if raw_data[0] == ord('#'):
+                    # Extract length digits
+                    num_digits = int(chr(raw_data[1]))
+                    if num_digits < 1 or num_digits > 9:
+                        logger.warning(f"Invalid number of length digits: {num_digits}")
+                        return raw_data
+                    
+                    # Extract length
+                    length_str = raw_data[2:2+num_digits].decode('ascii')
+                    data_length = int(length_str)
+                    
+                    # Extract actual binary data (skip header: '#' + num_digits + length_str)
+                    header_size = 2 + num_digits
+                    waveform_data = raw_data[header_size:header_size + data_length]
+                    
+                    # Handle potential newline terminator (SCPI standard)
+                    if len(raw_data) > header_size + data_length:
+                        remaining = raw_data[header_size + data_length:]
+                        if remaining.startswith(b'\n') or remaining.startswith(b'\r\n'):
+                            logger.debug("Removed newline terminator from waveform data")
+                    
+                    if len(waveform_data) != data_length:
+                        logger.warning(f"Expected {data_length} bytes, got {len(waveform_data)} bytes")
+                        # Use what we have if it's close
+                        if abs(len(waveform_data) - data_length) <= 2:  # Allow small difference for terminator
+                            logger.info(f"Using {len(waveform_data)} bytes (close to expected {data_length})")
+                        else:
+                            logger.error(f"Data length mismatch too large, cannot proceed")
+                            return None
+                    
+                    logger.info(f"Extracted {len(waveform_data)} bytes of waveform data from SCPI binary block")
+                    return waveform_data
+                else:
+                    # Direct binary data (already handled above)
                     return raw_data
-                length_str = raw_data[2:2+n_digits].decode('ascii')
-                data_length = int(length_str)
-                data_start = 2 + n_digits
-                if len(raw_data) >= data_start + data_length:
-                    return raw_data[data_start:data_start + data_length]
-            
-            return raw_data
+                
+            finally:
+                # Restore original timeout
+                oscilloscope.timeout = original_timeout
+                
         except Exception as e:
-            logger.error(f"Error retrieving CH{channel} waveform: {e}")
+            logger.error(f"Error retrieving CH{channel} waveform: {e}", exc_info=True)
             return None
     
     def _analyze_waveform(self, waveform_data: bytes, channel: int) -> Optional[float]:
         """Analyze waveform data to compute steady state average.
         
+        This method queries C{channel}:VDIV? and C{channel}:OFST? to get the
+        vertical gain and offset, which are used to convert raw waveform values
+        to physical voltage values using the formula:
+        voltage = (vertical_gain * raw_value) / 25.0 - vertical_offset
+        
         Args:
             waveform_data: Raw waveform data bytes
-            channel: Channel number
+            channel: Channel number (1 or 2)
             
         Returns:
             Average voltage in steady state region, or None if analysis fails
         """
         try:
-            # Query vertical gain and offset
+            # Query vertical gain from C{channel}:VDIV?
             vdiv_resp = self.oscilloscope_service.send_command(f"C{channel}:VDIV?")
             vertical_gain = None
             if vdiv_resp:
                 vdiv_match = REGEX_VDIV.search(vdiv_resp)
                 if vdiv_match:
-                    vertical_gain = float(vdiv_match.group(1))
+                    try:
+                        vertical_gain = float(vdiv_match.group(1))
+                        logger.info(f"CH{channel}: Queried VDIV = {vertical_gain} V/div")
+                    except ValueError:
+                        logger.warning(f"CH{channel}: Failed to parse VDIV response: {vdiv_resp}")
+                else:
+                    logger.warning(f"CH{channel}: VDIV response format not recognized: {vdiv_resp}")
+            else:
+                logger.warning(f"CH{channel}: No response from C{channel}:VDIV?")
             
+            # Query vertical offset from C{channel}:OFST?
             ofst_resp = self.oscilloscope_service.send_command(f"C{channel}:OFST?")
             vertical_offset = None
             if ofst_resp:
                 ofst_match = REGEX_OFST.search(ofst_resp)
                 if ofst_match:
-                    vertical_offset = float(ofst_match.group(1))
+                    try:
+                        vertical_offset = float(ofst_match.group(1))
+                        logger.info(f"CH{channel}: Queried OFST = {vertical_offset} V")
+                    except ValueError:
+                        logger.warning(f"CH{channel}: Failed to parse OFST response: {ofst_resp}")
+                else:
+                    logger.warning(f"CH{channel}: OFST response format not recognized: {ofst_resp}")
+            else:
+                logger.warning(f"CH{channel}: No response from C{channel}:OFST?")
             
-            # Decode waveform using simplified decoder
+            # Decode waveform using queried vertical gain and offset
+            # If query failed, decoder will fall back to descriptor values
             decoder = _WaveformDecoder(waveform_data)
             descriptor, time_values, voltage_values = decoder.decode(
                 vertical_gain=vertical_gain,
                 vertical_offset=vertical_offset
             )
+            
+            # Log which values were used
+            if vertical_gain is not None:
+                logger.debug(f"CH{channel}: Using vertical gain from C{channel}:VDIV? = {vertical_gain} V/div")
+            else:
+                logger.debug(f"CH{channel}: Using vertical gain from descriptor = {descriptor.get('VERTICAL_GAIN', 'N/A')}")
+            
+            if vertical_offset is not None:
+                logger.debug(f"CH{channel}: Using vertical offset from C{channel}:OFST? = {vertical_offset} V")
+            else:
+                logger.debug(f"CH{channel}: Using vertical offset from descriptor = {descriptor.get('VERTICAL_OFFSET', 'N/A')}")
             
             if not voltage_values or len(voltage_values) < 10:
                 logger.warning(f"Insufficient waveform data for CH{channel}")
