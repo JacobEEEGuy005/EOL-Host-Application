@@ -1567,7 +1567,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         Configuration includes:
         - Channel settings (CH1-CH4): Enable, Name, Probe Attenuation, Unit
-        - Trigger settings: Channel, Type, Setting, Noise Reject
+        - Acquisition settings: Timebase
         
         Returns:
             QWidget containing the Oscilloscope Configuration layout
@@ -1675,36 +1675,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         channel_group.setLayout(channel_group_layout)
         config_layout.addWidget(channel_group)
         
-        # Trigger Configuration Section
-        trigger_group = QtWidgets.QGroupBox('Trigger Configuration')
-        trigger_layout = QtWidgets.QFormLayout()
+        # Acquisition Setting Section
+        acquisition_group = QtWidgets.QGroupBox('Acquisition Setting')
+        acquisition_layout = QtWidgets.QFormLayout()
         
-        # Trigger Channel
-        self.osc_trigger_channel = QtWidgets.QComboBox()
-        self.osc_trigger_channel.addItems(['CH1', 'CH2', 'CH3', 'CH4'])
-        self.osc_trigger_channel.setCurrentText('CH1')
-        trigger_layout.addRow('Trigger Channel:', self.osc_trigger_channel)
+        # Timebase (in milliseconds)
+        self.osc_timebase = QtWidgets.QDoubleSpinBox()
+        self.osc_timebase.setMinimum(0.001)  # Minimum 0.001 ms
+        self.osc_timebase.setMaximum(10000.0)  # Maximum 10000 ms
+        self.osc_timebase.setSingleStep(0.1)  # Step size 0.1 ms
+        self.osc_timebase.setDecimals(3)  # 3 decimal places
+        self.osc_timebase.setValue(1.0)  # Default 1.0 ms
+        self.osc_timebase.setSuffix(' ms')
+        acquisition_layout.addRow('Timebase:', self.osc_timebase)
         
-        # Trigger Type (readonly, default Edge)
-        self.osc_trigger_type = QtWidgets.QComboBox()
-        self.osc_trigger_type.addItems(['Edge'])
-        self.osc_trigger_type.setCurrentText('Edge')
-        self.osc_trigger_type.setEnabled(False)  # User cannot change
-        trigger_layout.addRow('Trigger Type:', self.osc_trigger_type)
-        
-        # Trigger Setting
-        self.osc_trigger_setting = QtWidgets.QComboBox()
-        self.osc_trigger_setting.addItems(['Rising', 'Falling', 'Alternate'])
-        self.osc_trigger_setting.setCurrentText('Rising')
-        trigger_layout.addRow('Trigger Setting:', self.osc_trigger_setting)
-        
-        # Noise Reject
-        self.osc_noise_reject = QtWidgets.QCheckBox()
-        self.osc_noise_reject.setChecked(False)
-        trigger_layout.addRow('Noise Reject:', self.osc_noise_reject)
-        
-        trigger_group.setLayout(trigger_layout)
-        config_layout.addWidget(trigger_group)
+        acquisition_group.setLayout(acquisition_layout)
+        config_layout.addWidget(acquisition_group)
         
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
@@ -1857,11 +1843,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                     'unit': 'V'
                 }
             },
-            'trigger': {
-                'channel': 'CH1',
-                'type': 'Edge',
-                'setting': 'Rising',
-                'noise_reject': False
+            'acquisition': {
+                'timebase_ms': 1.0
             }
         }
         self._osc_config_file_path = None  # Path to currently loaded config file
@@ -5122,11 +5105,8 @@ Data Points Used: {data_points}"""
                     'unit': 'V'
                 }
             },
-            'trigger': {
-                'channel': 'CH1',
-                'type': 'Edge',
-                'setting': 'Rising',
-                'noise_reject': False
+            'acquisition': {
+                'timebase_ms': 1.0
             }
         }
         self._osc_config_file_path = None
@@ -5168,9 +5148,9 @@ Data Points Used: {data_points}"""
                 config_data = json.load(f)
             
             # Validate structure
-            if 'channels' not in config_data or 'trigger' not in config_data:
+            if 'channels' not in config_data:
                 QtWidgets.QMessageBox.warning(self, 'Invalid File', 
-                    'Configuration file is missing required fields (channels or trigger).')
+                    'Configuration file is missing required fields (channels).')
                 return
             
             # Validate and fix channel structure
@@ -5191,13 +5171,10 @@ Data Points Used: {data_points}"""
                     ch.setdefault('probe_attenuation', 1.0)
                     ch.setdefault('unit', 'V')
             
-            # Validate trigger structure
-            trigger = config_data.get('trigger', {})
-            trigger.setdefault('channel', 'CH1')
-            trigger.setdefault('type', 'Edge')
-            trigger.setdefault('setting', 'Rising')
-            trigger.setdefault('noise_reject', False)
-            config_data['trigger'] = trigger
+            # Validate acquisition structure
+            acquisition = config_data.get('acquisition', {})
+            acquisition.setdefault('timebase_ms', 1.0)
+            config_data['acquisition'] = acquisition
             
             # Set defaults for missing top-level fields
             config_data.setdefault('version', '1.0')
@@ -5507,20 +5484,6 @@ Data Points Used: {data_points}"""
                 probe_widget.setStyleSheet('')
                 unit_widget.setStyleSheet('')
         
-        # Update trigger channel dropdown if this channel becomes disabled and is selected as trigger
-        if hasattr(self, 'osc_trigger_channel'):
-            trigger_ch = self.osc_trigger_channel.currentText()
-            if not enabled and trigger_ch == ch_key:
-                # Switch to CH1 if available, otherwise find first enabled channel
-                if self.osc_channel_widgets.get('CH1_enable').isChecked():
-                    self.osc_trigger_channel.setCurrentText('CH1')
-                else:
-                    # Find first enabled channel
-                    for ch in ['CH1', 'CH2', 'CH3', 'CH4']:
-                        enable_widget = self.osc_channel_widgets.get(f'{ch}_enable')
-                        if enable_widget and enable_widget.isChecked():
-                            self.osc_trigger_channel.setCurrentText(ch)
-                            break
     
     def _collect_osc_config_from_ui(self):
         """Collect configuration values from UI widgets into _oscilloscope_config."""
@@ -5543,13 +5506,10 @@ Data Points Used: {data_points}"""
                     'unit': unit_widget.currentText()
                 }
         
-        # Collect trigger settings
-        if hasattr(self, 'osc_trigger_channel'):
-            self._oscilloscope_config['trigger'] = {
-                'channel': self.osc_trigger_channel.currentText(),
-                'type': self.osc_trigger_type.currentText(),
-                'setting': self.osc_trigger_setting.currentText(),
-                'noise_reject': self.osc_noise_reject.isChecked()
+        # Collect acquisition settings
+        if hasattr(self, 'osc_timebase'):
+            self._oscilloscope_config['acquisition'] = {
+                'timebase_ms': self.osc_timebase.value()
             }
     
     def _update_osc_config_ui(self):
@@ -5585,22 +5545,11 @@ Data Points Used: {data_points}"""
                 if index >= 0:
                     unit_widget.setCurrentIndex(index)
         
-        # Update trigger widgets
-        trigger_config = self._oscilloscope_config.get('trigger', {})
-        if hasattr(self, 'osc_trigger_channel'):
-            trigger_ch = trigger_config.get('channel', 'CH1')
-            index = self.osc_trigger_channel.findText(trigger_ch)
-            if index >= 0:
-                self.osc_trigger_channel.setCurrentIndex(index)
-        
-        if hasattr(self, 'osc_trigger_setting'):
-            setting = trigger_config.get('setting', 'Rising')
-            index = self.osc_trigger_setting.findText(setting)
-            if index >= 0:
-                self.osc_trigger_setting.setCurrentIndex(index)
-        
-        if hasattr(self, 'osc_noise_reject'):
-            self.osc_noise_reject.setChecked(trigger_config.get('noise_reject', False))
+        # Update acquisition settings widgets
+        acquisition_config = self._oscilloscope_config.get('acquisition', {})
+        if hasattr(self, 'osc_timebase'):
+            timebase_ms = acquisition_config.get('timebase_ms', 1.0)
+            self.osc_timebase.setValue(timebase_ms)
     
     def _validate_osc_config(self) -> Tuple[bool, List[str]]:
         """Validate oscilloscope configuration.
@@ -5623,11 +5572,11 @@ Data Points Used: {data_points}"""
                 else:
                     channel_names.append(name)
         
-        # 2. Check trigger channel is enabled
-        trigger_ch = self._oscilloscope_config.get('trigger', {}).get('channel', 'CH1')
-        trigger_ch_config = self._oscilloscope_config.get('channels', {}).get(trigger_ch, {})
-        if not trigger_ch_config.get('enabled', False):
-            errors.append(f"Trigger channel {trigger_ch} must be enabled")
+        # 2. Validate timebase (must be > 0)
+        acquisition_config = self._oscilloscope_config.get('acquisition', {})
+        timebase_ms = acquisition_config.get('timebase_ms', 1.0)
+        if timebase_ms <= 0:
+            errors.append("Timebase must be greater than 0")
         
         # 3. Validate probe attenuation (must be > 0)
         for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
