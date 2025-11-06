@@ -1,0 +1,27 @@
+{
+  "tests": [
+    {
+      "name": "PhaseTEst1",
+      "type": "phase_current_calibration",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "phase_current_calibration",
+        "command_message": 272,
+        "trigger_test_signal": "Mctrl_Phase_I_Test_Enable",
+        "iq_ref_signal": "Mctrl_Set_Iq_Ref",
+        "id_ref_signal": "Mctrl_Set_Id_Ref",
+        "phase_current_signal_source": 250,
+        "phase_current_v_signal": "PhaseVCurrent",
+        "phase_current_w_signal": "PhaseWCurrent",
+        "min_iq": 10.0,
+        "max_iq": 50.0,
+        "step_iq": 10.0,
+        "ipc_test_duration_ms": 3000,
+        "oscilloscope_phase_v_ch": "Phase V Current",
+        "oscilloscope_phase_w_ch": "Phase W Current"
+      },
+      "created_at": "2025-11-06T08:08:56.865026Z"
+    }
+  ]
+}

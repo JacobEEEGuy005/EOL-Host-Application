@@ -5850,16 +5850,18 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['digital', 'analog'])
+        type_combo.addItems(['digital', 'analog', 'phase_current_calibration'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container
         act_widget = QtWidgets.QWidget()
         act_layout = QtWidgets.QFormLayout(act_widget)
-        # separate digital and analog sub-widgets so we can show/hide based on type
+        # separate digital, analog, and phase_current_calibration sub-widgets so we can show/hide based on type
         digital_widget = QtWidgets.QWidget()
         digital_layout = QtWidgets.QFormLayout(digital_widget)
         analog_widget = QtWidgets.QWidget()
         analog_layout = QtWidgets.QFormLayout(analog_widget)
+        phase_current_widget = QtWidgets.QWidget()
+        phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
     # if a DBC is loaded, provide message+signal dropdowns
         if self.dbc_service is not None and self.dbc_service.is_loaded():
             # collect messages
@@ -5974,6 +5976,130 @@ Data Points Used: {data_points}"""
             analog_layout.addRow('Step Change (mV):', dac_step_mv)
             analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
             analog_layout.addRow('Expected Gain (optional):', expected_gain_edit)
+            
+            # Phase Current Calibration fields (DBC-driven)
+            # Command Message: dropdown of CAN Messages
+            phase_current_cmd_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                phase_current_cmd_msg_combo.addItem(label, fid)
+            
+            # Trigger Test Signal: dropdown based on selected Command Message
+            phase_current_trigger_signal_combo = QtWidgets.QComboBox()
+            # Iq_ref Signal: dropdown based on selected Command Message
+            phase_current_iq_ref_signal_combo = QtWidgets.QComboBox()
+            # Id_ref Signal: dropdown based on selected Command Message
+            phase_current_id_ref_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_phase_current_cmd_signals(idx=0):
+                """Update Trigger Test, Iq_ref, and Id_ref signal dropdowns based on selected Command Message."""
+                phase_current_trigger_signal_combo.clear()
+                phase_current_iq_ref_signal_combo.clear()
+                phase_current_id_ref_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    phase_current_trigger_signal_combo.addItems(sigs)
+                    phase_current_iq_ref_signal_combo.addItems(sigs)
+                    phase_current_id_ref_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_phase_current_cmd_signals(0)
+            phase_current_cmd_msg_combo.currentIndexChanged.connect(_update_phase_current_cmd_signals)
+            
+            # Phase Current Signal Source: dropdown of CAN Messages (for V and W signals)
+            phase_current_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                phase_current_msg_combo.addItem(label, fid)
+            
+            # Phase Current V Signal: dropdown based on selected message
+            phase_current_v_signal_combo = QtWidgets.QComboBox()
+            # Phase Current W Signal: dropdown based on selected message
+            phase_current_w_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_phase_current_signals(idx=0):
+                """Update both V and W signal dropdowns based on selected message."""
+                phase_current_v_signal_combo.clear()
+                phase_current_w_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    phase_current_v_signal_combo.addItems(sigs)
+                    phase_current_w_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_phase_current_signals(0)
+            phase_current_msg_combo.currentIndexChanged.connect(_update_phase_current_signals)
+            
+            # Numerical input fields for Iq values (in Amperes)
+            iq_validator = QtGui.QDoubleValidator(-1000.0, 1000.0, 6, self)
+            iq_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            
+            min_iq_edit = QtWidgets.QLineEdit()
+            min_iq_edit.setValidator(iq_validator)
+            min_iq_edit.setPlaceholderText('e.g., -10.0')
+            
+            max_iq_edit = QtWidgets.QLineEdit()
+            max_iq_edit.setValidator(iq_validator)
+            max_iq_edit.setPlaceholderText('e.g., 10.0')
+            
+            step_iq_edit = QtWidgets.QLineEdit()
+            step_iq_edit.setValidator(iq_validator)
+            step_iq_edit.setPlaceholderText('e.g., 1.0')
+            
+            # IPC Test duration input field (in milliseconds)
+            duration_validator = QtGui.QIntValidator(0, 60000, self)  # 0 to 60 seconds
+            ipc_test_duration_edit = QtWidgets.QLineEdit()
+            ipc_test_duration_edit.setValidator(duration_validator)
+            ipc_test_duration_edit.setPlaceholderText('e.g., 1000')
+            
+            # Oscilloscope Channel dropdowns - populated from enabled channels in oscilloscope config
+            osc_phase_v_ch_combo = QtWidgets.QComboBox()
+            osc_phase_w_ch_combo = QtWidgets.QComboBox()
+            
+            def _update_osc_channel_dropdowns():
+                """Update oscilloscope channel dropdowns with enabled channel names."""
+                osc_phase_v_ch_combo.clear()
+                osc_phase_w_ch_combo.clear()
+                
+                # Get enabled channel names from oscilloscope configuration
+                enabled_channel_names = []
+                if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                    channels = self._oscilloscope_config.get('channels', {})
+                    for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+                        if ch_key in channels:
+                            ch_config = channels[ch_key]
+                            if ch_config.get('enabled', False):
+                                channel_name = ch_config.get('channel_name', '').strip()
+                                if channel_name:
+                                    enabled_channel_names.append(channel_name)
+                
+                # Populate both dropdowns with enabled channel names
+                osc_phase_v_ch_combo.addItems(enabled_channel_names)
+                osc_phase_w_ch_combo.addItems(enabled_channel_names)
+            
+            # Initialize dropdowns
+            _update_osc_channel_dropdowns()
+            
+            # Populate phase current sub-widget
+            phase_current_layout.addRow('Command Message:', phase_current_cmd_msg_combo)
+            phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_combo)
+            phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_combo)
+            phase_current_layout.addRow('Id_ref Signal:', phase_current_id_ref_signal_combo)
+            phase_current_layout.addRow('Phase Current Signal Source:', phase_current_msg_combo)
+            phase_current_layout.addRow('Phase Current V Signal:', phase_current_v_signal_combo)
+            phase_current_layout.addRow('Phase Current W Signal:', phase_current_w_signal_combo)
+            phase_current_layout.addRow('Min Iq (A):', min_iq_edit)
+            phase_current_layout.addRow('Max Iq (A):', max_iq_edit)
+            phase_current_layout.addRow('Step Iq (A):', step_iq_edit)
+            phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
+            phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
+            phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -6011,6 +6137,79 @@ Data Points Used: {data_points}"""
             analog_layout.addRow('DAC Max Output (mV):', dac_max_mv)
             analog_layout.addRow('Step Change (mV):', dac_step_mv)
             analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
+            
+            # Phase Current Calibration fields (fallback when no DBC)
+            phase_current_cmd_msg_edit = QtWidgets.QLineEdit()
+            phase_current_trigger_signal_edit = QtWidgets.QLineEdit()
+            phase_current_iq_ref_signal_edit = QtWidgets.QLineEdit()
+            phase_current_id_ref_signal_edit = QtWidgets.QLineEdit()
+            phase_current_msg_edit = QtWidgets.QLineEdit()
+            phase_current_v_signal_edit = QtWidgets.QLineEdit()
+            phase_current_w_signal_edit = QtWidgets.QLineEdit()
+            
+            # Numerical input fields for Iq values (in Amperes)
+            iq_validator = QtGui.QDoubleValidator(-1000.0, 1000.0, 6, self)
+            iq_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            
+            min_iq_edit = QtWidgets.QLineEdit()
+            min_iq_edit.setValidator(iq_validator)
+            min_iq_edit.setPlaceholderText('e.g., -10.0')
+            
+            max_iq_edit = QtWidgets.QLineEdit()
+            max_iq_edit.setValidator(iq_validator)
+            max_iq_edit.setPlaceholderText('e.g., 10.0')
+            
+            step_iq_edit = QtWidgets.QLineEdit()
+            step_iq_edit.setValidator(iq_validator)
+            step_iq_edit.setPlaceholderText('e.g., 1.0')
+            
+            # IPC Test duration input field (in milliseconds)
+            duration_validator = QtGui.QIntValidator(0, 60000, self)  # 0 to 60 seconds
+            ipc_test_duration_edit = QtWidgets.QLineEdit()
+            ipc_test_duration_edit.setValidator(duration_validator)
+            ipc_test_duration_edit.setPlaceholderText('e.g., 1000')
+            
+            # Oscilloscope Channel dropdowns - populated from enabled channels in oscilloscope config
+            osc_phase_v_ch_combo = QtWidgets.QComboBox()
+            osc_phase_w_ch_combo = QtWidgets.QComboBox()
+            
+            def _update_osc_channel_dropdowns():
+                """Update oscilloscope channel dropdowns with enabled channel names."""
+                osc_phase_v_ch_combo.clear()
+                osc_phase_w_ch_combo.clear()
+                
+                # Get enabled channel names from oscilloscope configuration
+                enabled_channel_names = []
+                if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                    channels = self._oscilloscope_config.get('channels', {})
+                    for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+                        if ch_key in channels:
+                            ch_config = channels[ch_key]
+                            if ch_config.get('enabled', False):
+                                channel_name = ch_config.get('channel_name', '').strip()
+                                if channel_name:
+                                    enabled_channel_names.append(channel_name)
+                
+                # Populate both dropdowns with enabled channel names
+                osc_phase_v_ch_combo.addItems(enabled_channel_names)
+                osc_phase_w_ch_combo.addItems(enabled_channel_names)
+            
+            # Initialize dropdowns
+            _update_osc_channel_dropdowns()
+            
+            phase_current_layout.addRow('Command Message (CAN ID):', phase_current_cmd_msg_edit)
+            phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_edit)
+            phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_edit)
+            phase_current_layout.addRow('Id_ref Signal:', phase_current_id_ref_signal_edit)
+            phase_current_layout.addRow('Phase Current Signal Source (CAN ID):', phase_current_msg_edit)
+            phase_current_layout.addRow('Phase Current V Signal:', phase_current_v_signal_edit)
+            phase_current_layout.addRow('Phase Current W Signal:', phase_current_w_signal_edit)
+            phase_current_layout.addRow('Min Iq (A):', min_iq_edit)
+            phase_current_layout.addRow('Max Iq (A):', max_iq_edit)
+            phase_current_layout.addRow('Step Iq (A):', step_iq_edit)
+            phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
+            phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
+            phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -6040,23 +6239,68 @@ Data Points Used: {data_points}"""
             if fb_msg_display:
                 _update_fb_signals(0)
             fb_msg_combo.currentIndexChanged.connect(_update_fb_signals)
-            form.addRow('Feedback Signal Source:', fb_msg_combo)
-            form.addRow('Feedback Signal:', fb_signal_combo)
+            # Create labels and store references for showing/hiding
+            fb_msg_label = QtWidgets.QLabel('Feedback Signal Source:')
+            fb_signal_label = QtWidgets.QLabel('Feedback Signal:')
+            form.addRow(fb_msg_label, fb_msg_combo)
+            form.addRow(fb_signal_label, fb_signal_combo)
         else:
-            form.addRow('Feedback Signal (free-text):', feedback_edit)
+            feedback_edit_label = QtWidgets.QLabel('Feedback Signal (free-text):')
+            form.addRow(feedback_edit_label, feedback_edit)
+            # For non-DBC case, store reference to feedback_edit
+            fb_msg_label = None
+            fb_msg_field = None
+            fb_signal_label = None
+            fb_signal_field = None
         v.addLayout(form)
         # add sub-widgets to container and show only the appropriate one
         act_layout.addRow('Digital:', digital_widget)
         act_layout.addRow('Analog:', analog_widget)
+        act_layout.addRow('Phase Current Calibration:', phase_current_widget)
         v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
         v.addWidget(act_widget)
 
         def _on_type_change(txt: str):
             try:
                 if txt == 'digital':
-                    digital_widget.show(); analog_widget.hide()
-                else:
-                    digital_widget.hide(); analog_widget.show()
+                    digital_widget.show()
+                    analog_widget.hide()
+                    phase_current_widget.hide()
+                    # Show feedback fields for digital and analog
+                    if fb_msg_label is not None:
+                        fb_msg_label.show()
+                        fb_msg_combo.show()
+                        fb_signal_label.show()
+                        fb_signal_combo.show()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.show()
+                        feedback_edit.show()
+                elif txt == 'analog':
+                    digital_widget.hide()
+                    analog_widget.show()
+                    phase_current_widget.hide()
+                    # Show feedback fields for digital and analog
+                    if fb_msg_label is not None:
+                        fb_msg_label.show()
+                        fb_msg_combo.show()
+                        fb_signal_label.show()
+                        fb_signal_combo.show()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.show()
+                        feedback_edit.show()
+                elif txt == 'phase_current_calibration':
+                    digital_widget.hide()
+                    analog_widget.hide()
+                    phase_current_widget.show()
+                    # Hide feedback fields for phase current calibration
+                    if fb_msg_label is not None:
+                        fb_msg_label.hide()
+                        fb_msg_combo.hide()
+                        fb_signal_label.hide()
+                        fb_signal_combo.hide()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.hide()
+                        feedback_edit.hide()
             except Exception:
                 pass
         # initialize visibility
@@ -6101,7 +6345,7 @@ Data Points Used: {data_points}"""
                         'value_high': high,
                         'dwell_ms': dig_dwell,
                     }
-                else:
+                elif t == 'analog':
                     # analog: read selected DAC message and related signal selections and numeric params
                     try:
                         dac_id = dac_msg_combo.currentData()
@@ -6166,7 +6410,68 @@ Data Points Used: {data_points}"""
                         act['expected_gain'] = expected_gain_val
                     if gain_tolerance_val is not None:
                         act['gain_tolerance_percent'] = gain_tolerance_val
-            else:
+                elif t == 'phase_current_calibration':
+                    # Phase Current Calibration: read all fields
+                    # Command Message and related signals
+                    try:
+                        cmd_msg_id = phase_current_cmd_msg_combo.currentData()
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_test_sig = phase_current_trigger_signal_combo.currentText().strip() if phase_current_trigger_signal_combo.count() else ''
+                    iq_ref_sig = phase_current_iq_ref_signal_combo.currentText().strip() if phase_current_iq_ref_signal_combo.count() else ''
+                    id_ref_sig = phase_current_id_ref_signal_combo.currentText().strip() if phase_current_id_ref_signal_combo.count() else ''
+                    
+                    # Phase Current Signal Source and V/W signals
+                    try:
+                        phase_current_can_id = phase_current_msg_combo.currentData()
+                    except Exception:
+                        phase_current_can_id = None
+                    phase_current_v_sig = phase_current_v_signal_combo.currentText().strip() if phase_current_v_signal_combo.count() else ''
+                    phase_current_w_sig = phase_current_w_signal_combo.currentText().strip() if phase_current_w_signal_combo.count() else ''
+                    
+                    # Iq values (convert to float)
+                    def _to_float_or_none(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_iq = _to_float_or_none(min_iq_edit)
+                    max_iq = _to_float_or_none(max_iq_edit)
+                    step_iq = _to_float_or_none(step_iq_edit)
+                    
+                    # IPC Test duration (convert to int)
+                    def _to_int_or_none_duration(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    ipc_test_duration = _to_int_or_none_duration(ipc_test_duration_edit)
+                    
+                    # Oscilloscope channel selections
+                    osc_phase_v_ch = osc_phase_v_ch_combo.currentText().strip() if osc_phase_v_ch_combo.count() else ''
+                    osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if osc_phase_w_ch_combo.count() else ''
+                    
+                    act = {
+                        'type': 'phase_current_calibration',
+                        'command_message': cmd_msg_id,
+                        'trigger_test_signal': trigger_test_sig,
+                        'iq_ref_signal': iq_ref_sig,
+                        'id_ref_signal': id_ref_sig,
+                        'phase_current_signal_source': phase_current_can_id,
+                        'phase_current_v_signal': phase_current_v_sig,
+                        'phase_current_w_signal': phase_current_w_sig,
+                        'min_iq': min_iq,
+                        'max_iq': max_iq,
+                        'step_iq': step_iq,
+                        'ipc_test_duration_ms': ipc_test_duration,
+                        'oscilloscope_phase_v_ch': osc_phase_v_ch,
+                        'oscilloscope_phase_w_ch': osc_phase_w_ch,
+                    }
+            else:  # No DBC loaded
                 if t == 'digital':
                     try:
                         can_id = int(dig_can.text().strip(), 0) if dig_can.text().strip() else None
@@ -6185,7 +6490,7 @@ Data Points Used: {data_points}"""
                         'value_high': dig_value_high.text().strip(),
                         'dwell_ms': dig_dwell,
                     }
-                else:
+                elif t == 'analog':
                     # Non-DBC analog test: read all fields
                     try:
                         mux_channel_val = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
@@ -6242,6 +6547,67 @@ Data Points Used: {data_points}"""
                         act['expected_gain'] = expected_gain_val
                     if gain_tolerance_val is not None:
                         act['gain_tolerance_percent'] = gain_tolerance_val
+                elif t == 'phase_current_calibration':
+                    # Phase Current Calibration (no DBC): read from text fields
+                    # Command Message and related signals
+                    try:
+                        cmd_msg_id = int(phase_current_cmd_msg_edit.text().strip(), 0) if phase_current_cmd_msg_edit.text().strip() else None
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_test_sig = phase_current_trigger_signal_edit.text().strip()
+                    iq_ref_sig = phase_current_iq_ref_signal_edit.text().strip()
+                    id_ref_sig = phase_current_id_ref_signal_edit.text().strip()
+                    
+                    # Phase Current Signal Source and V/W signals
+                    try:
+                        phase_current_can_id = int(phase_current_msg_edit.text().strip(), 0) if phase_current_msg_edit.text().strip() else None
+                    except Exception:
+                        phase_current_can_id = None
+                    phase_current_v_sig = phase_current_v_signal_edit.text().strip()
+                    phase_current_w_sig = phase_current_w_signal_edit.text().strip()
+                    
+                    # Iq values (convert to float)
+                    def _to_float_or_none(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_iq = _to_float_or_none(min_iq_edit)
+                    max_iq = _to_float_or_none(max_iq_edit)
+                    step_iq = _to_float_or_none(step_iq_edit)
+                    
+                    # IPC Test duration (convert to int)
+                    def _to_int_or_none_duration(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    ipc_test_duration = _to_int_or_none_duration(ipc_test_duration_edit)
+                    
+                    # Oscilloscope channel selections
+                    osc_phase_v_ch = osc_phase_v_ch_combo.currentText().strip() if osc_phase_v_ch_combo.count() else ''
+                    osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if osc_phase_w_ch_combo.count() else ''
+                    
+                    act = {
+                        'type': 'phase_current_calibration',
+                        'command_message': cmd_msg_id,
+                        'trigger_test_signal': trigger_test_sig,
+                        'iq_ref_signal': iq_ref_sig,
+                        'id_ref_signal': id_ref_sig,
+                        'phase_current_signal_source': phase_current_can_id,
+                        'phase_current_v_signal': phase_current_v_sig,
+                        'phase_current_w_signal': phase_current_w_sig,
+                        'min_iq': min_iq,
+                        'max_iq': max_iq,
+                        'step_iq': step_iq,
+                        'ipc_test_duration_ms': ipc_test_duration,
+                        'oscilloscope_phase_v_ch': osc_phase_v_ch,
+                        'oscilloscope_phase_w_ch': osc_phase_w_ch,
+                    }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -6323,8 +6689,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('digital', 'analog'):
-            return False, f"Invalid test type: {test_type}. Must be 'digital' or 'analog'"
+        if test_type not in ('digital', 'analog', 'phase_current_calibration'):
+            return False, f"Invalid test type: {test_type}. Must be 'digital', 'analog', or 'phase_current_calibration'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -6354,6 +6720,10 @@ Data Points Used: {data_points}"""
         elif test_type == 'digital':
             if actuation.get('can_id') is None:
                 return False, "Digital test requires CAN ID"
+        elif test_type == 'phase_current_calibration':
+            # Phase current calibration validation - fields are optional but should be validated if present
+            # No strict requirements for now, but could add validation for required fields later
+            pass
         
         return True, ""
     
@@ -6749,7 +7119,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['digital', 'analog'])
+        type_combo.addItems(['digital', 'analog', 'phase_current_calibration'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -6801,9 +7171,10 @@ Data Points Used: {data_points}"""
             except Exception:
                 pass
 
-        # actuation sub-widgets (digital/analog)
+        # actuation sub-widgets (digital/analog/phase_current_calibration)
         digital_widget = QtWidgets.QWidget(); digital_layout = QtWidgets.QFormLayout(digital_widget)
         analog_widget = QtWidgets.QWidget(); analog_layout = QtWidgets.QFormLayout(analog_widget)
+        phase_current_widget = QtWidgets.QWidget(); phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
 
         # populate actuation controls from stored data
         act = data.get('actuation', {}) or {}
@@ -6956,6 +7327,142 @@ Data Points Used: {data_points}"""
             gain_tolerance_edit.setValidator(gain_tolerance_validator)
             gain_tolerance_edit.setPlaceholderText('Optional: % tolerance for gain error (e.g., 5.0)')
             analog_layout.addRow('Gain Tolerance % (optional):', gain_tolerance_edit)
+            
+            # Phase Current Calibration fields (DBC-driven) - for edit dialog
+            phase_current_cmd_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                phase_current_cmd_msg_combo.addItem(label, fid)
+            
+            phase_current_trigger_signal_combo = QtWidgets.QComboBox()
+            phase_current_iq_ref_signal_combo = QtWidgets.QComboBox()
+            phase_current_id_ref_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_phase_current_cmd_signals_edit(idx=0):
+                phase_current_trigger_signal_combo.clear()
+                phase_current_iq_ref_signal_combo.clear()
+                phase_current_id_ref_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    phase_current_trigger_signal_combo.addItems(sigs)
+                    phase_current_iq_ref_signal_combo.addItems(sigs)
+                    phase_current_id_ref_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_phase_current_cmd_signals_edit(0)
+            phase_current_cmd_msg_combo.currentIndexChanged.connect(_update_phase_current_cmd_signals_edit)
+            
+            phase_current_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                phase_current_msg_combo.addItem(label, fid)
+            
+            phase_current_v_signal_combo = QtWidgets.QComboBox()
+            phase_current_w_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_phase_current_signals_edit(idx=0):
+                phase_current_v_signal_combo.clear()
+                phase_current_w_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    phase_current_v_signal_combo.addItems(sigs)
+                    phase_current_w_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_phase_current_signals_edit(0)
+            phase_current_msg_combo.currentIndexChanged.connect(_update_phase_current_signals_edit)
+            
+            # Iq values
+            iq_validator = QtGui.QDoubleValidator(-1000.0, 1000.0, 6, self)
+            iq_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            min_iq_edit = QtWidgets.QLineEdit(str(act.get('min_iq', '')))
+            min_iq_edit.setValidator(iq_validator)
+            max_iq_edit = QtWidgets.QLineEdit(str(act.get('max_iq', '')))
+            max_iq_edit.setValidator(iq_validator)
+            step_iq_edit = QtWidgets.QLineEdit(str(act.get('step_iq', '')))
+            step_iq_edit.setValidator(iq_validator)
+            
+            # IPC Test duration
+            duration_validator = QtGui.QIntValidator(0, 60000, self)
+            ipc_test_duration_edit = QtWidgets.QLineEdit(str(act.get('ipc_test_duration_ms', '')))
+            ipc_test_duration_edit.setValidator(duration_validator)
+            
+            # Oscilloscope channel dropdowns
+            osc_phase_v_ch_combo = QtWidgets.QComboBox()
+            osc_phase_w_ch_combo = QtWidgets.QComboBox()
+            
+            def _update_osc_channel_dropdowns_edit():
+                osc_phase_v_ch_combo.clear()
+                osc_phase_w_ch_combo.clear()
+                enabled_channel_names = []
+                if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                    channels = self._oscilloscope_config.get('channels', {})
+                    for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+                        if ch_key in channels:
+                            ch_config = channels[ch_key]
+                            if ch_config.get('enabled', False):
+                                channel_name = ch_config.get('channel_name', '').strip()
+                                if channel_name:
+                                    enabled_channel_names.append(channel_name)
+                osc_phase_v_ch_combo.addItems(enabled_channel_names)
+                osc_phase_w_ch_combo.addItems(enabled_channel_names)
+            
+            _update_osc_channel_dropdowns_edit()
+            
+            # Populate phase current fields from stored data
+            try:
+                cmd_msg_id = act.get('command_message')
+                if cmd_msg_id is not None:
+                    for i in range(phase_current_cmd_msg_combo.count()):
+                        if phase_current_cmd_msg_combo.itemData(i) == cmd_msg_id:
+                            phase_current_cmd_msg_combo.setCurrentIndex(i)
+                            _update_phase_current_cmd_signals_edit(i)
+                            break
+                if act.get('trigger_test_signal') and phase_current_trigger_signal_combo.count():
+                    phase_current_trigger_signal_combo.setCurrentText(str(act.get('trigger_test_signal')))
+                if act.get('iq_ref_signal') and phase_current_iq_ref_signal_combo.count():
+                    phase_current_iq_ref_signal_combo.setCurrentText(str(act.get('iq_ref_signal')))
+                if act.get('id_ref_signal') and phase_current_id_ref_signal_combo.count():
+                    phase_current_id_ref_signal_combo.setCurrentText(str(act.get('id_ref_signal')))
+                
+                phase_current_can_id = act.get('phase_current_signal_source')
+                if phase_current_can_id is not None:
+                    for i in range(phase_current_msg_combo.count()):
+                        if phase_current_msg_combo.itemData(i) == phase_current_can_id:
+                            phase_current_msg_combo.setCurrentIndex(i)
+                            _update_phase_current_signals_edit(i)
+                            break
+                if act.get('phase_current_v_signal') and phase_current_v_signal_combo.count():
+                    phase_current_v_signal_combo.setCurrentText(str(act.get('phase_current_v_signal')))
+                if act.get('phase_current_w_signal') and phase_current_w_signal_combo.count():
+                    phase_current_w_signal_combo.setCurrentText(str(act.get('phase_current_w_signal')))
+                
+                if act.get('oscilloscope_phase_v_ch') and osc_phase_v_ch_combo.count():
+                    osc_phase_v_ch_combo.setCurrentText(str(act.get('oscilloscope_phase_v_ch')))
+                if act.get('oscilloscope_phase_w_ch') and osc_phase_w_ch_combo.count():
+                    osc_phase_w_ch_combo.setCurrentText(str(act.get('oscilloscope_phase_w_ch')))
+            except Exception:
+                pass
+            
+            phase_current_layout.addRow('Command Message:', phase_current_cmd_msg_combo)
+            phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_combo)
+            phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_combo)
+            phase_current_layout.addRow('Id_ref Signal:', phase_current_id_ref_signal_combo)
+            phase_current_layout.addRow('Phase Current Signal Source:', phase_current_msg_combo)
+            phase_current_layout.addRow('Phase Current V Signal:', phase_current_v_signal_combo)
+            phase_current_layout.addRow('Phase Current W Signal:', phase_current_w_signal_combo)
+            phase_current_layout.addRow('Min Iq (A):', min_iq_edit)
+            phase_current_layout.addRow('Max Iq (A):', max_iq_edit)
+            phase_current_layout.addRow('Step Iq (A):', step_iq_edit)
+            phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
+            phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
+            phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -6999,28 +7506,136 @@ Data Points Used: {data_points}"""
             analog_layout.addRow('Step Change (mV):', dac_step_mv)
             analog_layout.addRow('Dwell Time (ms):', dac_dwell_ms)
             analog_layout.addRow('Expected Gain (optional):', expected_gain_edit)
+            
+            # Phase Current Calibration fields (fallback when no DBC) - for edit dialog
+            phase_current_cmd_msg_edit = QtWidgets.QLineEdit(str(act.get('command_message', '')))
+            phase_current_trigger_signal_edit = QtWidgets.QLineEdit(str(act.get('trigger_test_signal', '')))
+            phase_current_iq_ref_signal_edit = QtWidgets.QLineEdit(str(act.get('iq_ref_signal', '')))
+            phase_current_id_ref_signal_edit = QtWidgets.QLineEdit(str(act.get('id_ref_signal', '')))
+            phase_current_msg_edit = QtWidgets.QLineEdit(str(act.get('phase_current_signal_source', '')))
+            phase_current_v_signal_edit = QtWidgets.QLineEdit(str(act.get('phase_current_v_signal', '')))
+            phase_current_w_signal_edit = QtWidgets.QLineEdit(str(act.get('phase_current_w_signal', '')))
+            
+            iq_validator = QtGui.QDoubleValidator(-1000.0, 1000.0, 6, self)
+            iq_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            min_iq_edit = QtWidgets.QLineEdit(str(act.get('min_iq', '')))
+            min_iq_edit.setValidator(iq_validator)
+            max_iq_edit = QtWidgets.QLineEdit(str(act.get('max_iq', '')))
+            max_iq_edit.setValidator(iq_validator)
+            step_iq_edit = QtWidgets.QLineEdit(str(act.get('step_iq', '')))
+            step_iq_edit.setValidator(iq_validator)
+            
+            duration_validator = QtGui.QIntValidator(0, 60000, self)
+            ipc_test_duration_edit = QtWidgets.QLineEdit(str(act.get('ipc_test_duration_ms', '')))
+            ipc_test_duration_edit.setValidator(duration_validator)
+            
+            osc_phase_v_ch_combo = QtWidgets.QComboBox()
+            osc_phase_w_ch_combo = QtWidgets.QComboBox()
+            
+            def _update_osc_channel_dropdowns_edit():
+                osc_phase_v_ch_combo.clear()
+                osc_phase_w_ch_combo.clear()
+                enabled_channel_names = []
+                if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                    channels = self._oscilloscope_config.get('channels', {})
+                    for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+                        if ch_key in channels:
+                            ch_config = channels[ch_key]
+                            if ch_config.get('enabled', False):
+                                channel_name = ch_config.get('channel_name', '').strip()
+                                if channel_name:
+                                    enabled_channel_names.append(channel_name)
+                osc_phase_v_ch_combo.addItems(enabled_channel_names)
+                osc_phase_w_ch_combo.addItems(enabled_channel_names)
+            
+            _update_osc_channel_dropdowns_edit()
+            
+            try:
+                if act.get('oscilloscope_phase_v_ch') and osc_phase_v_ch_combo.count():
+                    osc_phase_v_ch_combo.setCurrentText(str(act.get('oscilloscope_phase_v_ch')))
+                if act.get('oscilloscope_phase_w_ch') and osc_phase_w_ch_combo.count():
+                    osc_phase_w_ch_combo.setCurrentText(str(act.get('oscilloscope_phase_w_ch')))
+            except Exception:
+                pass
+            
+            phase_current_layout.addRow('Command Message (CAN ID):', phase_current_cmd_msg_edit)
+            phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_edit)
+            phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_edit)
+            phase_current_layout.addRow('Id_ref Signal:', phase_current_id_ref_signal_edit)
+            phase_current_layout.addRow('Phase Current Signal Source (CAN ID):', phase_current_msg_edit)
+            phase_current_layout.addRow('Phase Current V Signal:', phase_current_v_signal_edit)
+            phase_current_layout.addRow('Phase Current W Signal:', phase_current_w_signal_edit)
+            phase_current_layout.addRow('Min Iq (A):', min_iq_edit)
+            phase_current_layout.addRow('Max Iq (A):', max_iq_edit)
+            phase_current_layout.addRow('Step Iq (A):', step_iq_edit)
+            phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
+            phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
+            phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
+        # Feedback fields - store references for showing/hiding
+        fb_msg_label = None
+        fb_signal_label = None
+        feedback_edit_label = None
         if self.dbc_service is not None and self.dbc_service.is_loaded():
-            form.addRow('Feedback Signal Source:', fb_msg_combo)
-            form.addRow('Feedback Signal:', fb_signal_combo)
+            fb_msg_label = QtWidgets.QLabel('Feedback Signal Source:')
+            fb_signal_label = QtWidgets.QLabel('Feedback Signal:')
+            form.addRow(fb_msg_label, fb_msg_combo)
+            form.addRow(fb_signal_label, fb_signal_combo)
         else:
-            form.addRow('Feedback Signal (free-text):', feedback_edit)
+            feedback_edit_label = QtWidgets.QLabel('Feedback Signal (free-text):')
+            form.addRow(feedback_edit_label, feedback_edit)
 
         v.addLayout(form)
         act_layout_parent = QtWidgets.QFormLayout(act_widget := QtWidgets.QWidget())
         act_layout_parent.addRow('Digital:', digital_widget)
         act_layout_parent.addRow('Analog:', analog_widget)
+        act_layout_parent.addRow('Phase Current Calibration:', phase_current_widget)
         v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
         v.addWidget(act_widget)
 
         def _on_type_change_edit(txt: str):
             try:
                 if txt == 'digital':
-                    digital_widget.show(); analog_widget.hide()
-                else:
-                    digital_widget.hide(); analog_widget.show()
+                    digital_widget.show()
+                    analog_widget.hide()
+                    phase_current_widget.hide()
+                    # Show feedback fields for digital and analog
+                    if fb_msg_label is not None:
+                        fb_msg_label.show()
+                        fb_msg_combo.show()
+                        fb_signal_label.show()
+                        fb_signal_combo.show()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.show()
+                        feedback_edit.show()
+                elif txt == 'analog':
+                    digital_widget.hide()
+                    analog_widget.show()
+                    phase_current_widget.hide()
+                    # Show feedback fields for digital and analog
+                    if fb_msg_label is not None:
+                        fb_msg_label.show()
+                        fb_msg_combo.show()
+                        fb_signal_label.show()
+                        fb_signal_combo.show()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.show()
+                        feedback_edit.show()
+                elif txt == 'phase_current_calibration':
+                    digital_widget.hide()
+                    analog_widget.hide()
+                    phase_current_widget.show()
+                    # Hide feedback fields for phase current calibration
+                    if fb_msg_label is not None:
+                        fb_msg_label.hide()
+                        fb_msg_combo.hide()
+                        fb_signal_label.hide()
+                        fb_signal_combo.hide()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.hide()
+                        feedback_edit.hide()
             except Exception:
                 pass
 
@@ -7066,7 +7681,7 @@ Data Points Used: {data_points}"""
                     except Exception:
                         dig_dwell = None
                     data['actuation'] = {'type':'digital','can_id':can_id,'signal':sig,'value_low':low,'value_high':high,'dwell_ms':dig_dwell}
-                else:
+                elif data['type'] == 'analog':
                     # analog: capture selected DAC message and signal selections
                     try:
                         dac_id = dac_msg_combo.currentData() if 'dac_msg_combo' in locals() else None
@@ -7133,6 +7748,62 @@ Data Points Used: {data_points}"""
                         data['actuation']['expected_gain'] = expected_gain_val
                     if gain_tolerance_val is not None:
                         data['actuation']['gain_tolerance_percent'] = gain_tolerance_val
+                elif data['type'] == 'phase_current_calibration':
+                    # Phase Current Calibration: read all fields
+                    try:
+                        cmd_msg_id = phase_current_cmd_msg_combo.currentData() if 'phase_current_cmd_msg_combo' in locals() else None
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_test_sig = phase_current_trigger_signal_combo.currentText().strip() if 'phase_current_trigger_signal_combo' in locals() and phase_current_trigger_signal_combo.count() else ''
+                    iq_ref_sig = phase_current_iq_ref_signal_combo.currentText().strip() if 'phase_current_iq_ref_signal_combo' in locals() and phase_current_iq_ref_signal_combo.count() else ''
+                    id_ref_sig = phase_current_id_ref_signal_combo.currentText().strip() if 'phase_current_id_ref_signal_combo' in locals() and phase_current_id_ref_signal_combo.count() else ''
+                    
+                    try:
+                        phase_current_can_id = phase_current_msg_combo.currentData() if 'phase_current_msg_combo' in locals() else None
+                    except Exception:
+                        phase_current_can_id = None
+                    phase_current_v_sig = phase_current_v_signal_combo.currentText().strip() if 'phase_current_v_signal_combo' in locals() and phase_current_v_signal_combo.count() else ''
+                    phase_current_w_sig = phase_current_w_signal_combo.currentText().strip() if 'phase_current_w_signal_combo' in locals() and phase_current_w_signal_combo.count() else ''
+                    
+                    def _to_float_or_none(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_iq = _to_float_or_none(min_iq_edit) if 'min_iq_edit' in locals() else None
+                    max_iq = _to_float_or_none(max_iq_edit) if 'max_iq_edit' in locals() else None
+                    step_iq = _to_float_or_none(step_iq_edit) if 'step_iq_edit' in locals() else None
+                    
+                    def _to_int_or_none_duration(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    ipc_test_duration = _to_int_or_none_duration(ipc_test_duration_edit) if 'ipc_test_duration_edit' in locals() else None
+                    
+                    osc_phase_v_ch = osc_phase_v_ch_combo.currentText().strip() if 'osc_phase_v_ch_combo' in locals() and osc_phase_v_ch_combo.count() else ''
+                    osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if 'osc_phase_w_ch_combo' in locals() and osc_phase_w_ch_combo.count() else ''
+                    
+                    data['actuation'] = {
+                        'type': 'phase_current_calibration',
+                        'command_message': cmd_msg_id,
+                        'trigger_test_signal': trigger_test_sig,
+                        'iq_ref_signal': iq_ref_sig,
+                        'id_ref_signal': id_ref_sig,
+                        'phase_current_signal_source': phase_current_can_id,
+                        'phase_current_v_signal': phase_current_v_sig,
+                        'phase_current_w_signal': phase_current_w_sig,
+                        'min_iq': min_iq,
+                        'max_iq': max_iq,
+                        'step_iq': step_iq,
+                        'ipc_test_duration_ms': ipc_test_duration,
+                        'oscilloscope_phase_v_ch': osc_phase_v_ch,
+                        'oscilloscope_phase_w_ch': osc_phase_w_ch,
+                    }
             else:
                 if data['type'] == 'digital':
                     try:
@@ -7144,7 +7815,7 @@ Data Points Used: {data_points}"""
                     except Exception:
                         dig_dwell = None
                     data['actuation'] = {'type':'digital','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip(),'dwell_ms':dig_dwell}
-                else:
+                elif data['type'] == 'analog':
                     # Non-DBC analog test: read all fields
                     try:
                         mux_channel_val = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
@@ -7201,6 +7872,62 @@ Data Points Used: {data_points}"""
                     }
                     if expected_gain_val is not None:
                         data['actuation']['expected_gain'] = expected_gain_val
+                elif data['type'] == 'phase_current_calibration':
+                    # Phase Current Calibration (no DBC): read from text fields
+                    try:
+                        cmd_msg_id = int(phase_current_cmd_msg_edit.text().strip(), 0) if 'phase_current_cmd_msg_edit' in locals() and phase_current_cmd_msg_edit.text().strip() else None
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_test_sig = phase_current_trigger_signal_edit.text().strip() if 'phase_current_trigger_signal_edit' in locals() else ''
+                    iq_ref_sig = phase_current_iq_ref_signal_edit.text().strip() if 'phase_current_iq_ref_signal_edit' in locals() else ''
+                    id_ref_sig = phase_current_id_ref_signal_edit.text().strip() if 'phase_current_id_ref_signal_edit' in locals() else ''
+                    
+                    try:
+                        phase_current_can_id = int(phase_current_msg_edit.text().strip(), 0) if 'phase_current_msg_edit' in locals() and phase_current_msg_edit.text().strip() else None
+                    except Exception:
+                        phase_current_can_id = None
+                    phase_current_v_sig = phase_current_v_signal_edit.text().strip() if 'phase_current_v_signal_edit' in locals() else ''
+                    phase_current_w_sig = phase_current_w_signal_edit.text().strip() if 'phase_current_w_signal_edit' in locals() else ''
+                    
+                    def _to_float_or_none(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_iq = _to_float_or_none(min_iq_edit) if 'min_iq_edit' in locals() else None
+                    max_iq = _to_float_or_none(max_iq_edit) if 'max_iq_edit' in locals() else None
+                    step_iq = _to_float_or_none(step_iq_edit) if 'step_iq_edit' in locals() else None
+                    
+                    def _to_int_or_none_duration(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    ipc_test_duration = _to_int_or_none_duration(ipc_test_duration_edit) if 'ipc_test_duration_edit' in locals() else None
+                    
+                    osc_phase_v_ch = osc_phase_v_ch_combo.currentText().strip() if 'osc_phase_v_ch_combo' in locals() and osc_phase_v_ch_combo.count() else ''
+                    osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if 'osc_phase_w_ch_combo' in locals() and osc_phase_w_ch_combo.count() else ''
+                    
+                    data['actuation'] = {
+                        'type': 'phase_current_calibration',
+                        'command_message': cmd_msg_id,
+                        'trigger_test_signal': trigger_test_sig,
+                        'iq_ref_signal': iq_ref_sig,
+                        'id_ref_signal': id_ref_sig,
+                        'phase_current_signal_source': phase_current_can_id,
+                        'phase_current_v_signal': phase_current_v_sig,
+                        'phase_current_w_signal': phase_current_w_sig,
+                        'min_iq': min_iq,
+                        'max_iq': max_iq,
+                        'step_iq': step_iq,
+                        'ipc_test_duration_ms': ipc_test_duration,
+                        'oscilloscope_phase_v_ch': osc_phase_v_ch,
+                        'oscilloscope_phase_w_ch': osc_phase_w_ch,
+                    }
 
             # Validate test before saving
             is_valid, error_msg = self._validate_test(data)
