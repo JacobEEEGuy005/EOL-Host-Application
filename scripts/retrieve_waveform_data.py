@@ -16,6 +16,22 @@ import re
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+# Import numpy for array operations (optional but recommended)
+try:
+    import numpy as np
+    numpy_available = True
+except ImportError:
+    numpy = None
+    numpy_available = False
+
+# Import scipy for filtering (optional but recommended)
+try:
+    from scipy import signal
+    scipy_available = True
+except ImportError:
+    signal = None
+    scipy_available = False
+
 # Import matplotlib for plotting (optional)
 try:
     import matplotlib.pyplot as plt
@@ -660,6 +676,357 @@ def query_vertical_offset(oscilloscope_service: OscilloscopeService) -> Optional
         return None
 
 
+def analyze_steady_state(
+    time_values: List[float],
+    voltage_values: List[float],
+    window_size: Optional[int] = None,
+    variance_threshold_percent: float = 1.0,
+    skip_initial_percent: float = 10.0
+) -> Tuple[int, int, float, float]:
+    """Analyze waveform to find steady state region and compute average.
+    
+    This function uses a rolling window approach to detect regions with low variance,
+    which typically indicates steady state behavior.
+    
+    Args:
+        time_values: List of time values in seconds
+        voltage_values: List of voltage values
+        window_size: Size of rolling window for variance calculation. If None, uses 1% of data points.
+        variance_threshold_percent: Maximum coefficient of variation (std/mean * 100) for steady state (default 1.0%)
+        skip_initial_percent: Percentage of initial data to skip when looking for steady state (default 10%)
+        
+    Returns:
+        Tuple of (start_index, end_index, average_voltage, std_deviation)
+        - start_index: Index where steady state begins
+        - end_index: Index where steady state ends (exclusive)
+        - average_voltage: Average voltage in steady state region
+        - std_deviation: Standard deviation in steady state region
+    """
+    if not voltage_values or len(voltage_values) < 10:
+        raise ValueError("Insufficient data points for steady state analysis")
+    
+    if numpy_available:
+        voltages = np.array(voltage_values)
+        times = np.array(time_values)
+    else:
+        voltages = voltage_values
+        times = time_values
+    
+    num_points = len(voltage_values)
+    
+    # Determine window size (1% of data points, minimum 10, maximum 2000)
+    # Use larger window for better statistical significance
+    if window_size is None:
+        window_size = max(10, min(2000, num_points // 100))
+    
+    # Skip initial transient period
+    skip_points = int(num_points * skip_initial_percent / 100.0)
+    search_start = max(skip_points, window_size)
+    search_end = num_points - window_size
+    
+    if search_start >= search_end:
+        # Not enough data after skipping initial portion
+        search_start = window_size
+        search_end = num_points - window_size
+    
+    if search_start >= search_end:
+        # Still not enough data, use all available
+        search_start = 0
+        search_end = num_points
+    
+    logger.info(f"Analyzing steady state: window_size={window_size}, "
+               f"search_range=[{search_start}:{search_end}], "
+               f"variance_threshold={variance_threshold_percent}%")
+    
+    # Find region with lowest variance
+    best_start = search_start
+    best_variance = float('inf')
+    best_mean = 0.0
+    
+    if numpy_available:
+        # Use numpy for efficient rolling window calculations
+        for start_idx in range(search_start, search_end):
+            window_data = voltages[start_idx:start_idx + window_size]
+            window_mean = np.mean(window_data)
+            window_std = np.std(window_data)
+            
+            # Use coefficient of variation (CV) = std/mean * 100
+            if abs(window_mean) > 1e-10:  # Avoid division by zero
+                cv = abs(window_std / window_mean) * 100
+            else:
+                cv = window_std * 100  # Use absolute std if mean is near zero
+            
+            # Prefer regions with low CV that meet threshold
+            if cv < variance_threshold_percent and window_std < best_variance:
+                best_variance = window_std
+                best_start = start_idx
+                best_mean = window_mean
+    else:
+        # Manual calculation without numpy
+        for start_idx in range(search_start, search_end):
+            window_data = voltages[start_idx:start_idx + window_size]
+            window_mean = sum(window_data) / len(window_data)
+            window_variance = sum((x - window_mean) ** 2 for x in window_data) / len(window_data)
+            window_std = window_variance ** 0.5
+            
+            # Use coefficient of variation
+            if abs(window_mean) > 1e-10:
+                cv = abs(window_std / window_mean) * 100
+            else:
+                cv = window_std * 100
+            
+            if cv < variance_threshold_percent and window_std < best_variance:
+                best_variance = window_std
+                best_start = start_idx
+                best_mean = window_mean
+    
+    # If no region met the threshold, use the region with lowest variance
+    if best_variance == float('inf'):
+        logger.warning("No region met variance threshold, using region with lowest variance")
+        if numpy_available:
+            for start_idx in range(search_start, search_end):
+                window_data = voltages[start_idx:start_idx + window_size]
+                window_std = np.std(window_data)
+                if window_std < best_variance:
+                    best_variance = window_std
+                    best_start = start_idx
+                    best_mean = np.mean(window_data)
+        else:
+            for start_idx in range(search_start, search_end):
+                window_data = voltages[start_idx:start_idx + window_size]
+                window_mean = sum(window_data) / len(window_data)
+                window_variance = sum((x - window_mean) ** 2 for x in window_data) / len(window_data)
+                window_std = window_variance ** 0.5
+                if window_std < best_variance:
+                    best_variance = window_std
+                    best_start = start_idx
+                    best_mean = window_mean
+    
+    # Extend steady state region forward while variance remains low
+    steady_start = best_start
+    steady_end = best_start + window_size
+    
+    # Get reference mean for trend detection
+    reference_mean = best_mean
+    
+    # Extend backward - but check for trends to avoid ramp-up
+    while steady_start > search_start:  # Don't extend before search_start
+        if steady_start + window_size <= len(voltages):
+            test_data = voltages[steady_start - 1:steady_start + window_size - 1]
+            if numpy_available:
+                test_std = np.std(test_data)
+                test_mean = np.mean(test_data)
+                # Calculate rate of change (derivative) to detect ramps
+                if len(test_data) > 10:
+                    # Use linear regression to detect trend
+                    indices = np.arange(len(test_data))
+                    slope = np.polyfit(indices, test_data, 1)[0]
+                    # Normalize slope by mean to get relative change rate
+                    if abs(test_mean) > 1e-10:
+                        relative_slope = abs(slope / test_mean) * 100  # Percentage change per sample
+                    else:
+                        relative_slope = abs(slope) * 100
+                else:
+                    relative_slope = 0
+            else:
+                test_mean = sum(test_data) / len(test_data)
+                test_variance = sum((x - test_mean) ** 2 for x in test_data) / len(test_data)
+                test_std = test_variance ** 0.5
+                # Simple trend detection: compare first and second half
+                if len(test_data) > 10:
+                    mid = len(test_data) // 2
+                    first_half_mean = sum(test_data[:mid]) / mid
+                    second_half_mean = sum(test_data[mid:]) / (len(test_data) - mid)
+                    if abs(test_mean) > 1e-10:
+                        relative_slope = abs((second_half_mean - first_half_mean) / test_mean) * 100
+                    else:
+                        relative_slope = abs(second_half_mean - first_half_mean) * 100
+                else:
+                    relative_slope = 0
+            
+            if abs(test_mean) > 1e-10:
+                test_cv = abs(test_std / test_mean) * 100
+            else:
+                test_cv = test_std * 100
+            
+            # Check: variance must be low AND no significant trend AND mean is close to reference
+            mean_diff_percent = abs((test_mean - reference_mean) / reference_mean) * 100 if abs(reference_mean) > 1e-10 else abs(test_mean - reference_mean) * 100
+            
+            # More strict: require low CV, low trend, and mean close to reference
+            if (test_cv <= variance_threshold_percent * 1.5 and 
+                relative_slope < 0.5 and  # Less than 0.5% change per sample
+                mean_diff_percent < 2.0):  # Mean within 2% of reference
+                steady_start -= 1
+            else:
+                break
+        else:
+            break
+    
+    # Extend forward - also check for trends
+    while steady_end < len(voltages):
+        if steady_end - window_size >= 0:
+            test_data = voltages[steady_end - window_size:steady_end]
+            if numpy_available:
+                test_std = np.std(test_data)
+                test_mean = np.mean(test_data)
+                # Calculate rate of change to detect ramps
+                if len(test_data) > 10:
+                    indices = np.arange(len(test_data))
+                    slope = np.polyfit(indices, test_data, 1)[0]
+                    if abs(test_mean) > 1e-10:
+                        relative_slope = abs(slope / test_mean) * 100
+                    else:
+                        relative_slope = abs(slope) * 100
+                else:
+                    relative_slope = 0
+            else:
+                test_mean = sum(test_data) / len(test_data)
+                test_variance = sum((x - test_mean) ** 2 for x in test_data) / len(test_data)
+                test_std = test_variance ** 0.5
+                if len(test_data) > 10:
+                    mid = len(test_data) // 2
+                    first_half_mean = sum(test_data[:mid]) / mid
+                    second_half_mean = sum(test_data[mid:]) / (len(test_data) - mid)
+                    if abs(test_mean) > 1e-10:
+                        relative_slope = abs((second_half_mean - first_half_mean) / test_mean) * 100
+                    else:
+                        relative_slope = abs(second_half_mean - first_half_mean) * 100
+                else:
+                    relative_slope = 0
+            
+            if abs(test_mean) > 1e-10:
+                test_cv = abs(test_std / test_mean) * 100
+            else:
+                test_cv = test_std * 100
+            
+            mean_diff_percent = abs((test_mean - reference_mean) / reference_mean) * 100 if abs(reference_mean) > 1e-10 else abs(test_mean - reference_mean) * 100
+            
+            # Check: variance must be low AND no significant trend AND mean is close to reference
+            if (test_cv <= variance_threshold_percent * 1.5 and 
+                relative_slope < 0.5 and  # Less than 0.5% change per sample
+                mean_diff_percent < 2.0):  # Mean within 2% of reference
+                steady_end += 1
+            else:
+                break
+        else:
+            break
+    
+    # Calculate final statistics for steady state region
+    steady_state_data = voltages[steady_start:steady_end]
+    if numpy_available:
+        steady_state_mean = np.mean(steady_state_data)
+        steady_state_std = np.std(steady_state_data)
+    else:
+        steady_state_mean = sum(steady_state_data) / len(steady_state_data)
+        steady_state_variance = sum((x - steady_state_mean) ** 2 for x in steady_state_data) / len(steady_state_data)
+        steady_state_std = steady_state_variance ** 0.5
+    
+    return steady_start, steady_end, float(steady_state_mean), float(steady_state_std)
+
+
+def apply_lowpass_filter(
+    time_values: List[float],
+    voltage_values: List[float],
+    cutoff_freq: float = 5000.0,
+    filter_order: int = 4
+) -> List[float]:
+    """Apply a low-pass Butterworth filter to the voltage waveform.
+    
+    Args:
+        time_values: List of time values in seconds
+        voltage_values: List of voltage values to filter
+        cutoff_freq: Cutoff frequency in Hz (default 10kHz)
+        filter_order: Filter order (default 4)
+        
+    Returns:
+        Filtered voltage values
+    """
+    if not voltage_values or len(voltage_values) < 10:
+        raise ValueError("Insufficient data points for filtering")
+    
+    if not numpy_available:
+        logger.warning("NumPy not available - cannot apply digital filter")
+        logger.warning("Returning unfiltered data. Install numpy for filtering: pip install numpy")
+        return voltage_values
+    
+    if not scipy_available:
+        logger.warning("SciPy not available - using simple moving average filter")
+        logger.warning("Install scipy for proper Butterworth filter: pip install scipy")
+        # Fallback to simple moving average
+        return _apply_moving_average_filter(voltage_values, window_size=10)
+    
+    # Convert to numpy arrays
+    voltages = np.array(voltage_values)
+    times = np.array(time_values)
+    
+    # Calculate sampling frequency
+    if len(time_values) < 2:
+        raise ValueError("Need at least 2 time points to calculate sampling frequency")
+    
+    dt = time_values[1] - time_values[0]
+    if dt <= 0:
+        # Try to calculate from average
+        dt = (time_values[-1] - time_values[0]) / (len(time_values) - 1)
+        if dt <= 0:
+            raise ValueError("Invalid time values for filtering")
+    
+    sampling_freq = 1.0 / dt
+    
+    # Check if cutoff frequency is valid (must be less than Nyquist frequency)
+    nyquist_freq = sampling_freq / 2.0
+    if cutoff_freq >= nyquist_freq:
+        logger.warning(f"Cutoff frequency {cutoff_freq} Hz is >= Nyquist frequency {nyquist_freq:.2f} Hz")
+        logger.warning(f"Reducing cutoff to {nyquist_freq * 0.9:.2f} Hz")
+        cutoff_freq = nyquist_freq * 0.9
+    
+    # Normalize cutoff frequency (0 to 1, where 1 is Nyquist)
+    normalized_cutoff = cutoff_freq / nyquist_freq
+    
+    logger.info(f"Applying low-pass filter: cutoff={cutoff_freq:.2f} Hz, "
+               f"order={filter_order}, sampling_freq={sampling_freq:.2f} Hz")
+    
+    try:
+        # Design Butterworth low-pass filter
+        b, a = signal.butter(filter_order, normalized_cutoff, btype='low', analog=False)
+        
+        # Apply filter
+        filtered_voltages = signal.filtfilt(b, a, voltages)
+        
+        logger.info("Filter applied successfully using filtfilt (zero-phase filtering)")
+        
+        return filtered_voltages.tolist()
+        
+    except Exception as e:
+        logger.error(f"Error applying filter: {e}", exc_info=True)
+        logger.warning("Returning unfiltered data")
+        return voltage_values
+
+
+def _apply_moving_average_filter(voltage_values: List[float], window_size: int = 10) -> List[float]:
+    """Apply a simple moving average filter (fallback when scipy is not available).
+    
+    Args:
+        voltage_values: List of voltage values
+        window_size: Size of moving average window
+        
+    Returns:
+        Filtered voltage values
+    """
+    if len(voltage_values) < window_size:
+        return voltage_values
+    
+    filtered = []
+    half_window = window_size // 2
+    
+    for i in range(len(voltage_values)):
+        start_idx = max(0, i - half_window)
+        end_idx = min(len(voltage_values), i + half_window + 1)
+        window_data = voltage_values[start_idx:end_idx]
+        filtered.append(sum(window_data) / len(window_data))
+    
+    return filtered
+
+
 def retrieve_waveform(oscilloscope_service: OscilloscopeService) -> Optional[bytes]:
     """Retrieve waveform data from Channel 1.
     
@@ -837,13 +1204,23 @@ def retrieve_waveform(oscilloscope_service: OscilloscopeService) -> Optional[byt
         return None
 
 
-def plot_waveform(time_values: List[float], voltage_values: List[float], descriptor: dict) -> None:
+def plot_waveform(
+    time_values: List[float], 
+    voltage_values: List[float], 
+    descriptor: dict,
+    steady_state_start: Optional[int] = None,
+    steady_state_end: Optional[int] = None,
+    steady_state_avg: Optional[float] = None
+) -> None:
     """Plot waveform data vs time with decimation.
     
     Args:
         time_values: List of time values in seconds
         voltage_values: List of voltage/current values
         descriptor: Waveform descriptor dictionary
+        steady_state_start: Optional start index of steady state region
+        steady_state_end: Optional end index of steady state region (exclusive)
+        steady_state_avg: Optional average voltage in steady state region
     """
     if not matplotlib_available:
         logger.warning("Matplotlib not available - skipping plot generation")
@@ -877,6 +1254,34 @@ def plot_waveform(time_values: List[float], voltage_values: List[float], descrip
         # Plot waveform
         ax.plot(time_plot, voltage_plot, 'b-', linewidth=0.5, alpha=0.7, label='Channel 1')
         
+        # Mark steady state region if provided
+        if steady_state_start is not None and steady_state_end is not None:
+            # Get time range for steady state region
+            steady_time_start = time_values[steady_state_start]
+            steady_time_end = time_values[steady_state_end - 1] if steady_state_end > 0 else time_values[-1]
+            
+            # Get voltage range for shading
+            y_min = min(voltage_values)
+            y_max = max(voltage_values)
+            y_range = y_max - y_min
+            if y_range == 0:
+                y_range = 1.0  # Avoid division by zero
+            
+            # Shade the steady state region
+            ax.axvspan(steady_time_start, steady_time_end, 
+                      alpha=0.2, color='green', label='Steady State Region')
+            
+            # Add vertical lines at boundaries (only label the first one to avoid duplicates)
+            ax.axvline(steady_time_start, color='green', linestyle='--', 
+                     linewidth=1.5, alpha=0.7, label='Steady State Boundaries')
+            ax.axvline(steady_time_end, color='green', linestyle='--', 
+                     linewidth=1.5, alpha=0.7)
+            
+            # Add horizontal line for average if provided
+            if steady_state_avg is not None:
+                ax.axhline(steady_state_avg, color='red', linestyle='-', 
+                         linewidth=1.5, alpha=0.8, label=f'Steady State Avg: {steady_state_avg:.6f} V')
+        
         # Set labels and title
         instrument_name = descriptor.get('INSTRUMENT_NAME', 'Oscilloscope')
         trace_label = descriptor.get('TRACE_LABEL', 'Channel 1')
@@ -884,6 +1289,10 @@ def plot_waveform(time_values: List[float], voltage_values: List[float], descrip
             title = f"{instrument_name} - {trace_label} Waveform"
         else:
             title = f"{instrument_name} - Channel 1 Waveform"
+        
+        # Add filter info to title if steady state analysis was performed (indicates filtered data)
+        if steady_state_start is not None:
+            title = f"{title} (10kHz Low-Pass Filtered)"
         
         ax.set_xlabel('Time (seconds)', fontsize=12)
         ax.set_ylabel('Voltage (V)', fontsize=12)
@@ -1046,8 +1455,80 @@ def main():
             logger.info("=" * 70)
             logger.info("Waveform data decoded successfully!")
             
-            # Plot the waveform data
-            plot_waveform(time_values, voltage_values, descriptor)
+            # Apply 10kHz low-pass filter to the waveform
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Applying 10kHz Low-Pass Filter")
+            logger.info("=" * 70)
+            try:
+                filtered_voltage_values = apply_lowpass_filter(
+                    time_values, voltage_values, cutoff_freq=10000.0
+                )
+                logger.info(f"Filter applied successfully. Original data points: {len(voltage_values)}, "
+                           f"Filtered data points: {len(filtered_voltage_values)}")
+            except Exception as e:
+                logger.error(f"Failed to apply filter: {e}", exc_info=True)
+                logger.warning("Using unfiltered data for analysis")
+                filtered_voltage_values = voltage_values
+            
+            # Analyze steady state region on filtered data
+            steady_start = None
+            steady_end = None
+            steady_avg = None
+            steady_std = None
+            
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Steady State Analysis (on Filtered Data)")
+            logger.info("=" * 70)
+            try:
+                # Use more lenient parameters for steady state detection
+                # Skip more initial data (30%) to ensure we're past the ramp-up
+                steady_start, steady_end, steady_avg, steady_std = analyze_steady_state(
+                    time_values, filtered_voltage_values,
+                    variance_threshold_percent=5.0,  # More lenient: 5% instead of 1%
+                    skip_initial_percent=30.0  # Skip first 30% to avoid transients and ramp-up
+                )
+                
+                steady_time_start = time_values[steady_start]
+                steady_time_end = time_values[steady_end - 1] if steady_end > 0 else time_values[-1]
+                steady_duration = steady_time_end - steady_time_start
+                steady_points = steady_end - steady_start
+                
+                logger.info(f"Steady State Region Detected:")
+                logger.info(f"  Start Index: {steady_start}")
+                logger.info(f"  End Index: {steady_end} (exclusive)")
+                logger.info(f"  Time Range: [{steady_time_start:.6f}, {steady_time_end:.6f}] s")
+                logger.info(f"  Duration: {steady_duration:.6f} s")
+                logger.info(f"  Number of Points: {steady_points} ({100.0 * steady_points / len(voltage_values):.1f}% of total)")
+                logger.info(f"  Average Voltage: {steady_avg:.6f} V")
+                logger.info(f"  Standard Deviation: {steady_std:.6f} V")
+                if abs(steady_avg) > 1e-10:
+                    cv_percent = abs(steady_std / steady_avg) * 100
+                    logger.info(f"  Coefficient of Variation: {cv_percent:.3f}%")
+                
+                # Print summary
+                print("\n" + "=" * 70)
+                print("STEADY STATE ANALYSIS RESULTS")
+                print("=" * 70)
+                print(f"Steady State Average: {steady_avg:.6f} V")
+                print(f"Standard Deviation: {steady_std:.6e} V")
+                print(f"Steady State Region: {steady_time_start:.6f} s to {steady_time_end:.6f} s")
+                print(f"Duration: {steady_duration:.6f} s ({steady_points} points)")
+                print("=" * 70 + "\n")
+                
+            except Exception as e:
+                logger.error(f"Failed to analyze steady state: {e}", exc_info=True)
+            
+            # Plot the filtered waveform data with steady state region marked
+            plot_waveform(
+                time_values, 
+                filtered_voltage_values, 
+                descriptor,
+                steady_state_start=steady_start,
+                steady_state_end=steady_end,
+                steady_state_avg=steady_avg
+            )
             
         except Exception as e:
             logger.error(f"Failed to decode waveform data: {e}", exc_info=True)
