@@ -67,6 +67,20 @@ DbcService = dbc_module.DbcService
 # Import Frame
 from backend.adapters.interface import Frame
 
+# Import waveform retrieval functions from retrieve_waveform_data.py
+waveform_spec = importlib.util.spec_from_file_location(
+    "retrieve_waveform_data",
+    project_root / "scripts" / "retrieve_waveform_data.py"
+)
+waveform_module = importlib.util.module_from_spec(waveform_spec)
+waveform_spec.loader.exec_module(waveform_module)
+WaveformDecoder = waveform_module.WaveformDecoder
+query_vertical_gain = waveform_module.query_vertical_gain
+query_vertical_offset = waveform_module.query_vertical_offset
+analyze_steady_state = waveform_module.analyze_steady_state
+apply_lowpass_filter = waveform_module.apply_lowpass_filter
+retrieve_waveform = waveform_module.retrieve_waveform
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +99,7 @@ class TestState(Enum):
     START_ACQUISITION = "START_ACQUISITION"
     SEND_TRIGGER = "SEND_TRIGGER"
     WAIT_AND_STOP = "WAIT_AND_STOP"
+    RETRIEVE_WAVEFORMS = "RETRIEVE_WAVEFORMS"
     DONE = "DONE"
     ERROR = "ERROR"
 
@@ -148,6 +163,8 @@ class PhaseCurrentTestStateMachine:
                     success = self._state_send_trigger()
                 elif self.state == TestState.WAIT_AND_STOP:
                     success = self._state_wait_and_stop()
+                elif self.state == TestState.RETRIEVE_WAVEFORMS:
+                    success = self._state_retrieve_waveforms()
                 else:
                     logger.error(f"Unknown state: {self.state}")
                     self.state = TestState.ERROR
@@ -377,7 +394,7 @@ class PhaseCurrentTestStateMachine:
         
         try:
             # Set TDIV:1 (1 second per division)
-            logger.info("Setting TDIV:1")
+            logger.info("Setting TDIV:500MS")
             self.oscilloscope_service.send_command("TDIV:500MS")
             time.sleep(0.2)
             
@@ -678,11 +695,393 @@ class PhaseCurrentTestStateMachine:
             self._process_can_data()
             
             logger.info("Data acquisition stopped")
-            self.state = TestState.DONE
+            self.state = TestState.RETRIEVE_WAVEFORMS
             return True
             
         except Exception as e:
             logger.error(f"Failed in wait_and_stop: {e}", exc_info=True)
+            return False
+    
+    def _retrieve_channel_waveform(self, channel: int) -> Optional[bytes]:
+        """Retrieve waveform data for a specific channel.
+        
+        Args:
+            channel: Channel number (1 or 2)
+            
+        Returns:
+            Binary waveform data or None if retrieval fails
+        """
+        if not self.oscilloscope_service.is_connected():
+            logger.error("Oscilloscope not connected")
+            return None
+        
+        try:
+            logger.info(f"Retrieving Channel {channel} waveform data (C{channel}:WF? ALL)...")
+            
+            oscilloscope = self.oscilloscope_service.oscilloscope
+            
+            # Set timeout for large data transfer
+            original_timeout = oscilloscope.timeout
+            oscilloscope.timeout = 10000  # 10 seconds for large waveform data
+            
+            try:
+                import struct
+                
+                # Send query command - waveform data is binary
+                oscilloscope.write(f"C{channel}:WF? ALL")
+                
+                # Read binary data - may need to read in chunks for large waveforms
+                raw_data = b''
+                max_reads = 1000  # Safety limit
+                
+                # Read first chunk to see format
+                try:
+                    first_chunk = oscilloscope.read_raw()
+                    raw_data += first_chunk
+                    logger.info(f"Read first chunk: {len(first_chunk)} bytes")
+                except Exception as e:
+                    logger.error(f"Failed to read first chunk: {e}")
+                    return None
+                
+                # Check if it's SCPI binary block format
+                if len(raw_data) >= 2 and raw_data[0] == ord('#'):
+                    # Parse length from SCPI header
+                    num_digits = int(chr(raw_data[1]))
+                    if 1 <= num_digits <= 9:
+                        length_str = raw_data[2:2+num_digits].decode('ascii')
+                        total_length = int(length_str)
+                        header_size = 2 + num_digits
+                        logger.info(f"SCPI binary block format: total length={total_length}, header={header_size}")
+                        
+                        # Read remaining data
+                        remaining = total_length + header_size - len(raw_data) + 1  # +1 for newline
+                        if remaining > 0:
+                            logger.info(f"Reading remaining {remaining} bytes...")
+                            read_count = 0
+                            while len(raw_data) < total_length + header_size + 1 and read_count < max_reads:
+                                try:
+                                    chunk = oscilloscope.read_raw()
+                                    if not chunk:
+                                        break
+                                    raw_data += chunk
+                                    read_count += 1
+                                    if read_count % 10 == 0:
+                                        logger.debug(f"Read {len(raw_data)} bytes so far...")
+                                except Exception as e:
+                                    logger.warning(f"Error reading chunk: {e}")
+                                    break
+                else:
+                    # Direct binary - read until we get WAVEDESC and then parse to determine length
+                    logger.info("Direct binary format, reading in chunks...")
+                    read_count = 0
+                    while read_count < max_reads:
+                        try:
+                            chunk = oscilloscope.read_raw()
+                            if not chunk:
+                                break
+                            raw_data += chunk
+                            read_count += 1
+                            # Check if we have enough to parse WAVEDESC
+                            if len(raw_data) >= 400:
+                                wavedesc_pos = raw_data.find(b'WAVEDESC')
+                                if wavedesc_pos >= 0:
+                                    # Try to parse WAVE_ARRAY_1 length to know how much more to read
+                                    try:
+                                        wave_array_1_offset = wavedesc_pos + 60
+                                        if len(raw_data) >= wave_array_1_offset + 4:
+                                            wave_array_1_length = struct.unpack('<I', 
+                                                raw_data[wave_array_1_offset:wave_array_1_offset + 4])[0]
+                                            wave_descriptor_length = struct.unpack('<I',
+                                                raw_data[wavedesc_pos + 36:wavedesc_pos + 40])[0]
+                                            user_text_length = struct.unpack('<I',
+                                                raw_data[wavedesc_pos + 40:wavedesc_pos + 44])[0]
+                                            
+                                            expected_total = (wavedesc_pos + wave_descriptor_length + 
+                                                             user_text_length + wave_array_1_length)
+                                            if len(raw_data) >= expected_total:
+                                                logger.info(f"Read complete waveform: {len(raw_data)} bytes")
+                                                break
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            logger.debug(f"Read complete or error: {e}")
+                            break
+                
+                logger.info(f"Retrieved {len(raw_data)} bytes of raw data total")
+                
+                # Parse SCPI binary block format: #<n><length><data>
+                if len(raw_data) < 2 or raw_data[0] != ord('#'):
+                    # Data might be direct binary (no SCPI header)
+                    # Check if it starts with WAVEDESC
+                    if raw_data[:8].startswith(b'WAVEDESC'):
+                        logger.info("Waveform data is direct binary (starts with WAVEDESC)")
+                        return raw_data
+                    else:
+                        logger.warning("Waveform data doesn't start with '#' or 'WAVEDESC'")
+                        # Try to find WAVEDESC in the data
+                        wavedesc_pos = raw_data.find(b'WAVEDESC')
+                        if wavedesc_pos >= 0:
+                            logger.info(f"Found WAVEDESC at position {wavedesc_pos}, extracting from there")
+                            return raw_data[wavedesc_pos:]
+                        return raw_data
+                
+                # Parse SCPI binary block format
+                if raw_data[0] == ord('#'):
+                    # Extract length digits
+                    num_digits = int(chr(raw_data[1]))
+                    if num_digits < 1 or num_digits > 9:
+                        logger.warning(f"Invalid number of length digits: {num_digits}")
+                        return raw_data
+                    
+                    # Extract length
+                    length_str = raw_data[2:2+num_digits].decode('ascii')
+                    data_length = int(length_str)
+                    
+                    # Extract actual binary data (skip header: '#' + num_digits + length_str)
+                    header_size = 2 + num_digits
+                    waveform_data = raw_data[header_size:header_size + data_length]
+                    
+                    # Handle potential newline terminator (SCPI standard)
+                    if len(raw_data) > header_size + data_length:
+                        remaining = raw_data[header_size + data_length:]
+                        if remaining.startswith(b'\n') or remaining.startswith(b'\r\n'):
+                            logger.debug("Removed newline terminator from waveform data")
+                    
+                    if len(waveform_data) != data_length:
+                        logger.warning(f"Expected {data_length} bytes, got {len(waveform_data)} bytes")
+                        # Use what we have if it's close
+                        if abs(len(waveform_data) - data_length) <= 2:  # Allow small difference for terminator
+                            logger.info(f"Using {len(waveform_data)} bytes (close to expected {data_length})")
+                        else:
+                            logger.error(f"Data length mismatch too large, cannot proceed")
+                            return None
+                    
+                    logger.info(f"Extracted {len(waveform_data)} bytes of waveform data from SCPI binary block")
+                    return waveform_data
+                else:
+                    # Direct binary data (already handled above)
+                    return raw_data
+                
+            finally:
+                # Restore original timeout
+                oscilloscope.timeout = original_timeout
+                    
+        except Exception as e:
+            logger.error(f"Error retrieving Channel {channel} waveform: {e}", exc_info=True)
+            return None
+    
+    def _state_retrieve_waveforms(self) -> bool:
+        """Retrieve and analyze CH1 and CH2 waveforms, compute steady state averages."""
+        logger.info("Retrieving and analyzing oscilloscope waveforms...")
+        
+        if not self.oscilloscope_service.is_connected():
+            logger.error("Oscilloscope not connected")
+            return False
+        
+        try:
+            import struct
+            
+            # Retrieve CH1 waveform
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Retrieving Channel 1 Waveform")
+            logger.info("=" * 70)
+            ch1_waveform_data = self._retrieve_channel_waveform(1)
+            
+            if ch1_waveform_data is None:
+                logger.error("Failed to retrieve CH1 waveform")
+                return False
+            
+            logger.info(f"Retrieved {len(ch1_waveform_data)} bytes of CH1 waveform data")
+            
+            # Query CH1 vertical gain and offset
+            logger.info("Querying CH1 vertical gain and offset...")
+            ch1_vertical_gain = None
+            ch1_vertical_offset = None
+            
+            try:
+                # Query C1:VDIV?
+                resp = self.oscilloscope_service.send_command("C1:VDIV?")
+                if resp:
+                    vdiv_match = re.search(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    if vdiv_match:
+                        ch1_vertical_gain = float(vdiv_match.group(1))
+                    else:
+                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        if numbers:
+                            ch1_vertical_gain = float(numbers[-1])
+                
+                # Query C1:OFST?
+                resp = self.oscilloscope_service.send_command("C1:OFST?")
+                if resp:
+                    ofst_match = re.search(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    if ofst_match:
+                        ch1_vertical_offset = float(ofst_match.group(1))
+                    else:
+                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        if numbers:
+                            ch1_vertical_offset = float(numbers[-1])
+            except Exception as e:
+                logger.warning(f"Failed to query CH1 vertical parameters: {e}")
+            
+            # Decode CH1 waveform
+            try:
+                ch1_decoder = WaveformDecoder(ch1_waveform_data)
+                ch1_descriptor, ch1_time_values, ch1_voltage_values = ch1_decoder.decode(
+                    vertical_gain=ch1_vertical_gain,
+                    vertical_offset=ch1_vertical_offset
+                )
+                logger.info(f"CH1 decoded: {len(ch1_voltage_values)} points")
+            except Exception as e:
+                logger.error(f"Failed to decode CH1 waveform: {e}", exc_info=True)
+                return False
+            
+            # Retrieve CH2 waveform
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Retrieving Channel 2 Waveform")
+            logger.info("=" * 70)
+            ch2_waveform_data = self._retrieve_channel_waveform(2)
+            
+            if ch2_waveform_data is None:
+                logger.error("Failed to retrieve CH2 waveform")
+                return False
+            
+            logger.info(f"Retrieved {len(ch2_waveform_data)} bytes of CH2 waveform data")
+            
+            # Query CH2 vertical gain and offset
+            logger.info("Querying CH2 vertical gain and offset...")
+            ch2_vertical_gain = None
+            ch2_vertical_offset = None
+            
+            try:
+                # Query C2:VDIV?
+                resp = self.oscilloscope_service.send_command("C2:VDIV?")
+                if resp:
+                    vdiv_match = re.search(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    if vdiv_match:
+                        ch2_vertical_gain = float(vdiv_match.group(1))
+                    else:
+                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        if numbers:
+                            ch2_vertical_gain = float(numbers[-1])
+                
+                # Query C2:OFST?
+                resp = self.oscilloscope_service.send_command("C2:OFST?")
+                if resp:
+                    ofst_match = re.search(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp, re.IGNORECASE)
+                    if ofst_match:
+                        ch2_vertical_offset = float(ofst_match.group(1))
+                    else:
+                        numbers = re.findall(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', resp)
+                        if numbers:
+                            ch2_vertical_offset = float(numbers[-1])
+            except Exception as e:
+                logger.warning(f"Failed to query CH2 vertical parameters: {e}")
+            
+            # Decode CH2 waveform
+            try:
+                ch2_decoder = WaveformDecoder(ch2_waveform_data)
+                ch2_descriptor, ch2_time_values, ch2_voltage_values = ch2_decoder.decode(
+                    vertical_gain=ch2_vertical_gain,
+                    vertical_offset=ch2_vertical_offset
+                )
+                logger.info(f"CH2 decoded: {len(ch2_voltage_values)} points")
+            except Exception as e:
+                logger.error(f"Failed to decode CH2 waveform: {e}", exc_info=True)
+                return False
+            
+            # Apply 10kHz low-pass filter to both waveforms
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Applying 10kHz Low-Pass Filter to Both Channels")
+            logger.info("=" * 70)
+            
+            try:
+                ch1_filtered = apply_lowpass_filter(ch1_time_values, ch1_voltage_values, cutoff_freq=10000.0)
+                logger.info(f"CH1 filter applied: {len(ch1_filtered)} points")
+            except Exception as e:
+                logger.warning(f"Failed to filter CH1: {e}, using unfiltered data")
+                ch1_filtered = ch1_voltage_values
+            
+            try:
+                ch2_filtered = apply_lowpass_filter(ch2_time_values, ch2_voltage_values, cutoff_freq=10000.0)
+                logger.info(f"CH2 filter applied: {len(ch2_filtered)} points")
+            except Exception as e:
+                logger.warning(f"Failed to filter CH2: {e}, using unfiltered data")
+                ch2_filtered = ch2_voltage_values
+            
+            # Analyze steady state for both channels
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Steady State Analysis - Channel 1")
+            logger.info("=" * 70)
+            
+            ch1_steady_avg = None
+            ch1_steady_std = None
+            try:
+                ch1_steady_start, ch1_steady_end, ch1_steady_avg, ch1_steady_std = analyze_steady_state(
+                    ch1_time_values, ch1_filtered,
+                    variance_threshold_percent=5.0,
+                    skip_initial_percent=30.0
+                )
+                logger.info(f"CH1 Steady State: {ch1_steady_avg:.6f} V (std: {ch1_steady_std:.6f} V)")
+            except Exception as e:
+                logger.error(f"Failed to analyze CH1 steady state: {e}", exc_info=True)
+            
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("Steady State Analysis - Channel 2")
+            logger.info("=" * 70)
+            
+            ch2_steady_avg = None
+            ch2_steady_std = None
+            try:
+                ch2_steady_start, ch2_steady_end, ch2_steady_avg, ch2_steady_std = analyze_steady_state(
+                    ch2_time_values, ch2_filtered,
+                    variance_threshold_percent=5.0,
+                    skip_initial_percent=30.0
+                )
+                logger.info(f"CH2 Steady State: {ch2_steady_avg:.6f} V (std: {ch2_steady_std:.6e} V)")
+            except Exception as e:
+                logger.error(f"Failed to analyze CH2 steady state: {e}", exc_info=True)
+            
+            # Print results
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("OSCILLOSCOPE WAVEFORM ANALYSIS RESULTS")
+            logger.info("=" * 70)
+            
+            print("\n" + "=" * 70)
+            print("OSCILLOSCOPE WAVEFORM ANALYSIS RESULTS")
+            print("=" * 70)
+            
+            if ch1_steady_avg is not None:
+                logger.info(f"Channel 1 Steady State Average: {ch1_steady_avg:.6f} V")
+                logger.info(f"Channel 1 Steady State Std Dev: {ch1_steady_std:.6e} V")
+                print(f"Channel 1 Steady State Average: {ch1_steady_avg:.6f} V")
+                print(f"Channel 1 Steady State Std Dev: {ch1_steady_std:.6e} V")
+            else:
+                logger.warning("Channel 1 steady state analysis failed")
+                print("Channel 1 steady state analysis failed")
+            
+            if ch2_steady_avg is not None:
+                logger.info(f"Channel 2 Steady State Average: {ch2_steady_avg:.6f} V")
+                logger.info(f"Channel 2 Steady State Std Dev: {ch2_steady_std:.6e} V")
+                print(f"Channel 2 Steady State Average: {ch2_steady_avg:.6f} V")
+                print(f"Channel 2 Steady State Std Dev: {ch2_steady_std:.6e} V")
+            else:
+                logger.warning("Channel 2 steady state analysis failed")
+                print("Channel 2 steady state analysis failed")
+            
+            print("=" * 70 + "\n")
+            logger.info("=" * 70)
+            
+            self.state = TestState.DONE
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve waveforms: {e}", exc_info=True)
             return False
     
     def _detect_steady_state_regions(self, phase_v_values: List[float], 
