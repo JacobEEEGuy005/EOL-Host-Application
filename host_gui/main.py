@@ -33,6 +33,7 @@ import shutil
 import copy
 import base64
 import re
+import struct
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 from html import escape
@@ -243,12 +244,1057 @@ except ImportError:
 # AdapterWorker class moved to host_gui/services/can_service.py
 # Import from services if needed:
 # from host_gui.services.can_service import AdapterWorker
+# Pre-compile regex patterns for oscilloscope command parsing
+REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
+
+# Import numpy for optimized array operations (optional)
+try:
+    import numpy as np
+    numpy_available = True
+except ImportError:
+    numpy = None
+    numpy_available = False
+
+
+def _analyze_steady_state_can(
+    timestamps: List[float],
+    values: List[float],
+    window_size: Optional[int] = None,
+    variance_threshold_percent: float = 5.0,
+    skip_initial_percent: float = 30.0
+) -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float]]:
+    """Analyze CAN signal data to find steady state region and compute average.
+    
+    Args:
+        timestamps: List of timestamps in seconds
+        values: List of signal values
+        window_size: Size of rolling window for variance calculation. If None, uses 1% of data points.
+        variance_threshold_percent: Maximum coefficient of variation (std/mean * 100) for steady state
+        skip_initial_percent: Percentage of initial data to skip when looking for steady state
+        
+    Returns:
+        Tuple of (start_index, end_index, average_value, std_deviation) or (None, None, None, None) if insufficient data
+    """
+    if not values or len(values) < 10:
+        logger.warning("Insufficient data points for steady state analysis")
+        return (None, None, None, None)
+    
+    num_points = len(values)
+    
+    # Determine window size (1% of data points, minimum 10, maximum 2000)
+    if window_size is None:
+        window_size = max(10, min(2000, num_points // 100))
+    
+    # Skip initial transient period
+    skip_points = int(num_points * skip_initial_percent / 100.0)
+    search_start = max(skip_points, window_size)
+    search_end = num_points - window_size
+    
+    if search_start >= search_end:
+        search_start = window_size
+        search_end = num_points - window_size
+    
+    if search_start >= search_end:
+        search_start = 0
+        search_end = num_points
+    
+    # Find region with lowest variance
+    best_start = search_start
+    best_variance = float('inf')
+    best_mean = 0.0
+    
+    if numpy_available:
+        values_array = np.array(values, dtype=np.float64)
+        for start_idx in range(search_start, search_end):
+            window_data = values_array[start_idx:start_idx + window_size]
+            window_mean = float(np.mean(window_data))
+            window_std = float(np.std(window_data))
+            
+            # Use coefficient of variation (CV) = std/mean * 100
+            if abs(window_mean) > 1e-10:
+                cv = abs(window_std / window_mean) * 100
+            else:
+                cv = window_std * 100
+            
+            if cv < variance_threshold_percent and window_std < best_variance:
+                best_variance = window_std
+                best_start = start_idx
+                best_mean = window_mean
+    else:
+        # Manual calculation without numpy
+        for start_idx in range(search_start, search_end):
+            window_data = values[start_idx:start_idx + window_size]
+            window_mean = sum(window_data) / len(window_data)
+            window_variance = sum((x - window_mean) ** 2 for x in window_data) / len(window_data)
+            window_std = window_variance ** 0.5
+            
+            if abs(window_mean) > 1e-10:
+                cv = abs(window_std / window_mean) * 100
+            else:
+                cv = window_std * 100
+            
+            if cv < variance_threshold_percent and window_std < best_variance:
+                best_variance = window_std
+                best_start = start_idx
+                best_mean = window_mean
+    
+    # If no region met the threshold, use the region with lowest variance
+    if best_variance == float('inf'):
+        if numpy_available:
+            values_array = np.array(values, dtype=np.float64)
+            for start_idx in range(search_start, search_end):
+                window_data = values_array[start_idx:start_idx + window_size]
+                window_std = float(np.std(window_data))
+                if window_std < best_variance:
+                    best_variance = window_std
+                    best_start = start_idx
+                    best_mean = float(np.mean(window_data))
+        else:
+            for start_idx in range(search_start, search_end):
+                window_data = values[start_idx:start_idx + window_size]
+                window_mean = sum(window_data) / len(window_data)
+                window_variance = sum((x - window_mean) ** 2 for x in window_data) / len(window_data)
+                window_std = window_variance ** 0.5
+                if window_std < best_variance:
+                    best_variance = window_std
+                    best_start = start_idx
+                    best_mean = window_mean
+    
+    # Extend steady state region forward and backward
+    steady_start = best_start
+    steady_end = best_start + window_size
+    
+    # Extend backward
+    if numpy_available:
+        values_array = np.array(values, dtype=np.float64)
+        for i in range(best_start - 1, max(0, best_start - window_size), -1):
+            test_window = values_array[i:steady_end]
+            test_mean = float(np.mean(test_window))
+            test_std = float(np.std(test_window))
+            if abs(best_mean) > 1e-10:
+                cv = abs(test_std / test_mean) * 100
+            else:
+                cv = test_std * 100
+            if cv < variance_threshold_percent * 1.5:  # Slightly relaxed for extension
+                steady_start = i
+            else:
+                break
+    else:
+        for i in range(best_start - 1, max(0, best_start - window_size), -1):
+            test_window = values[i:steady_end]
+            test_mean = sum(test_window) / len(test_window)
+            test_variance = sum((x - test_mean) ** 2 for x in test_window) / len(test_window)
+            test_std = test_variance ** 0.5
+            if abs(best_mean) > 1e-10:
+                cv = abs(test_std / test_mean) * 100
+            else:
+                cv = test_std * 100
+            if cv < variance_threshold_percent * 1.5:
+                steady_start = i
+            else:
+                break
+    
+    # Extend forward
+    if numpy_available:
+        for i in range(steady_end, min(num_points, steady_end + window_size)):
+            test_window = values_array[steady_start:i + 1]
+            test_mean = float(np.mean(test_window))
+            test_std = float(np.std(test_window))
+            if abs(best_mean) > 1e-10:
+                cv = abs(test_std / test_mean) * 100
+            else:
+                cv = test_std * 100
+            if cv < variance_threshold_percent * 1.5:
+                steady_end = i + 1
+            else:
+                break
+    else:
+        for i in range(steady_end, min(num_points, steady_end + window_size)):
+            test_window = values[steady_start:i + 1]
+            test_mean = sum(test_window) / len(test_window)
+            test_variance = sum((x - test_mean) ** 2 for x in test_window) / len(test_window)
+            test_std = test_variance ** 0.5
+            if abs(best_mean) > 1e-10:
+                cv = abs(test_std / test_mean) * 100
+            else:
+                cv = test_std * 100
+            if cv < variance_threshold_percent * 1.5:
+                steady_end = i + 1
+            else:
+                break
+    
+    # Calculate final average and std
+    steady_data = values[steady_start:steady_end]
+    if not steady_data:
+        return (None, None, None, None)
+    
+    if numpy_available:
+        steady_array = np.array(steady_data, dtype=np.float64)
+        avg = float(np.mean(steady_array))
+        std = float(np.std(steady_array))
+    else:
+        avg = sum(steady_data) / len(steady_data)
+        variance = sum((x - avg) ** 2 for x in steady_data) / len(steady_data)
+        std = variance ** 0.5
+    
+    return (steady_start, steady_end, avg, std)
+
+
+class _WaveformDecoder:
+    """Simplified waveform decoder for oscilloscope data.
+    
+    This class decodes binary waveform data from oscilloscope C1:WF? ALL command.
+    It parses the WAVEDESC descriptor and data array to extract voltage/time values.
+    """
+    
+    # Key offsets in WAVEDESC block
+    DESCRIPTOR_NAME_OFFSET = 0
+    TEMPLATE_NAME_OFFSET = 16
+    WAVE_DESCRIPTOR_OFFSET = 36
+    USER_TEXT_OFFSET = 40
+    TRIGTIME_ARRAY_OFFSET = 44
+    RIS_TIME_ARRAY_OFFSET = 52
+    WAVE_ARRAY_1_OFFSET = 60
+    WAVE_ARRAY_COUNT_OFFSET = 116
+    COMM_TYPE_OFFSET = 32
+    COMM_ORDER_OFFSET = 34
+    VERTICAL_GAIN_OFFSET = 156
+    VERTICAL_OFFSET_OFFSET = 160
+    HORIZ_INTERVAL_OFFSET = 176
+    HORIZ_OFFSET_OFFSET = 180
+    
+    COMM_TYPE_BYTE = 0
+    COMM_TYPE_WORD = 1
+    
+    def __init__(self, waveform_data: bytes):
+        """Initialize decoder with waveform binary data.
+        
+        Args:
+            waveform_data: Raw binary data from C1:WF? ALL command
+        """
+        self.waveform_data = waveform_data
+        self.wavedesc_start = 0
+        
+        # Find WAVEDESC start if not at beginning
+        if not waveform_data[:8].startswith(b'WAVEDESC'):
+            pos = waveform_data.find(b'WAVEDESC')
+            if pos >= 0:
+                self.wavedesc_start = pos
+    
+    def decode(self, vertical_gain: Optional[float] = None, vertical_offset: Optional[float] = None) -> Tuple[dict, List[float], List[float]]:
+        """Decode waveform data.
+        
+        Args:
+            vertical_gain: Optional vertical gain from C1:VDIV? command
+            vertical_offset: Optional vertical offset from C1:OFST? command
+            
+        Returns:
+            Tuple of (descriptor_dict, time_values, voltage_values)
+        """
+        if len(self.waveform_data) < self.wavedesc_start + 400:
+            raise ValueError(f"Waveform data too short: {len(self.waveform_data)} bytes")
+        
+        # Parse WAVEDESC block
+        descriptor = self._parse_wavedesc()
+        
+        # Determine data format
+        comm_type = descriptor['COMM_TYPE']
+        if comm_type == self.COMM_TYPE_BYTE:
+            data_format = 'b'  # signed byte
+            data_size = 1
+        elif comm_type == self.COMM_TYPE_WORD:
+            data_format = 'h'  # signed short (16-bit)
+            data_size = 2
+        else:
+            raise ValueError(f"Unsupported COMM_TYPE: {comm_type}")
+        
+        # Calculate data array start position
+        wave_descriptor_length = descriptor['WAVE_DESCRIPTOR']
+        user_text_length = descriptor['USER_TEXT']
+        data_array_start = (self.wavedesc_start + wave_descriptor_length + user_text_length)
+        
+        # Extract data array
+        wave_array_1_length = descriptor['WAVE_ARRAY_1']
+        wave_array_count = descriptor['WAVE_ARRAY_COUNT']
+        actual_data_length = wave_array_count * data_size
+        available_data = len(self.waveform_data) - data_array_start
+        data_length_to_use = min(wave_array_1_length, actual_data_length, available_data)
+        
+        if data_array_start > len(self.waveform_data) or data_length_to_use <= 0:
+            raise ValueError(f"Invalid data array: start={data_array_start}, length={data_length_to_use}")
+        
+        if data_length_to_use < actual_data_length:
+            wave_array_count = data_length_to_use // data_size
+        
+        data_array_bytes = self.waveform_data[data_array_start:data_array_start + data_length_to_use]
+        
+        # Unpack data points
+        num_points = min(wave_array_count, len(data_array_bytes) // data_size)
+        raw_data_points = struct.unpack(f'<{num_points}{data_format}', 
+                                       data_array_bytes[:num_points * data_size])
+        
+        # Use provided values or descriptor values
+        if vertical_gain is None:
+            vertical_gain = descriptor['VERTICAL_GAIN']
+        if vertical_offset is None:
+            vertical_offset = descriptor['VERTICAL_OFFSET']
+        
+        # Convert to voltage values
+        if numpy_available:
+            raw_data_array = np.array(raw_data_points, dtype=np.float32)
+            voltage_values = ((vertical_gain * raw_data_array) / 25.0 - vertical_offset).tolist()
+        else:
+            voltage_values = [(vertical_gain * dp) / 25.0 - vertical_offset for dp in raw_data_points]
+        
+        # Calculate time values
+        horiz_interval = descriptor['HORIZ_INTERVAL']
+        horiz_offset = descriptor['HORIZ_OFFSET']
+        
+        if numpy_available:
+            time_values = (np.arange(num_points, dtype=np.float64) * horiz_interval + horiz_offset).tolist()
+        else:
+            time_values = [(i * horiz_interval) + horiz_offset for i in range(num_points)]
+        
+        return descriptor, time_values, voltage_values
+    
+    def _parse_wavedesc(self) -> dict:
+        """Parse WAVEDESC block from waveform data.
+        
+        Returns:
+            Dictionary with waveform descriptor fields
+        """
+        descriptor = {}
+        
+        # WAVE_DESCRIPTOR (long, 4 bytes at offset 36)
+        descriptor['WAVE_DESCRIPTOR'] = struct.unpack('<I',
+            self.waveform_data[self.wavedesc_start + self.WAVE_DESCRIPTOR_OFFSET:
+                              self.wavedesc_start + self.WAVE_DESCRIPTOR_OFFSET + 4])[0]
+        
+        # USER_TEXT (long, 4 bytes at offset 40)
+        descriptor['USER_TEXT'] = struct.unpack('<I',
+            self.waveform_data[self.wavedesc_start + self.USER_TEXT_OFFSET:
+                              self.wavedesc_start + self.USER_TEXT_OFFSET + 4])[0]
+        
+        # COMM_TYPE (short, 2 bytes at offset 32)
+        descriptor['COMM_TYPE'] = struct.unpack('<H',
+            self.waveform_data[self.wavedesc_start + self.COMM_TYPE_OFFSET:
+                              self.wavedesc_start + self.COMM_TYPE_OFFSET + 2])[0]
+        
+        # WAVE_ARRAY_1 (long, 4 bytes at offset 60)
+        descriptor['WAVE_ARRAY_1'] = struct.unpack('<I',
+            self.waveform_data[self.wavedesc_start + self.WAVE_ARRAY_1_OFFSET:
+                              self.wavedesc_start + self.WAVE_ARRAY_1_OFFSET + 4])[0]
+        
+        # WAVE_ARRAY_COUNT (long, 4 bytes at offset 116)
+        descriptor['WAVE_ARRAY_COUNT'] = struct.unpack('<I',
+            self.waveform_data[self.wavedesc_start + self.WAVE_ARRAY_COUNT_OFFSET:
+                              self.wavedesc_start + self.WAVE_ARRAY_COUNT_OFFSET + 4])[0]
+        
+        # VERTICAL_GAIN (float, 4 bytes at offset 156)
+        descriptor['VERTICAL_GAIN'] = struct.unpack('<f',
+            self.waveform_data[self.wavedesc_start + self.VERTICAL_GAIN_OFFSET:
+                              self.wavedesc_start + self.VERTICAL_GAIN_OFFSET + 4])[0]
+        
+        # VERTICAL_OFFSET (float, 4 bytes at offset 160)
+        descriptor['VERTICAL_OFFSET'] = struct.unpack('<f',
+            self.waveform_data[self.wavedesc_start + self.VERTICAL_OFFSET_OFFSET:
+                              self.wavedesc_start + self.VERTICAL_OFFSET_OFFSET + 4])[0]
+        
+        # HORIZ_INTERVAL (float, 4 bytes at offset 176)
+        descriptor['HORIZ_INTERVAL'] = struct.unpack('<f',
+            self.waveform_data[self.wavedesc_start + self.HORIZ_INTERVAL_OFFSET:
+                              self.wavedesc_start + self.HORIZ_INTERVAL_OFFSET + 4])[0]
+        
+        # HORIZ_OFFSET (double, 8 bytes at offset 180)
+        descriptor['HORIZ_OFFSET'] = struct.unpack('<d',
+            self.waveform_data[self.wavedesc_start + self.HORIZ_OFFSET_OFFSET:
+                              self.wavedesc_start + self.HORIZ_OFFSET_OFFSET + 8])[0]
+        
+        return descriptor
+
+
+class PhaseCurrentTestStateMachine:
+    """State machine for Phase Current Calibration testing.
+    
+    This state machine handles the complete test sequence:
+    1. Validate oscilloscope settings
+    2. Prepare Iq_ref array
+    3. Loop through each Iq_ref:
+       - Configure vertical scale
+       - Start acquisition and CAN logging
+       - Send trigger message
+       - Wait for test duration
+       - Stop acquisition and logging
+       - Analyze steady state
+       - Store results
+    4. Disable test mode
+    """
+    
+    def __init__(self, gui: 'BaseGUI', test: Dict[str, Any]):
+        """Initialize the state machine.
+        
+        Args:
+            gui: BaseGUI instance for accessing services
+            test: Test configuration dictionary
+        """
+        self.gui = gui
+        self.test = test
+        self.act = test.get('actuation', {})
+        
+        # Services
+        self.oscilloscope_service = getattr(gui, 'oscilloscope_service', None)
+        self.can_service = getattr(gui, 'can_service', None)
+        self.dbc_service = getattr(gui, 'dbc_service', None)
+        self.signal_service = getattr(gui, 'signal_service', None)
+        
+        # Test parameters
+        self.min_iq = self.act.get('min_iq')
+        self.max_iq = self.act.get('max_iq')
+        self.step_iq = self.act.get('step_iq')
+        self.ipc_test_duration_ms = self.act.get('ipc_test_duration_ms', 1000)
+        
+        # CAN message and signal configuration
+        self.cmd_msg_id = self.act.get('cmd_msg_id')
+        self.trigger_signal = self.act.get('trigger_test_signal', 'Mctrl_Phase_I_Test_Enable')
+        self.iq_ref_signal = self.act.get('iq_ref_signal', 'Mctrl_Set_Iq_Ref')
+        self.id_ref_signal = self.act.get('id_ref_signal', 'Mctrl_Set_Id_Ref')
+        
+        self.phase_current_can_id = self.act.get('phase_current_can_id')
+        self.phase_current_v_signal = self.act.get('phase_current_v_signal', 'PhaseVCurrent')
+        self.phase_current_w_signal = self.act.get('phase_current_w_signal', 'PhaseWCurrent')
+        
+        # State data
+        self.iq_ref_array = []
+        self.current_iq_index = 0
+        self.results = []  # List of (iq_ref, osc_ch1_avg, osc_ch2_avg, can_v_avg, can_w_avg)
+        
+        # CAN data collection
+        self.collecting_can_data = False
+        self.collected_frames = []  # List of (timestamp, frame) tuples
+        
+        # Oscilloscope waveform data
+        self.ch1_waveform_data = None
+        self.ch2_waveform_data = None
+        
+        # Message objects (cached after finding)
+        self.command_message = None
+        self.phase_current_message = None
+        
+    def run(self) -> Tuple[bool, str]:
+        """Execute the complete test sequence.
+        
+        Returns:
+            Tuple of (success: bool, info: str)
+        """
+        try:
+            # Step 1: Validate oscilloscope settings
+            if not self._validate_oscilloscope_settings():
+                return False, "Oscilloscope settings validation failed"
+            
+            # Step 2: Prepare Iq_ref array
+            if not self._prepare_iq_ref_array():
+                return False, "Failed to prepare Iq_ref array"
+            
+            if not self.iq_ref_array:
+                return False, "No Iq_ref values to test"
+            
+            # Step 3-10: Loop through Iq_ref values
+            for iq_ref in self.iq_ref_array:
+                logger.info(f"Testing Iq_ref = {iq_ref} A")
+                
+                # Step 3: Set vertical division
+                if not self._set_vertical_division(iq_ref):
+                    logger.warning(f"Failed to set vertical division for Iq_ref={iq_ref}, continuing...")
+                
+                # Step 4: Start oscilloscope acquisition and CAN logging
+                if not self._start_acquisition_and_logging():
+                    logger.warning(f"Failed to start acquisition for Iq_ref={iq_ref}, continuing...")
+                    continue
+                
+                # Step 5: Send trigger message
+                if not self._send_trigger_message(iq_ref):
+                    logger.warning(f"Failed to send trigger for Iq_ref={iq_ref}, continuing...")
+                    self._stop_acquisition_and_logging()
+                    continue
+                
+                # Step 6: Wait for test duration (collect CAN frames during wait)
+                wait_start = time.time()
+                wait_duration = self.ipc_test_duration_ms / 1000.0
+                poll_interval = 0.1  # Poll every 100ms
+                
+                while time.time() - wait_start < wait_duration:
+                    # Collect CAN frames during wait
+                    if self.collecting_can_data and self.can_service:
+                        frames_collected = 0
+                        max_frames_per_poll = 50
+                        while frames_collected < max_frames_per_poll and not self.can_service.frame_queue.empty():
+                            try:
+                                frame = self.can_service.frame_queue.get_nowait()
+                                self.collected_frames.append((time.time(), frame))
+                                frames_collected += 1
+                            except queue.Empty:
+                                break
+                    
+                    # Process Qt events to keep UI responsive
+                    if hasattr(self.gui, 'processEvents'):
+                        self.gui.processEvents()
+                    elif hasattr(QtCore.QCoreApplication, 'processEvents'):
+                        QtCore.QCoreApplication.processEvents()
+                    
+                    time.sleep(poll_interval)
+                
+                # Step 7: Stop oscilloscope and CAN logging
+                self._stop_acquisition_and_logging()
+                
+                # Step 8: Analyze data
+                osc_ch1_avg, osc_ch2_avg, can_v_avg, can_w_avg = self._analyze_data()
+                
+                # Step 9: Append results
+                self.results.append({
+                    'iq_ref': iq_ref,
+                    'osc_ch1_avg': osc_ch1_avg,
+                    'osc_ch2_avg': osc_ch2_avg,
+                    'can_v_avg': can_v_avg,
+                    'can_w_avg': can_w_avg
+                })
+                
+                logger.info(f"Iq_ref={iq_ref}: OSC CH1={osc_ch1_avg}, CH2={osc_ch2_avg}, "
+                          f"CAN V={can_v_avg}, W={can_w_avg}")
+            
+            # Step 11: Disable test mode
+            self._disable_test_mode()
+            
+            # Store results for plotting
+            if hasattr(self.gui, '_test_plot_data_temp'):
+                test_name = self.test.get('name', 'phase_current_test')
+                self.gui._test_plot_data_temp[test_name] = {
+                    'iq_refs': [r['iq_ref'] for r in self.results],
+                    'osc_ch1': [r['osc_ch1_avg'] for r in self.results],
+                    'osc_ch2': [r['osc_ch2_avg'] for r in self.results],
+                    'can_v': [r['can_v_avg'] for r in self.results],
+                    'can_w': [r['can_w_avg'] for r in self.results]
+                }
+            
+            info = f"Completed {len(self.results)}/{len(self.iq_ref_array)} test points"
+            return True, info
+            
+        except Exception as e:
+            logger.error(f"Phase current test failed: {e}", exc_info=True)
+            return False, f"Test execution error: {e}"
+    
+    def _validate_oscilloscope_settings(self) -> bool:
+        """Validate oscilloscope settings against configuration.
+        
+        Returns:
+            True if validation passes, False otherwise
+        """
+        if not self.oscilloscope_service or not self.oscilloscope_service.is_connected():
+            logger.error("Oscilloscope not connected")
+            return False
+        
+        if not hasattr(self.gui, '_oscilloscope_config'):
+            logger.error("Oscilloscope configuration not available")
+            return False
+        
+        errors = []
+        config = self.gui._oscilloscope_config
+        
+        # Check enabled channels
+        for ch_num in [1, 2]:
+            ch_key = f'CH{ch_num}'
+            channel_config = config.get('channels', {}).get(ch_key, {})
+            expected_enabled = channel_config.get('enabled', False)
+            
+            if not expected_enabled:
+                continue  # Skip disabled channels
+            
+            # Query trace status
+            time.sleep(0.2)
+            print(ch_num)
+            tra_response = self.oscilloscope_service.send_command(f"C{ch_num}:TRA?")
+            if tra_response is None:
+                errors.append(f"Channel {ch_num}: Failed to query trace status")
+                continue
+            
+            # Parse response
+            tra_str = tra_response.strip().upper()
+            actual_enabled = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
+            print("Trace ENable Actual enabled: ", actual_enabled)
+            if not actual_enabled:
+                errors.append(f"Channel {ch_num}: Expected enabled but trace is OFF")
+            
+            # Check probe attenuation
+            time.sleep(0.2)
+            attn_response = self.oscilloscope_service.send_command(f"C{ch_num}:ATTN?")
+            print("Attenuation response: ", attn_response)
+            if attn_response is None:
+                errors.append(f"Channel {ch_num}: Failed to query probe attenuation")
+                continue
+            
+            expected_attenuation = channel_config.get('probe_attenuation', 1.0)
+            attn_match = REGEX_ATTN.search(attn_response)
+            if attn_match:
+                actual_attenuation = float(attn_match.group(1))
+                tolerance = 0.5
+                if abs(actual_attenuation - expected_attenuation) > tolerance:
+                    errors.append(f"Channel {ch_num}: Attenuation mismatch: "
+                                f"expected={expected_attenuation}, actual={actual_attenuation}, "
+                                f"tolerance={tolerance}")
+            else:
+                errors.append(f"Channel {ch_num}: Could not parse attenuation")
+        
+        # Check timebase
+        time.sleep(0.2)
+        tdiv_response = self.oscilloscope_service.send_command("TDIV?")
+        print("Timebase response: ", tdiv_response)
+        if tdiv_response is None:
+            errors.append("Failed to query timebase")
+        else:
+            expected_timebase_ms = config.get('acquisition', {}).get('timebase_ms', 1.0)
+            tdiv_match = REGEX_TDIV.search(tdiv_response)
+            print("Timebase match: ", tdiv_match)
+            if tdiv_match:
+                actual_tdiv = float(tdiv_match.group(1))
+                print("Actual timebase: ", actual_tdiv)
+                # Convert TDIV (seconds per division) to milliseconds
+                actual_timebase_ms = actual_tdiv * 1000.0
+                if abs(actual_timebase_ms - expected_timebase_ms) > 0.01:
+                    errors.append(f"Timebase mismatch: expected={expected_timebase_ms}ms, "
+                                f"actual={actual_timebase_ms}ms")
+            else:
+                errors.append("Could not parse timebase")
+        
+        if errors:
+            logger.error(f"Oscilloscope validation errors: {errors}")
+            return False
+        
+        logger.info("Oscilloscope settings validated successfully")
+        return True
+    
+    def _prepare_iq_ref_array(self) -> bool:
+        """Prepare array of Iq_ref values from min, max, and step.
+        
+        Returns:
+            True if array prepared successfully, False otherwise
+        """
+        if self.min_iq is None or self.max_iq is None or self.step_iq is None:
+            logger.error("Missing Iq_ref parameters (min_iq, max_iq, step_iq)")
+            return False
+        
+        if self.step_iq <= 0:
+            logger.error(f"Invalid step_iq: {self.step_iq}")
+            return False
+        
+        # Generate array
+        self.iq_ref_array = []
+        current = self.min_iq
+        while current <= self.max_iq:
+            self.iq_ref_array.append(current)
+            current += self.step_iq
+        
+        logger.info(f"Prepared Iq_ref array: {len(self.iq_ref_array)} values from {self.min_iq} to {self.max_iq} with step {self.step_iq}")
+        return True
+    
+    def _set_vertical_division(self, iq_ref: float) -> bool:
+        """Set vertical division for both channels.
+        
+        Args:
+            iq_ref: Current Iq reference value
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.oscilloscope_service or not self.oscilloscope_service.is_connected():
+            return False
+        
+        vdiv_value = iq_ref / 2.0
+        
+        try:
+            # Set C1:VDIV
+            self.oscilloscope_service.send_command(f"C1:VDIV {vdiv_value}")
+            time.sleep(0.2)
+            
+            # Set C2:VDIV
+            self.oscilloscope_service.send_command(f"C2:VDIV {vdiv_value}")
+            time.sleep(0.2)
+            
+            logger.info(f"Set vertical division to {vdiv_value} V/div for Iq_ref={iq_ref} A")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set vertical division: {e}")
+            return False
+    
+    def _start_acquisition_and_logging(self) -> bool:
+        """Start oscilloscope acquisition and CAN data logging.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        # Start oscilloscope acquisition
+        if self.oscilloscope_service and self.oscilloscope_service.is_connected():
+            try:
+                self.oscilloscope_service.send_command("TRMD AUTO")
+                time.sleep(0.2)
+                logger.info("Started oscilloscope acquisition")
+            except Exception as e:
+                logger.error(f"Failed to start oscilloscope acquisition: {e}")
+                return False
+        
+        # Start CAN data logging
+        if self.can_service and self.can_service.is_connected():
+            self.collecting_can_data = True
+            self.collected_frames = []
+            logger.info("Started CAN data logging")
+        
+        return True
+    
+    def _send_trigger_message(self, iq_ref: float) -> bool:
+        """Send trigger message with test enable and Iq_ref.
+        
+        Args:
+            iq_ref: Current Iq reference value
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.can_service or not self.can_service.is_connected():
+            logger.error("CAN service not connected")
+            return False
+        
+        if not self.dbc_service or not self.dbc_service.is_loaded():
+            logger.error("DBC service not loaded")
+            return False
+        
+        # Find command message if not cached
+        if self.command_message is None:
+            if self.cmd_msg_id is None:
+                logger.error("Command message ID not specified")
+                return False
+            self.command_message = self.dbc_service.find_message_by_id(self.cmd_msg_id)
+            if self.command_message is None:
+                logger.error(f"Command message (ID {self.cmd_msg_id}) not found in DBC")
+                return False
+        
+        try:
+            # Encode message with signal values
+            # MessageType 20 (m20) is the multiplexor for phase current test signals
+            signal_values = {
+                'DeviceID': 0x03,  # IPC_Hardware = 0x03
+                'MessageType': 20,  # MessageType 20 (m20) for phase current test
+                self.trigger_signal: 1,
+                self.iq_ref_signal: iq_ref,
+                self.id_ref_signal: 0.0
+            }
+            
+            # Encode using DBC service
+            frame_data = self.dbc_service.encode_message(self.command_message, signal_values)
+            
+            # Create and send frame
+            from backend.adapters.interface import Frame
+            frame = Frame(
+                can_id=self.cmd_msg_id,
+                data=frame_data,
+                timestamp=None
+            )
+            
+            logger.info(f"Sending trigger message: Iq_ref={iq_ref} A")
+            if not self.can_service.send_frame(frame):
+                logger.error("Failed to send trigger message")
+                return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send trigger message: {e}", exc_info=True)
+            return False
+    
+    def _stop_acquisition_and_logging(self):
+        """Stop oscilloscope acquisition and CAN data logging."""
+        # Stop oscilloscope
+        if self.oscilloscope_service and self.oscilloscope_service.is_connected():
+            try:
+                self.oscilloscope_service.send_command("STOP")
+                time.sleep(0.2)
+                logger.info("Stopped oscilloscope acquisition")
+            except Exception as e:
+                logger.warning(f"Failed to stop oscilloscope: {e}")
+        
+        # Stop CAN data logging
+        self.collecting_can_data = False
+        logger.info(f"Stopped CAN data logging (collected {len(self.collected_frames)} frames)")
+    
+    def _analyze_data(self) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Analyze oscilloscope and CAN data to compute steady state averages.
+        
+        Returns:
+            Tuple of (osc_ch1_avg, osc_ch2_avg, can_v_avg, can_w_avg)
+        """
+        osc_ch1_avg = None
+        osc_ch2_avg = None
+        can_v_avg = None
+        can_w_avg = None
+        
+        # Analyze oscilloscope data
+        try:
+            osc_ch1_avg, osc_ch2_avg = self._analyze_oscilloscope_data()
+        except Exception as e:
+            logger.error(f"Failed to analyze oscilloscope data: {e}", exc_info=True)
+        
+        # Analyze CAN data
+        try:
+            can_v_avg, can_w_avg = self._analyze_can_data()
+        except Exception as e:
+            logger.error(f"Failed to analyze CAN data: {e}", exc_info=True)
+        
+        return osc_ch1_avg, osc_ch2_avg, can_v_avg, can_w_avg
+    
+    def _analyze_oscilloscope_data(self) -> Tuple[Optional[float], Optional[float]]:
+        """Retrieve and analyze oscilloscope waveforms.
+        
+        Returns:
+            Tuple of (ch1_avg, ch2_avg)
+        """
+        if not self.oscilloscope_service or not self.oscilloscope_service.is_connected():
+            return None, None
+        
+        # Import waveform decoder (we'll create a simplified version)
+        # For now, we'll use a basic approach - in production, import from retrieve_waveform_data.py
+        # But per user request, we should not reference test scripts
+        # So we'll implement a basic waveform retrieval here
+        
+        ch1_avg = None
+        ch2_avg = None
+        
+        try:
+            # Retrieve CH1 waveform
+            ch1_data = self._retrieve_channel_waveform(1)
+            if ch1_data:
+                ch1_avg = self._analyze_waveform(ch1_data, 1)
+            
+            # Retrieve CH2 waveform
+            ch2_data = self._retrieve_channel_waveform(2)
+            if ch2_data:
+                ch2_avg = self._analyze_waveform(ch2_data, 2)
+        except Exception as e:
+            logger.error(f"Failed to analyze oscilloscope waveforms: {e}", exc_info=True)
+        
+        return ch1_avg, ch2_avg
+    
+    def _retrieve_channel_waveform(self, channel: int) -> Optional[bytes]:
+        """Retrieve waveform data for a channel.
+        
+        Args:
+            channel: Channel number (1 or 2)
+            
+        Returns:
+            Waveform data bytes or None if failed
+        """
+        try:
+            # Send waveform query command
+            cmd = f"C{channel}:WF? ALL"
+            response = self.oscilloscope_service.send_command(cmd, timeout=10.0)
+            
+            if not response:
+                logger.error(f"Failed to retrieve CH{channel} waveform")
+                return None
+            
+            # Parse SCPI binary block format: #N<length><data>
+            if isinstance(response, str):
+                raw_data = response.encode('latin-1')
+            else:
+                raw_data = response
+            
+            # Check if data starts with WAVEDESC (direct binary)
+            if raw_data[:8].startswith(b'WAVEDESC'):
+                return raw_data
+            
+            # Try to find WAVEDESC in the data
+            wavedesc_pos = raw_data.find(b'WAVEDESC')
+            if wavedesc_pos >= 0:
+                return raw_data[wavedesc_pos:]
+            
+            # If starts with '#', parse SCPI binary block
+            if len(raw_data) >= 2 and raw_data[0] == ord('#'):
+                # Format: #N<length><data>
+                n_digits = int(chr(raw_data[1]))
+                if len(raw_data) < 2 + n_digits:
+                    return raw_data
+                length_str = raw_data[2:2+n_digits].decode('ascii')
+                data_length = int(length_str)
+                data_start = 2 + n_digits
+                if len(raw_data) >= data_start + data_length:
+                    return raw_data[data_start:data_start + data_length]
+            
+            return raw_data
+        except Exception as e:
+            logger.error(f"Error retrieving CH{channel} waveform: {e}")
+            return None
+    
+    def _analyze_waveform(self, waveform_data: bytes, channel: int) -> Optional[float]:
+        """Analyze waveform data to compute steady state average.
+        
+        Args:
+            waveform_data: Raw waveform data bytes
+            channel: Channel number
+            
+        Returns:
+            Average voltage in steady state region, or None if analysis fails
+        """
+        try:
+            # Query vertical gain and offset
+            vdiv_resp = self.oscilloscope_service.send_command(f"C{channel}:VDIV?")
+            vertical_gain = None
+            if vdiv_resp:
+                vdiv_match = REGEX_VDIV.search(vdiv_resp)
+                if vdiv_match:
+                    vertical_gain = float(vdiv_match.group(1))
+            
+            ofst_resp = self.oscilloscope_service.send_command(f"C{channel}:OFST?")
+            vertical_offset = None
+            if ofst_resp:
+                ofst_match = REGEX_OFST.search(ofst_resp)
+                if ofst_match:
+                    vertical_offset = float(ofst_match.group(1))
+            
+            # Decode waveform using simplified decoder
+            decoder = _WaveformDecoder(waveform_data)
+            descriptor, time_values, voltage_values = decoder.decode(
+                vertical_gain=vertical_gain,
+                vertical_offset=vertical_offset
+            )
+            
+            if not voltage_values or len(voltage_values) < 10:
+                logger.warning(f"Insufficient waveform data for CH{channel}")
+                return None
+            
+            # Analyze steady state
+            start_idx, end_idx, avg, std = _analyze_steady_state_can(
+                time_values, voltage_values,
+                variance_threshold_percent=5.0,
+                skip_initial_percent=30.0
+            )
+            
+            if avg is not None:
+                logger.info(f"CH{channel} steady state: avg={avg:.6f} V, std={std:.6f} V")
+                return avg
+            else:
+                logger.warning(f"Failed to find steady state for CH{channel}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to analyze CH{channel} waveform: {e}", exc_info=True)
+            return None
+    
+    def _analyze_can_data(self) -> Tuple[Optional[float], Optional[float]]:
+        """Analyze CAN data to compute steady state averages.
+        
+        Returns:
+            Tuple of (v_avg, w_avg)
+        """
+        if not self.signal_service or not self.dbc_service:
+            return None, None
+        
+        if not self.collected_frames:
+            logger.warning("No CAN frames collected")
+            return None, None
+        
+        # Find phase current message if not cached
+        if self.phase_current_message is None:
+            if self.phase_current_can_id is None:
+                logger.error("Phase current message ID not specified")
+                return None, None
+            self.phase_current_message = self.dbc_service.find_message_by_id(self.phase_current_can_id)
+            if self.phase_current_message is None:
+                logger.error(f"Phase current message (ID {self.phase_current_can_id}) not found in DBC")
+                return None, None
+        
+        # Decode frames and extract signal values
+        v_values = []
+        w_values = []
+        timestamps = []
+        
+        for timestamp, frame in self.collected_frames:
+            # Only process frames matching the phase current message ID
+            if getattr(frame, 'can_id', None) != self.phase_current_can_id:
+                continue
+            
+            try:
+                # Decode frame using signal service
+                signal_values = self.signal_service.decode_frame(frame)
+                
+                # Extract phase current signals
+                v_val = None
+                w_val = None
+                for sv in signal_values:
+                    if sv.signal_name == self.phase_current_v_signal:
+                        v_val = sv.value
+                    elif sv.signal_name == self.phase_current_w_signal:
+                        w_val = sv.value
+                
+                if v_val is not None and w_val is not None:
+                    v_values.append(v_val)
+                    w_values.append(w_val)
+                    timestamps.append(sv.timestamp if hasattr(sv, 'timestamp') else timestamp)
+            except Exception as e:
+                logger.debug(f"Failed to decode frame: {e}")
+                continue
+        
+        if not v_values or not w_values:
+            logger.warning("No valid phase current data found in CAN frames")
+            return None, None
+        
+        # Analyze steady state
+        v_start, v_end, v_avg, v_std = _analyze_steady_state_can(timestamps, v_values)
+        w_start, w_end, w_avg, w_std = _analyze_steady_state_can(timestamps, w_values)
+        
+        logger.info(f"CAN analysis: V avg={v_avg}, W avg={w_avg}")
+        return v_avg, w_avg
+    
+    def _disable_test_mode(self):
+        """Send message to disable test mode."""
+        if not self.can_service or not self.can_service.is_connected():
+            return
+        
+        if not self.dbc_service or not self.dbc_service.is_loaded():
+            return
+        
+        if self.command_message is None:
+            return
+        
+        try:
+            signal_values = {
+                'DeviceID': 0x03,
+                'MessageType': 20,
+                self.trigger_signal: 0,
+                self.iq_ref_signal: 0.0,
+                self.id_ref_signal: 0.0
+            }
+            
+            frame_data = self.dbc_service.encode_message(self.command_message, signal_values)
+            from backend.adapters.interface import Frame
+            frame = Frame(
+                can_id=self.cmd_msg_id,
+                data=frame_data,
+                timestamp=None
+            )
+            
+            self.can_service.send_frame(frame)
+            logger.info("Sent disable test mode message")
+        except Exception as e:
+            logger.error(f"Failed to send disable message: {e}")
+
+
 class TestRunner:
     """Lightweight test runner that encapsulates single-test execution logic.
 
     This class handles the execution of individual test cases, including:
     - Digital tests: Setting relay states and verifying feedback
     - Analog tests: Stepping DAC voltages and monitoring feedback signals
+    - Phase Current Calibration: State machine-based oscilloscope and CAN data collection
     
     The TestRunner is designed to be called from the GUI's main thread,
     but can be moved to a background thread for non-blocking execution
@@ -295,6 +1341,55 @@ class TestRunner:
                 osc_init_success = gui._initialize_oscilloscope_for_test(test)
                 if not osc_init_success:
                     logger.warning("Oscilloscope initialization failed, continuing test anyway")
+            
+            # Execute phase current test using state machine
+            try:
+                state_machine = PhaseCurrentTestStateMachine(gui, test)
+                
+                # Hook CAN frame collection during test
+                original_poll = getattr(gui, '_poll_frames', None)
+                if original_poll:
+                    def _poll_frames_with_collection():
+                        original_poll()
+                        # Collect frames for phase current test
+                        if hasattr(gui, '_phase_current_state_machine'):
+                            sm = gui._phase_current_state_machine
+                            if sm and sm.collecting_can_data and gui.can_service:
+                                # Collect frames from queue
+                                frames_collected = 0
+                                max_frames_per_poll = 100
+                                while frames_collected < max_frames_per_poll and not gui.can_service.frame_queue.empty():
+                                    try:
+                                        frame = gui.can_service.frame_queue.get_nowait()
+                                        sm.collected_frames.append((time.time(), frame))
+                                        frames_collected += 1
+                                    except queue.Empty:
+                                        break
+                    
+                    gui._phase_current_state_machine = state_machine
+                    gui._poll_frames = _poll_frames_with_collection
+                    
+                    try:
+                        success, info = state_machine.run()
+                        return success, info
+                    finally:
+                        # Restore original poll function
+                        if original_poll:
+                            gui._poll_frames = original_poll
+                        if hasattr(gui, '_phase_current_state_machine'):
+                            delattr(gui, '_phase_current_state_machine')
+                else:
+                    # Fallback: collect frames directly during test
+                    gui._phase_current_state_machine = state_machine
+                    try:
+                        success, info = state_machine.run()
+                        return success, info
+                    finally:
+                        if hasattr(gui, '_phase_current_state_machine'):
+                            delattr(gui, '_phase_current_state_machine')
+            except Exception as e:
+                logger.error(f"Phase current test execution failed: {e}", exc_info=True)
+                return False, f"Phase current test error: {e}"
         
         try:
             if act.get('type') == 'digital' and act.get('can_id') is not None:
@@ -8702,13 +9797,16 @@ Data Points Used: {data_points}"""
                 dbc_loaded = getattr(self, '_dbc_db', None) is not None
             
             if dbc_loaded:
+                # Extract can_id early for use in error handling
+                can_id = getattr(frame, 'can_id', 0)
+                
                 try:
                     # Convert frame to SignalService format
                     from backend.adapters.interface import Frame as AdapterFrame
                     if not isinstance(frame, AdapterFrame):
                         # Convert from legacy format
                         adapter_frame = AdapterFrame(
-                            can_id=getattr(frame, 'can_id', 0),
+                            can_id=can_id,
                             data=getattr(frame, 'data', b''),
                             timestamp=getattr(frame, 'timestamp', None)
                         )
@@ -8725,20 +9823,6 @@ Data Points Used: {data_points}"""
                         else:
                             logger.warning(f"Error during signal decode for frame 0x{can_id:X}: {e}")
                         signal_values = []  # Continue without decoded signals
-                    can_id = getattr(frame, 'can_id', 0)
-                    if signal_values:
-                        logger.info(f"SignalService decoded {len(signal_values)} signals from frame 0x{can_id:X}")
-                    else:
-                        # More detailed debug logging
-                        dbc_loaded_check = dbc_service.is_loaded() if dbc_service else False
-                        logger.warning(f"SignalService returned no signals for frame 0x{can_id:X} - DBC service loaded: {dbc_loaded_check}")
-                        if dbc_service:
-                            # Try to find the message
-                            msg = dbc_service.find_message_by_id(can_id)
-                            if msg is None:
-                                logger.warning(f"No message found in DBC for CAN ID 0x{can_id:X}")
-                            else:
-                                logger.warning(f"Message found (0x{can_id:X}) but decode returned empty - message: {getattr(msg, 'name', 'unknown')}")
                     
                     # Only proceed if we got signal values
                     if signal_values:

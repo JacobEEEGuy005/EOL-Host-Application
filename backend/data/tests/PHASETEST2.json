@@ -1,7 +1,7 @@
 {
   "tests": [
     {
-      "name": "PhaseTEst1",
+      "name": "PhaseTest2",
       "type": "phase_current_calibration",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
@@ -21,7 +21,7 @@
         "oscilloscope_phase_v_ch": "Phase V Current",
         "oscilloscope_phase_w_ch": "Phase W Current"
       },
-      "created_at": "2025-11-06T08:08:56.865026Z"
+      "created_at": "2025-11-06T18:54:24.985815Z"
     }
   ]
 }

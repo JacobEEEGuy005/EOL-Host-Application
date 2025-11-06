@@ -219,13 +219,13 @@ class WaveformDecoder:
         # Convert to floating point values using vertical gain and offset
         # Use provided values from C1:VDIV? and C1:OFST? if available, otherwise use descriptor values
         if vertical_gain is None:
-            vertical_gain = descriptor['VERTICAL_GAIN']
+        vertical_gain = descriptor['VERTICAL_GAIN']
             logger.info(f"Using VERTICAL_GAIN from descriptor: {vertical_gain}")
         else:
             logger.info(f"Using vertical gain from C1:VDIV?: {vertical_gain}")
         
         if vertical_offset is None:
-            vertical_offset = descriptor['VERTICAL_OFFSET']
+        vertical_offset = descriptor['VERTICAL_OFFSET']
             logger.info(f"Using VERTICAL_OFFSET from descriptor: {vertical_offset}")
         else:
             logger.info(f"Using vertical offset from C1:OFST?: {vertical_offset}")
@@ -236,8 +236,8 @@ class WaveformDecoder:
             voltage_values = ((vertical_gain * raw_data_array) / 25.0 - vertical_offset).tolist()
         else:
             # Fallback to Python loop if NumPy not available
-            voltage_values = []
-            for data_point in raw_data_points:
+        voltage_values = []
+        for data_point in raw_data_points:
                 # Formula: vertical_gain * data - vertical_offset
                 # Note: If using VDIV (volts per division), the conversion may need adjustment
                 # VDIV is typically the full-scale range divided by 8 divisions
@@ -245,7 +245,7 @@ class WaveformDecoder:
                 # So: voltage = (VDIV * 8 / 256) * data_point - OFST = (VDIV / 32) * data_point - OFST
                 # However, using VDIV directly as requested by user
                 voltage = (vertical_gain * data_point)/25.0 - vertical_offset
-                voltage_values.append(voltage)
+            voltage_values.append(voltage)
         
         # Calculate time values - optimized using NumPy
         horiz_interval = descriptor['HORIZ_INTERVAL']
@@ -255,10 +255,10 @@ class WaveformDecoder:
             time_values = (np.arange(num_points, dtype=np.float64) * horiz_interval + horiz_offset).tolist()
         else:
             # Fallback to Python loop if NumPy not available
-            time_values = []
-            for i in range(num_points):
-                time = (i * horiz_interval) + horiz_offset
-                time_values.append(time)
+        time_values = []
+        for i in range(num_points):
+            time = (i * horiz_interval) + horiz_offset
+            time_values.append(time)
         
         return descriptor, time_values, voltage_values
     

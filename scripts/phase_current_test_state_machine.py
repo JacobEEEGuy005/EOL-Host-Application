@@ -31,7 +31,7 @@ except ImportError:
 
 # Pre-compile regex patterns for better performance
 REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([\d.]+)', re.IGNORECASE)
+REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
 REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
 REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
 REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')

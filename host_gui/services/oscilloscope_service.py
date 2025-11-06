@@ -11,9 +11,19 @@ Supports Siglent SDS1104X-U and other USBTMC-compatible oscilloscopes.
 """
 import logging
 import os
+import re
+import time
 from typing import Optional, List, Dict, Tuple, Any
 
 logger = logging.getLogger(__name__)
+
+# Pre-compile regex patterns for better performance (matching phase_current_test_state_machine.py)
+REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
 
 try:
     import pyvisa
@@ -297,18 +307,19 @@ class OscilloscopeService:
             return False
         
         try:
-            channel_name = f"CHAN{channel}"
+            channel_name = f"C{channel}"
             errors = []
             
             # Configure channel display (enable/disable)
             try:
-                disp_cmd = f":{channel_name}:DISP {'ON' if enabled else 'OFF'}"
+                disp_cmd = f":{channel_name}:TRA {'ON' if enabled else 'OFF'}"
                 self.oscilloscope.write(disp_cmd)
                 logger.debug(f"Sent command: {disp_cmd}")
                 
-                # Read back and verify
-                readback = self.oscilloscope.query(f":{channel_name}:DISP?")
-                readback_enabled = readback.strip().upper() in ['1', 'ON', 'TRUE']
+                # Read back and verify using C{channel}:TRA? format
+                readback = self.oscilloscope.query(f"C{channel}:TRA?")
+                readback_str = readback.strip().upper()
+                readback_enabled = 'ON' in readback_str or readback_str == '1' or 'TRUE' in readback_str
                 if readback_enabled != enabled:
                     errors.append(f"Channel {channel} display mismatch: set={enabled}, readback={readback_enabled}")
                     logger.warning(f"Channel {channel} display readback mismatch")
@@ -319,46 +330,46 @@ class OscilloscopeService:
                 logger.error(f"Failed to configure channel {channel} display: {e}", exc_info=True)
             
             if enabled:
-                # Configure probe attenuation
+                # Verify probe attenuation (read only, compare against config)
                 try:
-                    probe_cmd = f":{channel_name}:PROB {probe_attenuation}"
-                    self.oscilloscope.write(probe_cmd)
-                    logger.debug(f"Sent command: {probe_cmd}")
-                    
-                    # Read back and verify (allow small tolerance for floating point)
-                    readback = self.oscilloscope.query(f":{channel_name}:PROB?")
-                    try:
-                        readback_att = float(readback.strip())
-                        if abs(readback_att - probe_attenuation) > 0.01:
-                            errors.append(f"Channel {channel} probe attenuation mismatch: set={probe_attenuation}, readback={readback_att}")
-                            logger.warning(f"Channel {channel} probe attenuation readback mismatch")
-                        else:
-                            logger.debug(f"Channel {channel} probe attenuation verified: {probe_attenuation}")
-                    except ValueError:
-                        errors.append(f"Channel {channel} probe attenuation readback invalid: {readback}")
-                        logger.warning(f"Channel {channel} probe attenuation readback invalid: {readback}")
-                except Exception as e:
-                    errors.append(f"Channel {channel} probe attenuation configuration failed: {e}")
-                    logger.error(f"Failed to configure channel {channel} probe attenuation: {e}", exc_info=True)
-                
-                # Configure unit (oscilloscope measures voltage only, but we store unit for reference)
-                try:
-                    # Oscilloscope units are typically VOLT or AMP, but Siglent may only support VOLT
-                    # Store unit in config but always set to VOLT on scope
-                    unit_cmd = f":{channel_name}:UNIT VOLT"
-                    self.oscilloscope.write(unit_cmd)
-                    logger.debug(f"Sent command: {unit_cmd} (unit={unit} stored in config, scope set to VOLT)")
-                    
-                    # Read back and verify
-                    readback = self.oscilloscope.query(f":{channel_name}:UNIT?")
-                    readback_unit = readback.strip().upper()
-                    if 'VOLT' not in readback_unit:
-                        logger.warning(f"Channel {channel} unit readback unexpected: {readback_unit}")
+                    # Read probe attenuation using C{channel}:ATTN? format
+                    readback = self.oscilloscope.query(f"C{channel}:ATTN?")
+                    # Parse attenuation value - response may be "ATTN 811.965812" or just "811.965812"
+                    attn_match = REGEX_ATTN.search(readback)
+                    print ("Attenuation match: ", attn_match)
+                    if attn_match:
+                        try:
+                            readback_att = float(attn_match.group(1))
+                            print ("Readback attenuation: ", readback_att)
+                            if abs(readback_att - probe_attenuation) > 0.5:
+                                errors.append(f"Channel {channel} probe attenuation mismatch: expected={probe_attenuation}, actual={readback_att}")
+                                logger.warning(f"Channel {channel} probe attenuation mismatch: expected={probe_attenuation}, actual={readback_att}")
+                            else:
+                                logger.debug(f"Channel {channel} probe attenuation verified: expected={probe_attenuation}, actual={readback_att}")
+                        except ValueError:
+                            errors.append(f"Channel {channel} probe attenuation readback invalid: {readback}")
+                            logger.warning(f"Channel {channel} probe attenuation readback invalid: {readback}")
                     else:
-                        logger.debug(f"Channel {channel} unit verified: VOLT (config unit={unit})")
+                        # Fallback: extract last number (matching phase_current_test_state_machine.py)
+                        numbers = REGEX_NUMBER_SIMPLE.findall(readback)
+                        if numbers:
+                            try:
+                                readback_att = float(numbers[-1])
+                                logger.info(f"Channel {channel} probe attenuation parsed from: {readback.strip()} (parsed: {readback_att})")
+                                if abs(readback_att - probe_attenuation) > 0.5:
+                                    errors.append(f"Channel {channel} probe attenuation mismatch: expected={probe_attenuation}, actual={readback_att}")
+                                    logger.warning(f"Channel {channel} probe attenuation mismatch: expected={probe_attenuation}, actual={readback_att}")
+                                else:
+                                    logger.debug(f"Channel {channel} probe attenuation verified: expected={probe_attenuation}, actual={readback_att}")
+                            except ValueError:
+                                errors.append(f"Channel {channel} probe attenuation readback invalid: {readback}")
+                                logger.warning(f"Channel {channel} probe attenuation readback invalid: {readback}")
+                        else:
+                            errors.append(f"Channel {channel} probe attenuation readback invalid: {readback}")
+                            logger.warning(f"Channel {channel} probe attenuation readback invalid: {readback}")
                 except Exception as e:
-                    # Some oscilloscopes may not support UNIT command, log but don't fail
-                    logger.debug(f"Channel {channel} unit command not supported or failed: {e}")
+                    errors.append(f"Channel {channel} probe attenuation verification failed: {e}")
+                    logger.error(f"Failed to verify channel {channel} probe attenuation: {e}", exc_info=True)
             
             if errors:
                 logger.error(f"Channel {channel} configuration completed with errors: {errors}")
@@ -371,124 +382,14 @@ class OscilloscopeService:
             logger.error(f"Error configuring channel {channel}: {e}", exc_info=True)
             return False
     
-    def configure_trigger(self, channel: str, trigger_type: str, trigger_setting: str, noise_reject: bool) -> bool:
-        """Configure oscilloscope trigger settings.
-        
-        Args:
-            channel: Trigger channel ('CH1', 'CH2', 'CH3', 'CH4')
-            trigger_type: Trigger type ('Edge' - fixed)
-            trigger_setting: Trigger slope ('Rising', 'Falling', 'Alternate')
-            noise_reject: Enable noise rejection (True/False)
-        
-        Returns:
-            True if configuration successful and verified, False otherwise
-        """
-        if not self.is_connected():
-            logger.error("Cannot configure trigger: oscilloscope not connected")
-            return False
-        
-        if trigger_type != 'Edge':
-            logger.warning(f"Trigger type '{trigger_type}' not supported, using Edge")
-            trigger_type = 'Edge'
-        
-        # Map trigger setting to SCPI command
-        slope_map = {
-            'Rising': 'RISING',
-            'Falling': 'FALLING',
-            'Alternate': 'ALTERNATE'
-        }
-        slope_scpi = slope_map.get(trigger_setting, 'RISING')
-        
-        try:
-            errors = []
-            
-            # Configure trigger mode (Edge)
-            try:
-                mode_cmd = ":TRIG:MODE EDGE"
-                self.oscilloscope.write(mode_cmd)
-                logger.debug(f"Sent command: {mode_cmd}")
-                
-                # Read back and verify
-                readback = self.oscilloscope.query(":TRIG:MODE?")
-                if 'EDGE' not in readback.upper():
-                    errors.append(f"Trigger mode mismatch: set=EDGE, readback={readback}")
-                    logger.warning(f"Trigger mode readback mismatch")
-                else:
-                    logger.debug("Trigger mode verified: EDGE")
-            except Exception as e:
-                errors.append(f"Trigger mode configuration failed: {e}")
-                logger.error(f"Failed to configure trigger mode: {e}", exc_info=True)
-            
-            # Configure trigger source channel
-            try:
-                source_cmd = f":TRIG:EDGE:SOUR {channel}"
-                self.oscilloscope.write(source_cmd)
-                logger.debug(f"Sent command: {source_cmd}")
-                
-                # Read back and verify
-                readback = self.oscilloscope.query(":TRIG:EDGE:SOUR?")
-                readback_ch = readback.strip().upper()
-                if channel.upper() not in readback_ch:
-                    errors.append(f"Trigger source mismatch: set={channel}, readback={readback_ch}")
-                    logger.warning(f"Trigger source readback mismatch")
-                else:
-                    logger.debug(f"Trigger source verified: {channel}")
-            except Exception as e:
-                errors.append(f"Trigger source configuration failed: {e}")
-                logger.error(f"Failed to configure trigger source: {e}", exc_info=True)
-            
-            # Configure trigger slope
-            try:
-                slope_cmd = f":TRIG:EDGE:SLOP {slope_scpi}"
-                self.oscilloscope.write(slope_cmd)
-                logger.debug(f"Sent command: {slope_cmd}")
-                
-                # Read back and verify
-                readback = self.oscilloscope.query(":TRIG:EDGE:SLOP?")
-                readback_slope = readback.strip().upper()
-                if slope_scpi.upper() not in readback_slope:
-                    errors.append(f"Trigger slope mismatch: set={slope_scpi}, readback={readback_slope}")
-                    logger.warning(f"Trigger slope readback mismatch")
-                else:
-                    logger.debug(f"Trigger slope verified: {slope_scpi}")
-            except Exception as e:
-                errors.append(f"Trigger slope configuration failed: {e}")
-                logger.error(f"Failed to configure trigger slope: {e}", exc_info=True)
-            
-            # Configure noise reject
-            try:
-                noise_cmd = f":TRIG:EDGE:NOIS {'ON' if noise_reject else 'OFF'}"
-                self.oscilloscope.write(noise_cmd)
-                logger.debug(f"Sent command: {noise_cmd}")
-                
-                # Read back and verify
-                readback = self.oscilloscope.query(":TRIG:EDGE:NOIS?")
-                readback_noise = readback.strip().upper() in ['1', 'ON', 'TRUE']
-                if readback_noise != noise_reject:
-                    errors.append(f"Trigger noise reject mismatch: set={noise_reject}, readback={readback_noise}")
-                    logger.warning(f"Trigger noise reject readback mismatch")
-                else:
-                    logger.debug(f"Trigger noise reject verified: {noise_reject}")
-            except Exception as e:
-                errors.append(f"Trigger noise reject configuration failed: {e}")
-                logger.error(f"Failed to configure trigger noise reject: {e}", exc_info=True)
-            
-            if errors:
-                logger.error(f"Trigger configuration completed with errors: {errors}")
-                return False
-            
-            logger.info(f"Trigger configured successfully: channel={channel}, type={trigger_type}, setting={trigger_setting}, noise_reject={noise_reject}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error configuring trigger: {e}", exc_info=True)
-            return False
-    
+ 
     def apply_configuration(self, config: Dict[str, Any]) -> Tuple[bool, List[str]]:
         """Apply full oscilloscope configuration from dictionary.
         
         Args:
-            config: Configuration dictionary with 'channels' and 'trigger' keys
+            config: Configuration dictionary with 'channels' and optionally 'acquisition' keys
+                - 'channels': Dict of channel configs (CH1, CH2, CH3, CH4)
+                - 'acquisition': Dict with 'timebase_ms' (optional)
         
         Returns:
             Tuple of (success: bool, errors: List[str])
@@ -503,8 +404,6 @@ class OscilloscopeService:
         # Validate configuration structure
         if 'channels' not in config:
             return False, ["Configuration missing 'channels' key"]
-        if 'trigger' not in config:
-            return False, ["Configuration missing 'trigger' key"]
         
         # Configure each channel
         channels_config = config['channels']
@@ -517,22 +416,32 @@ class OscilloscopeService:
             
             enabled = ch_config.get('enabled', False)
             probe_attenuation = ch_config.get('probe_attenuation', 1.0)
-            unit = ch_config.get('unit', 'V')
+            unit = ch_config.get('unit', 'A')
             
             success = self.configure_channel(channel_num, enabled, probe_attenuation, unit)
             if not success:
                 errors.append(f"Failed to configure {ch_key}")
+            
+            # Small delay between channel configurations
+            time.sleep(0.1)
         
-        # Configure trigger
-        trigger_config = config['trigger']
-        trigger_channel = trigger_config.get('channel', 'CH1')
-        trigger_type = trigger_config.get('type', 'Edge')
-        trigger_setting = trigger_config.get('setting', 'Rising')
-        noise_reject = trigger_config.get('noise_reject', False)
-        
-        success = self.configure_trigger(trigger_channel, trigger_type, trigger_setting, noise_reject)
-        if not success:
-            errors.append("Failed to configure trigger")
+        # Configure timebase (if present in config)
+        if 'acquisition' in config:
+            acquisition_config = config['acquisition']
+            timebase_ms = acquisition_config.get('timebase_ms')
+            if timebase_ms is not None:
+                try:
+                    # Convert milliseconds to seconds for TDIV command
+                    timebase_sec = timebase_ms / 1000.0
+                    self.oscilloscope.write(f"TDIV {timebase_sec}")
+                    time.sleep(0.2)  # Delay for command processing
+                    
+                    # Optional: Verify with readback
+                    readback = self.oscilloscope.query("TDIV?")
+                    logger.debug(f"Timebase set to {timebase_ms}ms (TDIV={timebase_sec}s), readback: {readback}")
+                except Exception as e:
+                    errors.append(f"Failed to configure timebase: {e}")
+                    logger.error(f"Failed to configure timebase: {e}", exc_info=True)
         
         overall_success = len(errors) == 0
         if overall_success:
