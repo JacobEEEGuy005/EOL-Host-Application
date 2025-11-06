@@ -2,18 +2,18 @@
   "name": "oscilloscope config2",
   "version": "1.0",
   "created_at": "2025-11-05T19:26:57.468184Z",
-  "updated_at": "2025-11-05T19:26:57.468184Z",
+  "updated_at": "2025-11-05T19:32:34.575494Z",
   "channels": {
     "CH1": {
       "enabled": true,
       "channel_name": "Phase V Current",
-      "probe_attenuation": 811.9,
+      "probe_attenuation": 811.965812,
       "unit": "A"
     },
     "CH2": {
       "enabled": true,
       "channel_name": "Phase W Current",
-      "probe_attenuation": 811.9,
+      "probe_attenuation": 811.965812,
       "unit": "A"
     },
     "CH3": {

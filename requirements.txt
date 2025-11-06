@@ -10,3 +10,4 @@ PySide6
 matplotlib
 PyVISA
 PyVISA-py
+python-usbtmc

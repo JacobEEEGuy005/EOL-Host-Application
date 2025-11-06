@@ -32,6 +32,7 @@ import os
 import shutil
 import copy
 import base64
+import re
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 from html import escape
@@ -1445,8 +1446,8 @@ class BaseGUI(QtWidgets.QMainWindow):
             except Exception as e:
                 logger.warning(f"Failed to perform initial oscilloscope scan: {e}")
 
-        # Auto-load last used oscilloscope configuration
-        self._load_last_osc_config()
+        # Auto-load last used oscilloscope configuration - DISABLED per user request
+        # self._load_last_osc_config()
 
         self._load_dbcs()
         
@@ -1580,7 +1581,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.osc_config_edit_btn = QtWidgets.QPushButton('Edit Configuration')
         self.osc_config_load_btn = QtWidgets.QPushButton('Load Configuration')
         self.osc_config_save_btn = QtWidgets.QPushButton('Save Configuration')
-        self.osc_config_apply_btn = QtWidgets.QPushButton('Apply to Oscilloscope')
+        self.osc_config_apply_btn = QtWidgets.QPushButton('Validate Oscilloscope settings')
         self.osc_config_apply_btn.setStyleSheet('font-weight: bold;')
         button_layout.addWidget(self.osc_config_create_btn)
         button_layout.addWidget(self.osc_config_edit_btn)
@@ -5317,10 +5318,14 @@ Data Points Used: {data_points}"""
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to save configuration: {e}')
     
     def _on_apply_osc_config(self):
-        """Apply current oscilloscope configuration to connected oscilloscope."""
+        """Validate oscilloscope settings by comparing with current configuration.
+        
+        This method queries the oscilloscope for channel trace status and probe attenuation,
+        then compares them with the configuration in the UI.
+        """
         if self.oscilloscope_service is None:
             QtWidgets.QMessageBox.warning(self, 'Oscilloscope Service', 
-                'Oscilloscope service not available. Please install PyVISA.')
+                'Oscilloscope service not available.')
             return
         
         if not self.oscilloscope_service.is_connected():
@@ -5331,47 +5336,116 @@ Data Points Used: {data_points}"""
         # Collect values from UI
         self._collect_osc_config_from_ui()
         
-        # Validate configuration
-        is_valid, errors = self._validate_osc_config()
-        if not is_valid:
-            error_msg = 'Configuration validation failed:\n' + '\n'.join(errors)
-            QtWidgets.QMessageBox.warning(self, 'Validation Error', error_msg)
-            return
-        
         # Show progress dialog
-        progress = QtWidgets.QProgressDialog('Applying oscilloscope configuration...', 'Cancel', 0, 0, self)
+        progress = QtWidgets.QProgressDialog('Validating oscilloscope settings...', 'Cancel', 0, 0, self)
         progress.setWindowModality(QtCore.Qt.WindowModal)
         progress.setCancelButton(None)  # Don't allow cancel
         progress.show()
         QtWidgets.QApplication.processEvents()
         
         try:
-            # Apply configuration
-            success, errors = self.oscilloscope_service.apply_configuration(self._oscilloscope_config)
+            comparison_results = []
+            errors = []
+            
+            # Query each channel's trace status and probe attenuation
+            for ch_num in [1, 2, 3, 4]:
+                ch_key = f'CH{ch_num}'
+                channel_config = self._oscilloscope_config.get('channels', {}).get(ch_key, {})
+                expected_enabled = channel_config.get('enabled', False)
+                expected_attenuation = channel_config.get('probe_attenuation', 1.0)
+                
+                # Query trace status (C1:TRA?, C2:TRA?, etc.)
+                time.sleep(0.2)  # Delay between queries
+                tra_response = self.oscilloscope_service.send_command(f"C{ch_num}:TRA?")
+                
+                if tra_response is None:
+                    errors.append(f"Channel {ch_num}: Failed to query trace status")
+                    actual_enabled = None
+                else:
+                    # Parse response - expect ON/OFF or 1/0
+                    tra_response_upper = tra_response.strip().upper()
+                    actual_enabled = tra_response_upper in ['ON', '1', 'TRUE']
+                
+                # Query probe attenuation (C1:ATTN?, C2:ATTN?, etc.)
+                time.sleep(0.2)  # Delay between queries
+                attn_response = self.oscilloscope_service.send_command(f"C{ch_num}:ATTN?")
+                
+                if attn_response is None:
+                    errors.append(f"Channel {ch_num}: Failed to query probe attenuation")
+                    actual_attenuation = None
+                else:
+                    # Parse response - extract numeric value
+                    try:
+                        # Response might be "C1:ATTN 100" or just "100"
+                        attn_str = attn_response.strip()
+                        # Extract numeric value (handle formats like "C1:ATTN 100" or "100")
+                        match = re.search(r'([\d.]+)', attn_str)
+                        if match:
+                            actual_attenuation = float(match.group(1))
+                        else:
+                            actual_attenuation = float(attn_str)
+                    except (ValueError, AttributeError):
+                        errors.append(f"Channel {ch_num}: Invalid probe attenuation response: {attn_response}")
+                        actual_attenuation = None
+                
+                # Compare values
+                trace_match = (actual_enabled == expected_enabled) if actual_enabled is not None else False
+                attn_match = (abs(actual_attenuation - expected_attenuation) < 0.01) if actual_attenuation is not None else False
+                
+                comparison_results.append({
+                    'channel': ch_key,
+                    'trace_match': trace_match,
+                    'expected_trace': expected_enabled,
+                    'actual_trace': actual_enabled,
+                    'attenuation_match': attn_match,
+                    'expected_attenuation': expected_attenuation,
+                    'actual_attenuation': actual_attenuation
+                })
             
             progress.close()
             
-            if success:
-                self._osc_config_applied = True
-                self.osc_config_status_label.setText('Status: Applied')
-                self.osc_config_status_label.setStyleSheet('color: green; font-weight: bold;')
-                logger.info("Oscilloscope configuration applied successfully")
-                QtWidgets.QMessageBox.information(self, 'Success', 
-                    'Oscilloscope configuration applied successfully!')
+            # Build comparison message
+            message_lines = ["Oscilloscope Settings Validation Results:\n"]
+            all_match = True
+            
+            for result in comparison_results:
+                ch = result['channel']
+                trace_match = result['trace_match']
+                attn_match = result['attenuation_match']
+                
+                if trace_match and attn_match:
+                    message_lines.append(f"{ch}: ✓ Match")
+                else:
+                    all_match = False
+                    message_lines.append(f"{ch}: ✗ Mismatch")
+                    
+                    if not trace_match:
+                        expected_trace_str = "ON" if result['expected_trace'] else "OFF"
+                        actual_trace_str = "ON" if result['actual_trace'] else "OFF" if result['actual_trace'] is not None else "Query Failed"
+                        message_lines.append(f"  - Trace: Expected {expected_trace_str}, Got {actual_trace_str}")
+                    
+                    if not attn_match:
+                        expected_attn = result['expected_attenuation']
+                        actual_attn = result['actual_attenuation'] if result['actual_attenuation'] is not None else "Query Failed"
+                        message_lines.append(f"  - Attenuation: Expected {expected_attn}, Got {actual_attn}")
+            
+            if errors:
+                message_lines.append("\nErrors:")
+                message_lines.extend(f"  - {err}" for err in errors)
+            
+            message = '\n'.join(message_lines)
+            
+            if all_match and not errors:
+                logger.info("Oscilloscope settings validation: All settings match")
+                QtWidgets.QMessageBox.information(self, 'Validation Success', message)
             else:
-                self._osc_config_applied = False
-                self.osc_config_status_label.setText('Status: Apply Failed')
-                self.osc_config_status_label.setStyleSheet('color: red; font-weight: bold;')
-                error_msg = 'Failed to apply some settings:\n' + '\n'.join(errors)
-                logger.warning(f"Oscilloscope configuration apply failed: {errors}")
-                QtWidgets.QMessageBox.warning(self, 'Apply Failed', error_msg)
+                logger.warning(f"Oscilloscope settings validation: Mismatches found")
+                QtWidgets.QMessageBox.warning(self, 'Validation Results', message)
+                
         except Exception as e:
             progress.close()
-            self._osc_config_applied = False
-            self.osc_config_status_label.setText('Status: Apply Error')
-            self.osc_config_status_label.setStyleSheet('color: red; font-weight: bold;')
-            logger.error(f"Error applying oscilloscope configuration: {e}", exc_info=True)
-            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to apply configuration: {e}')
+            logger.error(f"Error validating oscilloscope settings: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to validate settings: {e}')
     
     def _on_osc_config_list_double_clicked(self, item: QtWidgets.QListWidgetItem):
         """Load configuration when double-clicked in list."""
