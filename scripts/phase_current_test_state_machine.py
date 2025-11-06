@@ -378,7 +378,7 @@ class PhaseCurrentTestStateMachine:
         try:
             # Set TDIV:1 (1 second per division)
             logger.info("Setting TDIV:1")
-            self.oscilloscope_service.send_command("TDIV:1")
+            self.oscilloscope_service.send_command("TDIV:500MS")
             time.sleep(0.2)
             
             # Readback TDIV?
