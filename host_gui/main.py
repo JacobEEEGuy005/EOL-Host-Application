@@ -880,21 +880,21 @@ class PhaseCurrentTestStateMachine:
             self.gui.plot_axes_v = self.gui.plot_figure.add_subplot(121)  # Phase V
             self.gui.plot_axes_w = self.gui.plot_figure.add_subplot(122)  # Phase W
             
-            # Initialize plot lines (scatter plots: CAN on X, Oscilloscope on Y)
+            # Initialize plot lines (scatter plots: Oscilloscope on X, CAN on Y)
             self.gui.plot_line_v, = self.gui.plot_axes_v.plot([], [], 'bo', markersize=6, label='Phase V')
             self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'ro', markersize=6, label='Phase W')
             
             # Set labels and titles
-            self.gui.plot_axes_v.set_xlabel('Average Phase V Current from CAN (A)')
-            self.gui.plot_axes_v.set_ylabel('Average Phase V Current from Oscilloscope (A)')
+            self.gui.plot_axes_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
+            self.gui.plot_axes_v.set_ylabel('Average Phase V Current from CAN (A)')
             self.gui.plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
             self.gui.plot_axes_v.grid(True, alpha=0.3)
             # Add diagonal reference line (y=x) for Phase V
             self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
             self.gui.plot_axes_v.legend()
             
-            self.gui.plot_axes_w.set_xlabel('Average Phase W Current from CAN (A)')
-            self.gui.plot_axes_w.set_ylabel('Average Phase W Current from Oscilloscope (A)')
+            self.gui.plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
+            self.gui.plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
             self.gui.plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
             self.gui.plot_axes_w.grid(True, alpha=0.3)
             # Add diagonal reference line (y=x) for Phase W
@@ -950,15 +950,15 @@ class PhaseCurrentTestStateMachine:
                     can_w_valid.append(can_w)
                     osc_w_valid.append(osc_w)
             
-            # Update Phase V plot (CAN on X, Oscilloscope on Y)
+            # Update Phase V plot (Oscilloscope on X, CAN on Y)
             if can_v_valid and osc_v_valid:
-                self.gui.plot_line_v.set_data(can_v_valid, osc_v_valid)
+                self.gui.plot_line_v.set_data(osc_v_valid, can_v_valid)
                 self.gui.plot_axes_v.relim()
                 self.gui.plot_axes_v.autoscale()
             
-            # Update Phase W plot (CAN on X, Oscilloscope on Y)
+            # Update Phase W plot (Oscilloscope on X, CAN on Y)
             if can_w_valid and osc_w_valid:
-                self.gui.plot_line_w.set_data(can_w_valid, osc_w_valid)
+                self.gui.plot_line_w.set_data(osc_w_valid, can_w_valid)
                 self.gui.plot_axes_w.relim()
                 self.gui.plot_axes_w.autoscale()
             
@@ -4124,60 +4124,80 @@ class BaseGUI(QtWidgets.QMainWindow):
                 # Don't store invalid UID - invalidate cache
                 self._invalidate_dut_uid_cache()
         
-        # Store plot data for analog tests (make a copy to preserve data)
+        # Store plot data for analog tests and phase current calibration tests (make a copy to preserve data)
         if plot_data is not None:
-            dac_voltages = list(plot_data.get('dac_voltages', []))
-            feedback_values = list(plot_data.get('feedback_values', []))
+            test_type = test.get('type', '')
             
-            exec_data['plot_data'] = {
-                'dac_voltages': dac_voltages,
-                'feedback_values': feedback_values
-            }
-            
-            # Calculate calibration parameters for analog tests
-            if dac_voltages and feedback_values and len(dac_voltages) == len(feedback_values):
-                calibration_params = self._calculate_calibration_parameters(dac_voltages, feedback_values)
-                if calibration_params:
-                    # Calculate gain error percentage if expected gain is available
-                    actuation = test.get('actuation', {})
-                    expected_gain = actuation.get('expected_gain')
-                    if expected_gain is not None:
-                        try:
-                            expected_gain = float(expected_gain)
-                            actual_gain = calibration_params.get('gain', 0)
-                            if abs(expected_gain) > 1e-10 and abs(actual_gain) > 1e-10:
-                                # Gain error percentage = ((Actual - Expected) / Expected) * 100
-                                gain_error_percent = ((actual_gain - expected_gain) / expected_gain) * 100.0
-                                calibration_params['gain_error_percent'] = gain_error_percent
-                                calibration_params['expected_gain'] = expected_gain
-                                
-                                # Check gain tolerance for pass/fail determination
-                                gain_tolerance = actuation.get('gain_tolerance_percent')
-                                if gain_tolerance is not None:
-                                    try:
-                                        gain_tolerance = float(gain_tolerance)
-                                        if abs(gain_error_percent) > gain_tolerance:
-                                            # Gain error exceeds tolerance - test should fail
-                                            if status == 'PASS':
-                                                status = 'FAIL'
-                                                notes = (notes + '\n' if notes else '') + \
-                                                    f"Gain error {gain_error_percent:+.4f}% exceeds tolerance of ±{gain_tolerance:.2f}%"
-                                                logger.warning(
+            if test_type == 'analog':
+                dac_voltages = list(plot_data.get('dac_voltages', []))
+                feedback_values = list(plot_data.get('feedback_values', []))
+                
+                exec_data['plot_data'] = {
+                    'dac_voltages': dac_voltages,
+                    'feedback_values': feedback_values
+                }
+                
+                # Calculate calibration parameters for analog tests
+                if dac_voltages and feedback_values and len(dac_voltages) == len(feedback_values):
+                    calibration_params = self._calculate_calibration_parameters(dac_voltages, feedback_values)
+                    if calibration_params:
+                        # Calculate gain error percentage if expected gain is available
+                        actuation = test.get('actuation', {})
+                        expected_gain = actuation.get('expected_gain')
+                        if expected_gain is not None:
+                            try:
+                                expected_gain = float(expected_gain)
+                                actual_gain = calibration_params.get('gain', 0)
+                                if abs(expected_gain) > 1e-10 and abs(actual_gain) > 1e-10:
+                                    # Gain error percentage = ((Actual - Expected) / Expected) * 100
+                                    gain_error_percent = ((actual_gain - expected_gain) / expected_gain) * 100.0
+                                    calibration_params['gain_error_percent'] = gain_error_percent
+                                    calibration_params['expected_gain'] = expected_gain
+                                    
+                                    # Check gain tolerance for pass/fail determination
+                                    gain_tolerance = actuation.get('gain_tolerance_percent')
+                                    if gain_tolerance is not None:
+                                        try:
+                                            gain_tolerance = float(gain_tolerance)
+                                            if abs(gain_error_percent) > gain_tolerance:
+                                                # Gain error exceeds tolerance - test should fail
+                                                if status == 'PASS':
+                                                    status = 'FAIL'
+                                                    notes = (notes + '\n' if notes else '') + \
+                                                        f"Gain error {gain_error_percent:+.4f}% exceeds tolerance of ±{gain_tolerance:.2f}%"
+                                                    logger.warning(
+                                                        f"Test '{test_name}': Gain error {gain_error_percent:+.4f}% "
+                                                        f"exceeds tolerance ±{gain_tolerance:.2f}% - marking as FAIL"
+                                                    )
+                                                calibration_params['tolerance_check'] = 'FAIL'
+                                            else:
+                                                calibration_params['tolerance_check'] = 'PASS'
+                                                logger.debug(
                                                     f"Test '{test_name}': Gain error {gain_error_percent:+.4f}% "
-                                                    f"exceeds tolerance ±{gain_tolerance:.2f}% - marking as FAIL"
+                                                    f"within tolerance ±{gain_tolerance:.2f}%"
                                                 )
-                                            calibration_params['tolerance_check'] = 'FAIL'
-                                        else:
-                                            calibration_params['tolerance_check'] = 'PASS'
-                                            logger.debug(
-                                                f"Test '{test_name}': Gain error {gain_error_percent:+.4f}% "
-                                                f"within tolerance ±{gain_tolerance:.2f}%"
-                                            )
-                                    except (ValueError, TypeError) as e:
-                                        logger.debug(f"Error checking gain tolerance: {e}")
-                        except (ValueError, TypeError):
-                            pass
-                    exec_data['calibration'] = calibration_params
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug(f"Error checking gain tolerance: {e}")
+                            except (ValueError, TypeError):
+                                pass
+                        exec_data['calibration'] = calibration_params
+            elif test_type == 'phase_current_calibration':
+                # Store plot data for phase current calibration tests
+                exec_data['plot_data'] = {
+                    'iq_refs': list(plot_data.get('iq_refs', [])),
+                    'osc_ch1': list(plot_data.get('osc_ch1', [])),
+                    'osc_ch2': list(plot_data.get('osc_ch2', [])),
+                    'can_v': list(plot_data.get('can_v', [])),
+                    'can_w': list(plot_data.get('can_w', [])),
+                    'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
+                    'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
+                    'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
+                    'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
+                    'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
+                    'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
+                    'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
+                    'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
+                }
         
         # Update exec_data with final status and notes (may have been modified by gain tolerance check)
         exec_data['status'] = status
@@ -4441,12 +4461,12 @@ Data Points Used: {data_points}"""
                                 osc_v_clean.append(osc_val)
                     
                     if can_v_clean and osc_v_clean:
-                        plot_axes_v.plot(can_v_clean, osc_v_clean, 'bo', markersize=6, label='Phase V')
+                        plot_axes_v.plot(osc_v_clean, can_v_clean, 'bo', markersize=6, label='Phase V')
                         # Add diagonal reference line (y=x)
                         plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
                     
-                    plot_axes_v.set_xlabel('Average Phase V Current from CAN (A)')
-                    plot_axes_v.set_ylabel('Average Phase V Current from Oscilloscope (A)')
+                    plot_axes_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
+                    plot_axes_v.set_ylabel('Average Phase V Current from CAN (A)')
                     plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
                     plot_axes_v.grid(True, alpha=0.3)
                     plot_axes_v.legend()
@@ -4470,12 +4490,12 @@ Data Points Used: {data_points}"""
                                 osc_w_clean.append(osc_val)
                     
                     if can_w_clean and osc_w_clean:
-                        plot_axes_w.plot(can_w_clean, osc_w_clean, 'ro', markersize=6, label='Phase W')
+                        plot_axes_w.plot(osc_w_clean, can_w_clean, 'ro', markersize=6, label='Phase W')
                         # Add diagonal reference line (y=x)
                         plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
                     
-                    plot_axes_w.set_xlabel('Average Phase W Current from CAN (A)')
-                    plot_axes_w.set_ylabel('Average Phase W Current from Oscilloscope (A)')
+                    plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
+                    plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
                     plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
                     plot_axes_w.grid(True, alpha=0.3)
                     plot_axes_w.legend()
