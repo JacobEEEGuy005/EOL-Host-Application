@@ -880,23 +880,25 @@ class PhaseCurrentTestStateMachine:
             self.gui.plot_axes_v = self.gui.plot_figure.add_subplot(121)  # Phase V
             self.gui.plot_axes_w = self.gui.plot_figure.add_subplot(122)  # Phase W
             
-            # Initialize plot lines
-            self.gui.plot_line_v, = self.gui.plot_axes_v.plot([], [], 'bo-', markersize=6, linewidth=1, label='CAN Data')
-            self.gui.plot_line_v_osc, = self.gui.plot_axes_v.plot([], [], 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
-            self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'bo-', markersize=6, linewidth=1, label='CAN Data')
-            self.gui.plot_line_w_osc, = self.gui.plot_axes_w.plot([], [], 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+            # Initialize plot lines (scatter plots: CAN on X, Oscilloscope on Y)
+            self.gui.plot_line_v, = self.gui.plot_axes_v.plot([], [], 'bo', markersize=6, label='Phase V')
+            self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'ro', markersize=6, label='Phase W')
             
             # Set labels and titles
-            self.gui.plot_axes_v.set_xlabel('Test Point Index')
-            self.gui.plot_axes_v.set_ylabel('Phase V Current (A)')
+            self.gui.plot_axes_v.set_xlabel('Average Phase V Current from CAN (A)')
+            self.gui.plot_axes_v.set_ylabel('Average Phase V Current from Oscilloscope (A)')
             self.gui.plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
             self.gui.plot_axes_v.grid(True, alpha=0.3)
+            # Add diagonal reference line (y=x) for Phase V
+            self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
             self.gui.plot_axes_v.legend()
             
-            self.gui.plot_axes_w.set_xlabel('Test Point Index')
-            self.gui.plot_axes_w.set_ylabel('Phase W Current (A)')
+            self.gui.plot_axes_w.set_xlabel('Average Phase W Current from CAN (A)')
+            self.gui.plot_axes_w.set_ylabel('Average Phase W Current from Oscilloscope (A)')
             self.gui.plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
             self.gui.plot_axes_w.grid(True, alpha=0.3)
+            # Add diagonal reference line (y=x) for Phase W
+            self.gui.plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
             self.gui.plot_axes_w.legend()
             
             # Tight layout
@@ -923,20 +925,42 @@ class PhaseCurrentTestStateMachine:
             if num_points == 0:
                 return
             
-            # Create x-axis (test point indices)
-            x_data = list(range(1, num_points + 1))
+            # Filter out NaN values for plotting
+            can_v_valid = []
+            osc_v_valid = []
+            can_w_valid = []
+            osc_w_valid = []
             
-            # Update Phase V plot
-            self.gui.plot_line_v.set_data(x_data, self.plot_can_v_avg)
-            self.gui.plot_line_v_osc.set_data(x_data, self.plot_osc_v_avg)
-            self.gui.plot_axes_v.relim()
-            self.gui.plot_axes_v.autoscale()
+            for i in range(num_points):
+                can_v = self.plot_can_v_avg[i]
+                osc_v = self.plot_osc_v_avg[i]
+                can_w = self.plot_can_w_avg[i]
+                osc_w = self.plot_osc_w_avg[i]
+                
+                # Only include points where both CAN and Oscilloscope values are valid (not NaN)
+                if (isinstance(can_v, (int, float)) and isinstance(osc_v, (int, float)) and
+                    not (isinstance(can_v, float) and can_v != can_v) and  # can_v is not NaN
+                    not (isinstance(osc_v, float) and osc_v != osc_v)):  # osc_v is not NaN
+                    can_v_valid.append(can_v)
+                    osc_v_valid.append(osc_v)
+                
+                if (isinstance(can_w, (int, float)) and isinstance(osc_w, (int, float)) and
+                    not (isinstance(can_w, float) and can_w != can_w) and  # can_w is not NaN
+                    not (isinstance(osc_w, float) and osc_w != osc_w)):  # osc_w is not NaN
+                    can_w_valid.append(can_w)
+                    osc_w_valid.append(osc_w)
             
-            # Update Phase W plot
-            self.gui.plot_line_w.set_data(x_data, self.plot_can_w_avg)
-            self.gui.plot_line_w_osc.set_data(x_data, self.plot_osc_w_avg)
-            self.gui.plot_axes_w.relim()
-            self.gui.plot_axes_w.autoscale()
+            # Update Phase V plot (CAN on X, Oscilloscope on Y)
+            if can_v_valid and osc_v_valid:
+                self.gui.plot_line_v.set_data(can_v_valid, osc_v_valid)
+                self.gui.plot_axes_v.relim()
+                self.gui.plot_axes_v.autoscale()
+            
+            # Update Phase W plot (CAN on X, Oscilloscope on Y)
+            if can_w_valid and osc_w_valid:
+                self.gui.plot_line_w.set_data(can_w_valid, osc_w_valid)
+                self.gui.plot_axes_w.relim()
+                self.gui.plot_axes_w.autoscale()
             
             # Update canvas
             self.gui.plot_canvas.draw()
@@ -4390,7 +4414,7 @@ Data Points Used: {data_points}"""
             plot_osc_w = plot_data.get('osc_ch2', [])
             
             if (plot_can_v or plot_osc_v or plot_can_w or plot_osc_w):
-                plot_label = QtWidgets.QLabel(f'<b>Phase Current: CAN vs Oscilloscope Comparison:</b>')
+                plot_label = QtWidgets.QLabel(f'<b>Average Phase Current: CAN vs Oscilloscope Comparison:</b>')
                 layout.addWidget(plot_label)
                 
                 try:
@@ -4400,30 +4424,58 @@ Data Points Used: {data_points}"""
                     
                     # Phase V plot
                     plot_axes_v = plot_figure.add_subplot(121)
-                    x_data = list(range(1, len(plot_can_v) + 1)) if plot_can_v else list(range(1, len(plot_osc_v) + 1))
                     
-                    if plot_can_v and len(plot_can_v) == len(x_data):
-                        plot_axes_v.plot(x_data, plot_can_v, 'bo-', markersize=6, linewidth=1, label='CAN Data')
-                    if plot_osc_v and len(plot_osc_v) == len(x_data):
-                        plot_axes_v.plot(x_data, plot_osc_v, 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+                    # Filter out NaN values and ensure matching lengths
+                    can_v_clean = []
+                    osc_v_clean = []
+                    if plot_can_v and plot_osc_v:
+                        min_len = min(len(plot_can_v), len(plot_osc_v))
+                        for i in range(min_len):
+                            can_val = plot_can_v[i]
+                            osc_val = plot_osc_v[i]
+                            # Check if both are valid (not NaN)
+                            if (isinstance(can_val, (int, float)) and isinstance(osc_val, (int, float)) and
+                                not (isinstance(can_val, float) and can_val != can_val) and
+                                not (isinstance(osc_val, float) and osc_val != osc_val)):
+                                can_v_clean.append(can_val)
+                                osc_v_clean.append(osc_val)
                     
-                    plot_axes_v.set_xlabel('Test Point Index')
-                    plot_axes_v.set_ylabel('Phase V Current (A)')
+                    if can_v_clean and osc_v_clean:
+                        plot_axes_v.plot(can_v_clean, osc_v_clean, 'bo', markersize=6, label='Phase V')
+                        # Add diagonal reference line (y=x)
+                        plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                    
+                    plot_axes_v.set_xlabel('Average Phase V Current from CAN (A)')
+                    plot_axes_v.set_ylabel('Average Phase V Current from Oscilloscope (A)')
                     plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
                     plot_axes_v.grid(True, alpha=0.3)
                     plot_axes_v.legend()
                     
                     # Phase W plot
                     plot_axes_w = plot_figure.add_subplot(122)
-                    x_data_w = list(range(1, len(plot_can_w) + 1)) if plot_can_w else list(range(1, len(plot_osc_w) + 1))
                     
-                    if plot_can_w and len(plot_can_w) == len(x_data_w):
-                        plot_axes_w.plot(x_data_w, plot_can_w, 'bo-', markersize=6, linewidth=1, label='CAN Data')
-                    if plot_osc_w and len(plot_osc_w) == len(x_data_w):
-                        plot_axes_w.plot(x_data_w, plot_osc_w, 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+                    # Filter out NaN values and ensure matching lengths
+                    can_w_clean = []
+                    osc_w_clean = []
+                    if plot_can_w and plot_osc_w:
+                        min_len = min(len(plot_can_w), len(plot_osc_w))
+                        for i in range(min_len):
+                            can_val = plot_can_w[i]
+                            osc_val = plot_osc_w[i]
+                            # Check if both are valid (not NaN)
+                            if (isinstance(can_val, (int, float)) and isinstance(osc_val, (int, float)) and
+                                not (isinstance(can_val, float) and can_val != can_val) and
+                                not (isinstance(osc_val, float) and osc_val != osc_val)):
+                                can_w_clean.append(can_val)
+                                osc_w_clean.append(osc_val)
                     
-                    plot_axes_w.set_xlabel('Test Point Index')
-                    plot_axes_w.set_ylabel('Phase W Current (A)')
+                    if can_w_clean and osc_w_clean:
+                        plot_axes_w.plot(can_w_clean, osc_w_clean, 'ro', markersize=6, label='Phase W')
+                        # Add diagonal reference line (y=x)
+                        plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                    
+                    plot_axes_w.set_xlabel('Average Phase W Current from CAN (A)')
+                    plot_axes_w.set_ylabel('Average Phase W Current from Oscilloscope (A)')
                     plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
                     plot_axes_w.grid(True, alpha=0.3)
                     plot_axes_w.legend()
