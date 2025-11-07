@@ -35,7 +35,8 @@ import base64
 import re
 import struct
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Union
+from concurrent.futures import ThreadPoolExecutor
 from html import escape
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -261,6 +262,14 @@ except ImportError:
     numpy = None
     numpy_available = False
 
+# Import scipy for signal filtering (optional)
+try:
+    from scipy import signal
+    scipy_available = True
+except ImportError:
+    signal = None
+    scipy_available = False
+
 
 def _analyze_steady_state_can(
     timestamps: List[float],
@@ -444,6 +453,139 @@ def _analyze_steady_state_can(
         std = variance ** 0.5
     
     return (steady_start, steady_end, avg, std)
+
+
+def _apply_lowpass_filter(
+    time_values: Union[List[float], 'np.ndarray'],
+    voltage_values: Union[List[float], 'np.ndarray'],
+    cutoff_freq: float = 10000.0,
+    filter_order: int = 4
+) -> Union[List[float], 'np.ndarray']:
+    """Apply a low-pass Butterworth filter to the voltage waveform.
+    
+    This function matches the filtering used in the test script to reduce noise
+    before steady state analysis.
+    
+    Args:
+        time_values: List or numpy array of time values in seconds
+        voltage_values: List or numpy array of voltage values to filter
+        cutoff_freq: Cutoff frequency in Hz (default 10kHz, matching test script)
+        filter_order: Filter order (default 4)
+        
+    Returns:
+        Filtered voltage values (same type as input)
+    """
+    if not voltage_values or len(voltage_values) < 10:
+        logger.warning("Insufficient data points for filtering, returning original data")
+        return voltage_values
+    
+    if not numpy_available:
+        logger.warning("NumPy not available - cannot apply digital filter, returning unfiltered data")
+        return voltage_values
+    
+    if not scipy_available:
+        logger.warning("SciPy not available - using simple moving average filter as fallback")
+        # Fallback to simple moving average
+        return _apply_moving_average_filter(voltage_values, window_size=10)
+    
+    # Convert to numpy arrays if needed
+    if not isinstance(voltage_values, np.ndarray):
+        voltages = np.array(voltage_values, dtype=np.float64)
+        return_list = True
+    else:
+        voltages = voltage_values.astype(np.float64) if voltage_values.dtype != np.float64 else voltage_values
+        return_list = False
+    
+    if not isinstance(time_values, np.ndarray):
+        times = np.array(time_values, dtype=np.float64)
+    else:
+        times = time_values.astype(np.float64) if time_values.dtype != np.float64 else time_values
+    
+    # Calculate sampling frequency
+    if len(time_values) < 2:
+        logger.warning("Need at least 2 time points to calculate sampling frequency, returning unfiltered data")
+        return voltage_values
+    
+    dt = times[1] - times[0]
+    if dt <= 0:
+        # Try to calculate from average
+        dt = (times[-1] - times[0]) / (len(times) - 1)
+        if dt <= 0:
+            logger.warning("Invalid time values for filtering, returning unfiltered data")
+            return voltage_values
+    
+    sampling_freq = 1.0 / dt
+    
+    # Check if cutoff frequency is valid (must be less than Nyquist frequency)
+    nyquist_freq = sampling_freq / 2.0
+    if cutoff_freq >= nyquist_freq:
+        logger.warning(f"Cutoff frequency {cutoff_freq} Hz is >= Nyquist frequency {nyquist_freq:.2f} Hz")
+        logger.warning(f"Reducing cutoff to {nyquist_freq * 0.9:.2f} Hz")
+        cutoff_freq = nyquist_freq * 0.9
+    
+    # Normalize cutoff frequency (0 to 1, where 1 is Nyquist)
+    normalized_cutoff = cutoff_freq / nyquist_freq
+    
+    logger.info(f"Applying low-pass filter: cutoff={cutoff_freq:.2f} Hz, "
+               f"order={filter_order}, sampling_freq={sampling_freq:.2f} Hz")
+    
+    try:
+        # Design Butterworth low-pass filter
+        b, a = signal.butter(filter_order, normalized_cutoff, btype='low', analog=False)
+        
+        # Apply filter using filtfilt for zero-phase filtering
+        filtered_voltages = signal.filtfilt(b, a, voltages)
+        
+        logger.info(f"Filter applied successfully using filtfilt (zero-phase filtering), "
+                   f"filtered {len(filtered_voltages)} points")
+        
+        if return_list:
+            return filtered_voltages.tolist()
+        else:
+            return filtered_voltages
+        
+    except Exception as e:
+        logger.error(f"Error applying filter: {e}", exc_info=True)
+        logger.warning("Returning unfiltered data")
+        return voltage_values
+
+
+def _apply_moving_average_filter(voltage_values: Union[List[float], 'np.ndarray'], window_size: int = 10) -> Union[List[float], 'np.ndarray']:
+    """Apply a simple moving average filter (fallback when scipy is not available).
+    
+    Args:
+        voltage_values: List or numpy array of voltage values
+        window_size: Size of moving average window
+        
+    Returns:
+        Filtered voltage values (same type as input)
+    """
+    if len(voltage_values) < window_size:
+        return voltage_values
+    
+    return_list = not isinstance(voltage_values, np.ndarray)
+    
+    # Optimized: use NumPy convolution if available (much faster)
+    if numpy_available:
+        window = np.ones(window_size, dtype=np.float32) / window_size
+        if isinstance(voltage_values, np.ndarray):
+            filtered = np.convolve(voltage_values, window, mode='same')
+            return filtered
+        else:
+            filtered = np.convolve(voltage_values, window, mode='same')
+            return filtered.tolist()
+    
+    # Fallback to Python loop if NumPy not available
+    filtered = []
+    half_window = window_size // 2
+    
+    for i in range(len(voltage_values)):
+        start_idx = max(0, i - half_window)
+        end_idx = min(len(voltage_values), i + half_window + 1)
+        window_data = voltage_values[start_idx:end_idx]
+        filtered.append(sum(window_data) / len(window_data))
+    
+    return filtered
 
 
 class _WaveformDecoder:
@@ -702,6 +844,107 @@ class PhaseCurrentTestStateMachine:
         self.command_message = None
         self.phase_current_message = None
         
+        # Live plot data for Phase V and Phase W
+        self.plot_can_v_avg = []  # CAN Phase V averages
+        self.plot_osc_v_avg = []  # Oscilloscope Phase V averages (CH1)
+        self.plot_can_w_avg = []  # CAN Phase W averages
+        self.plot_osc_w_avg = []  # Oscilloscope Phase W averages (CH2)
+        
+        # Initialize live plots if matplotlib is available
+        self._init_live_plots()
+        
+    def _init_live_plots(self) -> None:
+        """Initialize live plots for Phase V and Phase W current comparison."""
+        if not matplotlib_available:
+            logger.debug("Matplotlib not available, skipping live plot initialization")
+            return
+        
+        try:
+            # Check if GUI has plot infrastructure
+            if not hasattr(self.gui, 'plot_canvas') or self.gui.plot_canvas is None:
+                logger.debug("GUI plot canvas not available, skipping live plot initialization")
+                return
+            
+            # Clear existing plot
+            if hasattr(self.gui, 'plot_axes') and self.gui.plot_axes is not None:
+                self.gui.plot_axes.clear()
+            
+            # Create two subplots: Phase V and Phase W
+            if not hasattr(self.gui, 'plot_figure') or self.gui.plot_figure is None:
+                logger.debug("GUI plot figure not available, skipping live plot initialization")
+                return
+            
+            self.gui.plot_figure.clear()
+            
+            # Create two subplots side by side
+            self.gui.plot_axes_v = self.gui.plot_figure.add_subplot(121)  # Phase V
+            self.gui.plot_axes_w = self.gui.plot_figure.add_subplot(122)  # Phase W
+            
+            # Initialize plot lines
+            self.gui.plot_line_v, = self.gui.plot_axes_v.plot([], [], 'bo-', markersize=6, linewidth=1, label='CAN Data')
+            self.gui.plot_line_v_osc, = self.gui.plot_axes_v.plot([], [], 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+            self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'bo-', markersize=6, linewidth=1, label='CAN Data')
+            self.gui.plot_line_w_osc, = self.gui.plot_axes_w.plot([], [], 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+            
+            # Set labels and titles
+            self.gui.plot_axes_v.set_xlabel('Test Point Index')
+            self.gui.plot_axes_v.set_ylabel('Phase V Current (A)')
+            self.gui.plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
+            self.gui.plot_axes_v.grid(True, alpha=0.3)
+            self.gui.plot_axes_v.legend()
+            
+            self.gui.plot_axes_w.set_xlabel('Test Point Index')
+            self.gui.plot_axes_w.set_ylabel('Phase W Current (A)')
+            self.gui.plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+            self.gui.plot_axes_w.grid(True, alpha=0.3)
+            self.gui.plot_axes_w.legend()
+            
+            # Tight layout
+            self.gui.plot_figure.tight_layout()
+            
+            # Update canvas
+            self.gui.plot_canvas.draw()
+            
+            logger.info("Live plots initialized for Phase Current test")
+        except Exception as e:
+            logger.error(f"Failed to initialize live plots: {e}", exc_info=True)
+    
+    def _update_live_plots(self) -> None:
+        """Update live plots with latest data point."""
+        if not matplotlib_available:
+            return
+        
+        try:
+            if not hasattr(self.gui, 'plot_axes_v') or not hasattr(self.gui, 'plot_axes_w'):
+                return
+            
+            # Get current data lengths
+            num_points = len(self.plot_can_v_avg)
+            if num_points == 0:
+                return
+            
+            # Create x-axis (test point indices)
+            x_data = list(range(1, num_points + 1))
+            
+            # Update Phase V plot
+            self.gui.plot_line_v.set_data(x_data, self.plot_can_v_avg)
+            self.gui.plot_line_v_osc.set_data(x_data, self.plot_osc_v_avg)
+            self.gui.plot_axes_v.relim()
+            self.gui.plot_axes_v.autoscale()
+            
+            # Update Phase W plot
+            self.gui.plot_line_w.set_data(x_data, self.plot_can_w_avg)
+            self.gui.plot_line_w_osc.set_data(x_data, self.plot_osc_w_avg)
+            self.gui.plot_axes_w.relim()
+            self.gui.plot_axes_w.autoscale()
+            
+            # Update canvas
+            self.gui.plot_canvas.draw()
+            self.gui.plot_canvas.draw_idle()
+            
+        except Exception as e:
+            logger.error(f"Failed to update live plots: {e}", exc_info=True)
+        
     def run(self) -> Tuple[bool, str]:
         """Execute the complete test sequence.
         
@@ -816,21 +1059,103 @@ class PhaseCurrentTestStateMachine:
                     'can_w_avg': can_w_avg
                 })
                 
+                # Store data for live plots
+                if can_v_avg is not None:
+                    self.plot_can_v_avg.append(can_v_avg)
+                else:
+                    self.plot_can_v_avg.append(float('nan'))
+                
+                if osc_ch1_avg is not None:
+                    self.plot_osc_v_avg.append(osc_ch1_avg)
+                else:
+                    self.plot_osc_v_avg.append(float('nan'))
+                
+                if can_w_avg is not None:
+                    self.plot_can_w_avg.append(can_w_avg)
+                else:
+                    self.plot_can_w_avg.append(float('nan'))
+                
+                if osc_ch2_avg is not None:
+                    self.plot_osc_w_avg.append(osc_ch2_avg)
+                else:
+                    self.plot_osc_w_avg.append(float('nan'))
+                
+                # Update live plots
+                self._update_live_plots()
+                
                 logger.info(f"Iq_ref={iq_ref}: OSC CH1={osc_ch1_avg}, CH2={osc_ch2_avg}, "
                           f"CAN V={can_v_avg}, W={can_w_avg}")
             
             # Step 11: Disable test mode
             self._disable_test_mode()
             
-            # Store results for plotting
+            # Store results for plotting and calculate gain error/correction
             if hasattr(self.gui, '_test_plot_data_temp'):
                 test_name = self.test.get('name', 'phase_current_test')
+                
+                # Calculate gain error and correction factor for Phase V and Phase W
+                gain_errors_v = []
+                gain_corrections_v = []
+                gain_errors_w = []
+                gain_corrections_w = []
+                
+                for r in self.results:
+                    osc_v = r.get('osc_ch1_avg')
+                    can_v = r.get('can_v_avg')
+                    osc_w = r.get('osc_ch2_avg')
+                    can_w = r.get('can_w_avg')
+                    
+                    # Phase V gain error and correction
+                    if osc_v is not None and can_v is not None and abs(osc_v) > 1e-10:
+                        gain_error_v = ((can_v - osc_v) / osc_v) * 100.0
+                        gain_errors_v.append(gain_error_v)
+                        if abs(can_v) > 1e-10:
+                            gain_correction_v = osc_v / can_v
+                            gain_corrections_v.append(gain_correction_v)
+                        else:
+                            gain_corrections_v.append(float('nan'))
+                    else:
+                        gain_errors_v.append(float('nan'))
+                        gain_corrections_v.append(float('nan'))
+                    
+                    # Phase W gain error and correction
+                    if osc_w is not None and can_w is not None and abs(osc_w) > 1e-10:
+                        gain_error_w = ((can_w - osc_w) / osc_w) * 100.0
+                        gain_errors_w.append(gain_error_w)
+                        if abs(can_w) > 1e-10:
+                            gain_correction_w = osc_w / can_w
+                            gain_corrections_w.append(gain_correction_w)
+                        else:
+                            gain_corrections_w.append(float('nan'))
+                    else:
+                        gain_errors_w.append(float('nan'))
+                        gain_corrections_w.append(float('nan'))
+                
+                # Calculate average gain error and correction factor
+                valid_errors_v = [e for e in gain_errors_v if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                valid_corrections_v = [c for c in gain_corrections_v if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                valid_errors_w = [e for e in gain_errors_w if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                valid_corrections_w = [c for c in gain_corrections_w if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                
+                avg_gain_error_v = sum(valid_errors_v) / len(valid_errors_v) if valid_errors_v else None
+                avg_gain_correction_v = sum(valid_corrections_v) / len(valid_corrections_v) if valid_corrections_v else None
+                avg_gain_error_w = sum(valid_errors_w) / len(valid_errors_w) if valid_errors_w else None
+                avg_gain_correction_w = sum(valid_corrections_w) / len(valid_corrections_w) if valid_corrections_w else None
+                
                 self.gui._test_plot_data_temp[test_name] = {
                     'iq_refs': [r['iq_ref'] for r in self.results],
                     'osc_ch1': [r['osc_ch1_avg'] for r in self.results],
                     'osc_ch2': [r['osc_ch2_avg'] for r in self.results],
                     'can_v': [r['can_v_avg'] for r in self.results],
-                    'can_w': [r['can_w_avg'] for r in self.results]
+                    'can_w': [r['can_w_avg'] for r in self.results],
+                    'gain_errors_v': gain_errors_v,
+                    'gain_corrections_v': gain_corrections_v,
+                    'gain_errors_w': gain_errors_w,
+                    'gain_corrections_w': gain_corrections_w,
+                    'avg_gain_error_v': avg_gain_error_v,
+                    'avg_gain_correction_v': avg_gain_correction_v,
+                    'avg_gain_error_w': avg_gain_error_w,
+                    'avg_gain_correction_w': avg_gain_correction_w
                 }
             
             info = f"Completed {len(self.results)}/{len(self.iq_ref_array)} test points"
@@ -1380,9 +1705,60 @@ class PhaseCurrentTestStateMachine:
                 logger.warning(f"Insufficient waveform data for CH{channel}")
                 return None
             
-            # Analyze steady state
+            # Apply 10kHz low-pass filter (matching test script)
+            try:
+                filtered_voltage_values = _apply_lowpass_filter(
+                    time_values, voltage_values, cutoff_freq=10000.0
+                )
+                logger.info(f"CH{channel} filter applied: {len(filtered_voltage_values)} points")
+            except Exception as e:
+                logger.warning(f"Failed to filter CH{channel}: {e}, using unfiltered data")
+                filtered_voltage_values = voltage_values
+            
+            # Discard initial data points below threshold (after filtering)
+            voltage_threshold = 2.0  # Volts
+            initial_discard_end = 0
+            total_points = len(filtered_voltage_values)
+            
+            if numpy_available:
+                filtered_array = np.array(filtered_voltage_values)
+                abs_array = np.abs(filtered_array)
+                # Find first index where voltage exceeds threshold
+                mask = abs_array >= voltage_threshold
+                if np.any(mask):
+                    initial_discard_end = int(np.argmax(mask))
+                else:
+                    initial_discard_end = 0
+            else:
+                # Manual search without numpy
+                for i in range(total_points):
+                    abs_voltage = abs(filtered_voltage_values[i])
+                    if abs_voltage >= voltage_threshold:
+                        initial_discard_end = i
+                        break
+            
+            # If no point exceeds threshold, use first point as start
+            if initial_discard_end == 0 and abs(filtered_voltage_values[0]) >= voltage_threshold:
+                initial_discard_end = 0
+            
+            # Log initial discard information
+            if initial_discard_end > 0:
+                logger.info(f"CH{channel}: Discarding initial {initial_discard_end} points with voltage < {voltage_threshold} V (after filtering)")
+                logger.debug(f"  Initial period: voltage range [{min(abs(v) for v in filtered_voltage_values[:initial_discard_end]):.6f}, "
+                            f"{max(abs(v) for v in filtered_voltage_values[:initial_discard_end]):.6f}] V")
+            
+            # Slice data to start from threshold beginning
+            analysis_start = initial_discard_end
+            filtered_voltage_values = filtered_voltage_values[analysis_start:]
+            time_values = time_values[analysis_start:]
+            
+            if not filtered_voltage_values or len(filtered_voltage_values) < 10:
+                logger.warning(f"CH{channel}: After filtering initial low voltage data, insufficient data points for steady state analysis")
+                return None
+            
+            # Analyze steady state using filtered and threshold-discarded data
             start_idx, end_idx, avg, std = _analyze_steady_state_can(
-                time_values, voltage_values,
+                time_values, filtered_voltage_values,
                 variance_threshold_percent=5.0,
                 skip_initial_percent=30.0
             )
@@ -1421,9 +1797,57 @@ class PhaseCurrentTestStateMachine:
             logger.warning("No valid phase current data found in collected signals")
             return None, None
         
-        # Analyze steady state
-        v_start, v_end, v_avg, v_std = _analyze_steady_state_can(timestamps, v_values)
-        w_start, w_end, w_avg, w_std = _analyze_steady_state_can(timestamps, w_values)
+        # Filter out initial data points where Phase Current < 2A
+        current_threshold = 2.0  # Amperes
+        initial_discard_end = 0
+        total_points = len(v_values)
+        
+        if numpy_available:
+            v_array = np.array(v_values)
+            w_array = np.array(w_values)
+            abs_v_array = np.abs(v_array)
+            abs_w_array = np.abs(w_array)
+            # Find first index where either phase exceeds threshold
+            mask = (abs_v_array >= current_threshold) | (abs_w_array >= current_threshold)
+            if np.any(mask):
+                initial_discard_end = int(np.argmax(mask))
+            else:
+                initial_discard_end = 0
+        else:
+            # Manual search without numpy
+            for i in range(total_points):
+                abs_v = abs(v_values[i])
+                abs_w = abs(w_values[i])
+                if abs_v >= current_threshold or abs_w >= current_threshold:
+                    initial_discard_end = i
+                    break
+        
+        # If no point exceeds threshold, use first point as start
+        if initial_discard_end == 0 and (abs(v_values[0]) >= current_threshold or 
+                                         abs(w_values[0]) >= current_threshold):
+            initial_discard_end = 0
+        
+        # Log initial discard information
+        if initial_discard_end > 0:
+            logger.info(f"Discarding initial {initial_discard_end} points with current < {current_threshold} A")
+            logger.debug(f"  Initial period: V range [{min(abs(v) for v in v_values[:initial_discard_end]):.3f}, "
+                        f"{max(abs(v) for v in v_values[:initial_discard_end]):.3f}] A, "
+                        f"W range [{min(abs(w) for w in w_values[:initial_discard_end]):.3f}, "
+                        f"{max(abs(w) for w in w_values[:initial_discard_end]):.3f}] A")
+        
+        # Slice data to start from ramp-up beginning
+        analysis_start = initial_discard_end
+        v_values_filtered = v_values[analysis_start:]
+        w_values_filtered = w_values[analysis_start:]
+        timestamps_filtered = timestamps[analysis_start:]
+        
+        if not v_values_filtered or not w_values_filtered:
+            logger.warning(f"After filtering initial low current data, insufficient data points for steady state analysis")
+            return None, None
+        
+        # Analyze steady state on filtered data
+        v_start, v_end, v_avg, v_std = _analyze_steady_state_can(timestamps_filtered, v_values_filtered)
+        w_start, w_end, w_avg, w_std = _analyze_steady_state_can(timestamps_filtered, w_values_filtered)
         
         logger.info(f"CAN analysis: V avg={v_avg}, W avg={w_avg}")
         return v_avg, w_avg
@@ -3917,8 +4341,10 @@ Data Points Used: {data_points}"""
             calib_text.setPlainText(calib_info)
             layout.addWidget(calib_text)
         
-        # Plot section for analog tests
+        # Plot section for analog tests and phase current calibration
         plot_data = exec_data.get('plot_data')
+        is_phase_current = test_config and test_config.get('type') == 'phase_current_calibration'
+        
         if is_analog and plot_data and matplotlib_available:
             plot_dac_voltages = plot_data.get('dac_voltages', [])
             plot_feedback_values = plot_data.get('feedback_values', [])
@@ -3956,6 +4382,95 @@ Data Points Used: {data_points}"""
                     error_label.setStyleSheet('color: red;')
                     layout.addWidget(error_label)
         
+        # Plot section for phase current calibration tests
+        if is_phase_current and plot_data and matplotlib_available:
+            plot_can_v = plot_data.get('can_v', [])
+            plot_osc_v = plot_data.get('osc_ch1', [])
+            plot_can_w = plot_data.get('can_w', [])
+            plot_osc_w = plot_data.get('osc_ch2', [])
+            
+            if (plot_can_v or plot_osc_v or plot_can_w or plot_osc_w):
+                plot_label = QtWidgets.QLabel(f'<b>Phase Current: CAN vs Oscilloscope Comparison:</b>')
+                layout.addWidget(plot_label)
+                
+                try:
+                    # Create a new figure with two subplots
+                    plot_figure = Figure(figsize=(12, 5))
+                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                    
+                    # Phase V plot
+                    plot_axes_v = plot_figure.add_subplot(121)
+                    x_data = list(range(1, len(plot_can_v) + 1)) if plot_can_v else list(range(1, len(plot_osc_v) + 1))
+                    
+                    if plot_can_v and len(plot_can_v) == len(x_data):
+                        plot_axes_v.plot(x_data, plot_can_v, 'bo-', markersize=6, linewidth=1, label='CAN Data')
+                    if plot_osc_v and len(plot_osc_v) == len(x_data):
+                        plot_axes_v.plot(x_data, plot_osc_v, 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+                    
+                    plot_axes_v.set_xlabel('Test Point Index')
+                    plot_axes_v.set_ylabel('Phase V Current (A)')
+                    plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
+                    plot_axes_v.grid(True, alpha=0.3)
+                    plot_axes_v.legend()
+                    
+                    # Phase W plot
+                    plot_axes_w = plot_figure.add_subplot(122)
+                    x_data_w = list(range(1, len(plot_can_w) + 1)) if plot_can_w else list(range(1, len(plot_osc_w) + 1))
+                    
+                    if plot_can_w and len(plot_can_w) == len(x_data_w):
+                        plot_axes_w.plot(x_data_w, plot_can_w, 'bo-', markersize=6, linewidth=1, label='CAN Data')
+                    if plot_osc_w and len(plot_osc_w) == len(x_data_w):
+                        plot_axes_w.plot(x_data_w, plot_osc_w, 'ro-', markersize=6, linewidth=1, label='Oscilloscope Data')
+                    
+                    plot_axes_w.set_xlabel('Test Point Index')
+                    plot_axes_w.set_ylabel('Phase W Current (A)')
+                    plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+                    plot_axes_w.grid(True, alpha=0.3)
+                    plot_axes_w.legend()
+                    
+                    # Tight layout
+                    plot_figure.tight_layout()
+                    
+                    # Add canvas to layout
+                    layout.addWidget(plot_canvas)
+                    
+                    # Display gain error and correction factor
+                    avg_gain_error_v = plot_data.get('avg_gain_error_v')
+                    avg_gain_correction_v = plot_data.get('avg_gain_correction_v')
+                    avg_gain_error_w = plot_data.get('avg_gain_error_w')
+                    avg_gain_correction_w = plot_data.get('avg_gain_correction_w')
+                    
+                    if avg_gain_error_v is not None or avg_gain_error_w is not None:
+                        gain_info_label = QtWidgets.QLabel(f'<b>Gain Error and Correction Factor:</b>')
+                        layout.addWidget(gain_info_label)
+                        
+                        gain_info_text = QtWidgets.QTextEdit()
+                        gain_info_text.setReadOnly(True)
+                        gain_info_text.setMaximumHeight(120)
+                        
+                        gain_info = ""
+                        if avg_gain_error_v is not None:
+                            gain_info += f"Phase V:\n"
+                            gain_info += f"  Average Gain Error: {avg_gain_error_v:+.4f}%\n"
+                            if avg_gain_correction_v is not None:
+                                gain_info += f"  Average Gain Correction Factor: {avg_gain_correction_v:.6f}\n"
+                            gain_info += "\n"
+                        
+                        if avg_gain_error_w is not None:
+                            gain_info += f"Phase W:\n"
+                            gain_info += f"  Average Gain Error: {avg_gain_error_w:+.4f}%\n"
+                            if avg_gain_correction_w is not None:
+                                gain_info += f"  Average Gain Correction Factor: {avg_gain_correction_w:.6f}\n"
+                        
+                        gain_info_text.setPlainText(gain_info)
+                        layout.addWidget(gain_info_text)
+                        
+                except Exception as e:
+                    logger.error(f"Error creating phase current plots in test details dialog: {e}", exc_info=True)
+                    error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                    error_label.setStyleSheet('color: red;')
+                    layout.addWidget(error_label)
+        
         # Close button
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.addStretch()
@@ -3965,7 +4480,8 @@ Data Points Used: {data_points}"""
         layout.addLayout(button_layout)
         
         # Adjust dialog size for plot and calibration parameters if present
-        if is_analog and (plot_data and matplotlib_available or calibration_params):
+        if (is_analog and (plot_data and matplotlib_available or calibration_params)) or \
+           (is_phase_current and plot_data and matplotlib_available):
             dialog.setMinimumWidth(700)
             dialog.setMinimumHeight(650)
         else:
@@ -9187,8 +9703,10 @@ Data Points Used: {data_points}"""
             # Add to table
             # Retrieve plot data that was captured at the end of run_single_test
             plot_data = None
-            if t.get('type') == 'analog':
-                test_name = t.get('name', '<unnamed>')
+            test_name = t.get('name', '<unnamed>')
+            test_type = t.get('type', '')
+            
+            if test_type == 'analog':
                 # First try to get from temporary storage (captured in run_single_test)
                 if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                     plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -9201,6 +9719,12 @@ Data Points Used: {data_points}"""
                             'feedback_values': list(self.plot_feedback_values)
                         }
                         logger.debug(f"Used global plot data for {test_name} (single test, fallback)")
+            elif test_type == 'phase_current_calibration':
+                # Retrieve plot data for phase current calibration tests
+                if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                    plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                    logger.debug(f"Retrieved stored plot data for {test_name} (phase current test)")
+            
             self._update_test_plan_row(t, result, exec_time, info, plot_data)
         except Exception as e:
             end_time = time.time()
@@ -9210,8 +9734,10 @@ Data Points Used: {data_points}"""
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
             # Retrieve plot data that was captured at the end of run_single_test (even if failed, may have partial data)
             plot_data = None
-            if t.get('type') == 'analog':
-                test_name = t.get('name', '<unnamed>')
+            test_name = t.get('name', '<unnamed>')
+            test_type = t.get('type', '')
+            
+            if test_type == 'analog':
                 # First try to get from temporary storage (captured in run_single_test)
                 if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                     plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -9224,6 +9750,12 @@ Data Points Used: {data_points}"""
                             'feedback_values': list(self.plot_feedback_values)
                         }
                         logger.debug(f"Used global plot data for {test_name} (exception case, fallback)")
+            elif test_type == 'phase_current_calibration':
+                # Retrieve plot data for phase current calibration tests
+                if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                    plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                    logger.debug(f"Retrieved stored plot data for {test_name} (exception case, phase current)")
+            
             self._update_test_plan_row(t, 'ERROR', exec_time, str(e), plot_data)
         finally:
             # clear current feedback monitor
@@ -9473,8 +10005,10 @@ Data Points Used: {data_points}"""
                 # Retrieve plot data that was captured at the end of run_single_test
                 # This data was stored before the next test could clear the plot arrays
                 plot_data = None
-                if t.get('type') == 'analog':
-                    test_name = t.get('name', '<unnamed>')
+                test_name = t.get('name', '<unnamed>')
+                test_type = t.get('type', '')
+                
+                if test_type == 'analog':
                     # First try to get from temporary storage (captured in run_single_test)
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -9487,6 +10021,12 @@ Data Points Used: {data_points}"""
                                 'feedback_values': list(self.plot_feedback_values)
                             }
                             logger.debug(f"Used global plot data for {test_name} (fallback)")
+                elif test_type == 'phase_current_calibration':
+                    # Retrieve plot data for phase current calibration tests
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (phase current test)")
+                
                 self._update_test_plan_row(t, result, f"{exec_time:.2f}s", info, plot_data)
         except Exception:
             pass
@@ -9508,8 +10048,10 @@ Data Points Used: {data_points}"""
                 t = self._tests[test_index]
                 # Retrieve plot data that was captured at the end of run_single_test (even if failed, may have partial data)
                 plot_data = None
-                if t.get('type') == 'analog':
-                    test_name = t.get('name', '<unnamed>')
+                test_name = t.get('name', '<unnamed>')
+                test_type = t.get('type', '')
+                
+                if test_type == 'analog':
                     # First try to get from temporary storage (captured in run_single_test)
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -9522,6 +10064,11 @@ Data Points Used: {data_points}"""
                                 'feedback_values': list(self.plot_feedback_values)
                             }
                             logger.debug(f"Used global plot data for {test_name} (error case, fallback)")
+                elif test_type == 'phase_current_calibration':
+                    # Retrieve plot data for phase current calibration tests
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (error case, phase current)")
                 self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error, plot_data)
         except Exception:
             pass
