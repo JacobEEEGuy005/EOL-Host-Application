@@ -1281,6 +1281,10 @@ class PhaseCurrentTestStateMachine:
     def _prepare_iq_ref_array(self) -> bool:
         """Prepare array of Iq_ref values from min, max, and step.
         
+        Generates positive values from min_iq to max_iq, then negative values
+        from -min_iq to -max_iq with the same step size.
+        Example: min_iq=10, max_iq=50, step_iq=10 -> [10, 20, 30, 40, 50, -10, -20, -30, -40, -50]
+        
         Returns:
             True if array prepared successfully, False otherwise
         """
@@ -1292,14 +1296,24 @@ class PhaseCurrentTestStateMachine:
             logger.error(f"Invalid step_iq: {self.step_iq}")
             return False
         
-        # Generate array
+        # Generate array: positive values first, then negative values
         self.iq_ref_array = []
+        
+        # Generate positive values from min_iq to max_iq
         current = self.min_iq
         while current <= self.max_iq:
             self.iq_ref_array.append(current)
             current += self.step_iq
         
-        logger.info(f"Prepared Iq_ref array: {len(self.iq_ref_array)} values from {self.min_iq} to {self.max_iq} with step {self.step_iq}")
+        # Generate negative values from -min_iq to -max_iq
+        current = -self.min_iq
+        while current >= -self.max_iq:
+            self.iq_ref_array.append(current)
+            current -= self.step_iq
+        
+        logger.info(f"Prepared Iq_ref array: {len(self.iq_ref_array)} values "
+                   f"[positive: {self.min_iq} to {self.max_iq}, negative: {-self.min_iq} to {-self.max_iq}] "
+                   f"with step {self.step_iq}")
         return True
     
     def _set_vertical_division(self, iq_ref: float) -> bool:
@@ -1314,7 +1328,8 @@ class PhaseCurrentTestStateMachine:
         if not self.oscilloscope_service or not self.oscilloscope_service.is_connected():
             return False
         
-        vdiv_value = iq_ref / 2.0
+        # Use absolute value of iq_ref for vertical division
+        vdiv_value = abs(iq_ref) / 2.0
         
         try:
             # Set C1:VDIV
@@ -4985,6 +5000,119 @@ Data Points Used: {data_points}"""
                     
                     test_item.addChild(plot_item)
             
+            # For phase current calibration tests, add gain error/correction and plot sections
+            is_phase_current = (test_type == 'Phase Current Calibration' or 
+                              (test_config and test_config.get('type') == 'phase_current_calibration'))
+            if is_phase_current and test_config:
+                exec_data_full = self._test_execution_data.get(test_name, exec_data)
+                plot_data = exec_data_full.get('plot_data')
+                
+                if plot_data:
+                    # Gain error and correction data
+                    avg_gain_error_v = plot_data.get('avg_gain_error_v')
+                    avg_gain_correction_v = plot_data.get('avg_gain_correction_v')
+                    avg_gain_error_w = plot_data.get('avg_gain_error_w')
+                    avg_gain_correction_w = plot_data.get('avg_gain_correction_w')
+                    
+                    if (avg_gain_error_v is not None or avg_gain_error_w is not None or
+                        avg_gain_correction_v is not None or avg_gain_correction_w is not None):
+                        gain_item = QtWidgets.QTreeWidgetItem(['Gain Error and Correction', '', '', ''])
+                        gain_item.setExpanded(False)
+                        
+                        if avg_gain_error_v is not None:
+                            gain_item.addChild(QtWidgets.QTreeWidgetItem(['Avg Gain Error V (%)', f"{avg_gain_error_v:+.4f}%", '', '']))
+                            gain_item.addChild(QtWidgets.QTreeWidgetItem(['Avg Gain Error W (%)', f"{avg_gain_error_w:+.4f}%", '', '']))
+                        if avg_gain_correction_v is not None:
+                            gain_item.addChild(QtWidgets.QTreeWidgetItem(['Avg Gain Correction V', f"{avg_gain_correction_v:.6f}", '', '']))
+                            gain_item.addChild(QtWidgets.QTreeWidgetItem(['Avg Gain Correction W', f"{avg_gain_correction_w:.6f}", '', '']))
+                        
+                        test_item.addChild(gain_item)
+                    
+                    # Add plot widget if plot data is available
+                    if matplotlib_available:
+                        plot_item = QtWidgets.QTreeWidgetItem(['Plot: CAN vs Oscilloscope', '', '', ''])
+                        plot_item.setExpanded(False)
+                        
+                        osc_ch1 = plot_data.get('osc_ch1', [])
+                        osc_ch2 = plot_data.get('osc_ch2', [])
+                        can_v = plot_data.get('can_v', [])
+                        can_w = plot_data.get('can_w', [])
+                        
+                        if (osc_ch1 or osc_ch2 or can_v or can_w):
+                            try:
+                                # Create plot widget
+                                plot_widget = QtWidgets.QWidget()
+                                plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                plot_layout.setContentsMargins(0, 0, 0, 0)
+                                
+                                plot_figure = Figure(figsize=(10, 4))
+                                plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                
+                                # Phase V plot
+                                plot_axes_v = plot_figure.add_subplot(121)
+                                
+                                # Filter out NaN values
+                                osc_v_clean = []
+                                can_v_clean = []
+                                if osc_ch1 and can_v:
+                                    min_len = min(len(osc_ch1), len(can_v))
+                                    for i in range(min_len):
+                                        osc_val = osc_ch1[i]
+                                        can_val = can_v[i]
+                                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                            not (isinstance(can_val, float) and can_val != can_val)):
+                                            osc_v_clean.append(osc_val)
+                                            can_v_clean.append(can_val)
+                                
+                                if osc_v_clean and can_v_clean:
+                                    plot_axes_v.plot(osc_v_clean, can_v_clean, 'bo', markersize=4, label='Phase V')
+                                    plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                
+                                plot_axes_v.set_xlabel('Avg Phase V Current from Oscilloscope (A)')
+                                plot_axes_v.set_ylabel('Avg Phase V Current from CAN (A)')
+                                plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
+                                plot_axes_v.grid(True, alpha=0.3)
+                                plot_axes_v.legend()
+                                
+                                # Phase W plot
+                                plot_axes_w = plot_figure.add_subplot(122)
+                                
+                                # Filter out NaN values
+                                osc_w_clean = []
+                                can_w_clean = []
+                                if osc_ch2 and can_w:
+                                    min_len = min(len(osc_ch2), len(can_w))
+                                    for i in range(min_len):
+                                        osc_val = osc_ch2[i]
+                                        can_val = can_w[i]
+                                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                            not (isinstance(can_val, float) and can_val != can_val)):
+                                            osc_w_clean.append(osc_val)
+                                            can_w_clean.append(can_val)
+                                
+                                if osc_w_clean and can_w_clean:
+                                    plot_axes_w.plot(osc_w_clean, can_w_clean, 'ro', markersize=4, label='Phase W')
+                                    plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                
+                                plot_axes_w.set_xlabel('Avg Phase W Current from Oscilloscope (A)')
+                                plot_axes_w.set_ylabel('Avg Phase W Current from CAN (A)')
+                                plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+                                plot_axes_w.grid(True, alpha=0.3)
+                                plot_axes_w.legend()
+                                
+                                plot_figure.tight_layout()
+                                plot_layout.addWidget(plot_canvas)
+                                
+                                # Set widget as item widget
+                                self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                            except Exception as e:
+                                logger.error(f"Error creating phase current plot in report: {e}", exc_info=True)
+                                plot_item.setText(1, f"Plot error: {e}")
+                        
+                        test_item.addChild(plot_item)
+            
             self.report_tree.addTopLevelItem(test_item)
         
         # Expand all items by default (user can collapse)
@@ -5048,6 +5176,118 @@ Data Points Used: {data_points}"""
             Base64-encoded image string if successful, None otherwise
         """
         image_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
+        if image_bytes:
+            return base64.b64encode(image_bytes).decode('utf-8')
+        return None
+    
+    def _generate_phase_current_plot_image(self, test_name: str, osc_v: list, can_v: list, 
+                                           osc_w: list, can_w: list, output_format: str = 'png') -> Optional[bytes]:
+        """Generate a phase current plot image for export (CAN vs Oscilloscope).
+        
+        Args:
+            test_name: Name of the test
+            osc_v: List of oscilloscope Phase V current values
+            can_v: List of CAN Phase V current values
+            osc_w: List of oscilloscope Phase W current values
+            can_w: List of CAN Phase W current values
+            output_format: Image format ('png', 'svg', etc.)
+            
+        Returns:
+            Image bytes if successful, None otherwise
+        """
+        if not matplotlib_available:
+            return None
+        
+        # Filter out NaN values
+        osc_v_clean = []
+        can_v_clean = []
+        osc_w_clean = []
+        can_w_clean = []
+        
+        if osc_v and can_v:
+            min_len = min(len(osc_v), len(can_v))
+            for i in range(min_len):
+                osc_val = osc_v[i]
+                can_val = can_v[i]
+                if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                    not (isinstance(osc_val, float) and osc_val != osc_val) and
+                    not (isinstance(can_val, float) and can_val != can_val)):
+                    osc_v_clean.append(osc_val)
+                    can_v_clean.append(can_val)
+        
+        if osc_w and can_w:
+            min_len = min(len(osc_w), len(can_w))
+            for i in range(min_len):
+                osc_val = osc_w[i]
+                can_val = can_w[i]
+                if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                    not (isinstance(osc_val, float) and osc_val != osc_val) and
+                    not (isinstance(can_val, float) and can_val != can_val)):
+                    osc_w_clean.append(osc_val)
+                    can_w_clean.append(can_val)
+        
+        if not (osc_v_clean and can_v_clean) and not (osc_w_clean and can_w_clean):
+            return None
+        
+        try:
+            import io
+            from matplotlib.figure import Figure
+            
+            fig = Figure(figsize=(12, 5))
+            
+            # Phase V plot
+            ax_v = fig.add_subplot(121)
+            if osc_v_clean and can_v_clean:
+                ax_v.plot(osc_v_clean, can_v_clean, 'bo', markersize=6, label='Phase V')
+                # Add diagonal reference line (y=x)
+                ax_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            ax_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
+            ax_v.set_ylabel('Average Phase V Current from CAN (A)')
+            ax_v.set_title('Phase V: CAN vs Oscilloscope')
+            ax_v.grid(True, alpha=0.3)
+            ax_v.legend()
+            
+            # Phase W plot
+            ax_w = fig.add_subplot(122)
+            if osc_w_clean and can_w_clean:
+                ax_w.plot(osc_w_clean, can_w_clean, 'ro', markersize=6, label='Phase W')
+                # Add diagonal reference line (y=x)
+                ax_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            ax_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
+            ax_w.set_ylabel('Average Phase W Current from CAN (A)')
+            ax_w.set_title('Phase W: CAN vs Oscilloscope')
+            ax_w.grid(True, alpha=0.3)
+            ax_w.legend()
+            
+            fig.tight_layout()
+            
+            # Save to bytes buffer
+            buf = io.BytesIO()
+            fig.savefig(buf, format=output_format, dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            image_bytes = buf.read()
+            buf.close()
+            
+            return image_bytes
+        except Exception as e:
+            logger.error(f"Error generating phase current plot image: {e}", exc_info=True)
+            return None
+    
+    def _generate_phase_current_plot_base64(self, test_name: str, osc_v: list, can_v: list,
+                                            osc_w: list, can_w: list) -> Optional[str]:
+        """Generate a base64-encoded phase current plot image for HTML embedding.
+        
+        Args:
+            test_name: Name of the test
+            osc_v: List of oscilloscope Phase V current values
+            can_v: List of CAN Phase V current values
+            osc_w: List of oscilloscope Phase W current values
+            can_w: List of CAN Phase W current values
+            
+        Returns:
+            Base64-encoded image string if successful, None otherwise
+        """
+        image_bytes = self._generate_phase_current_plot_image(test_name, osc_v, can_v, osc_w, can_w, 'png')
         if image_bytes:
             return base64.b64encode(image_bytes).decode('utf-8')
         return None
@@ -5142,6 +5382,26 @@ Data Points Used: {data_points}"""
                     calibration = exec_data.get('calibration')
                     if calibration:
                         test_result['calibration'] = calibration.copy()
+                
+                # Include plot data and gain error/correction for phase current tests
+                elif test_config and test_config.get('type') == 'phase_current_calibration':
+                    plot_data = exec_data.get('plot_data')
+                    if plot_data:
+                        test_result['plot_data'] = {
+                            'iq_refs': list(plot_data.get('iq_refs', [])),
+                            'osc_ch1': list(plot_data.get('osc_ch1', [])),
+                            'osc_ch2': list(plot_data.get('osc_ch2', [])),
+                            'can_v': list(plot_data.get('can_v', [])),
+                            'can_w': list(plot_data.get('can_w', [])),
+                            'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
+                            'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
+                            'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
+                            'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
+                            'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
+                            'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
+                            'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
+                            'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
+                        }
                 
                 test_results.append(test_result)
             
@@ -5287,6 +5547,13 @@ Data Points Used: {data_points}"""
                 params = exec_data.get('parameters', 'N/A')
                 notes = exec_data.get('notes', 'N/A')
                 
+                # Find test config
+                test_config = None
+                for test in self._tests:
+                    if test.get('name', '') == test_name:
+                        test_config = test
+                        break
+                
                 status_class = 'status-pass' if status == 'PASS' else ('status-fail' if status == 'FAIL' else 'status-error')
                 
                 html_parts.append('<div class="test-section">')
@@ -5353,6 +5620,41 @@ Data Points Used: {data_points}"""
                             if plot_base64:
                                 html_parts.append('<h3>Plot</h3>')
                                 html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Plot for {test_name}" class="plot-image">')
+                
+                # Phase current calibration test results
+                elif test_type == 'Phase Current Calibration' or (test_config and test_config.get('type') == 'phase_current_calibration'):
+                    plot_data = exec_data.get('plot_data')
+                    if plot_data:
+                        # Gain error and correction data
+                        avg_gain_error_v = plot_data.get('avg_gain_error_v')
+                        avg_gain_correction_v = plot_data.get('avg_gain_correction_v')
+                        avg_gain_error_w = plot_data.get('avg_gain_error_w')
+                        avg_gain_correction_w = plot_data.get('avg_gain_correction_w')
+                        
+                        if (avg_gain_error_v is not None or avg_gain_error_w is not None or
+                            avg_gain_correction_v is not None or avg_gain_correction_w is not None):
+                            html_parts.append('<h3>Gain Error and Correction Factor</h3>')
+                            html_parts.append('<table class="calibration-table">')
+                            html_parts.append('<tr><th>Parameter</th><th>Phase V</th><th>Phase W</th></tr>')
+                            
+                            if avg_gain_error_v is not None:
+                                html_parts.append(f'<tr><td>Average Gain Error (%)</td><td>{avg_gain_error_v:+.4f}%</td><td>{avg_gain_error_w:+.4f}%</td></tr>')
+                            if avg_gain_correction_v is not None:
+                                html_parts.append(f'<tr><td>Average Gain Correction Factor</td><td>{avg_gain_correction_v:.6f}</td><td>{avg_gain_correction_w:.6f}</td></tr>')
+                            
+                            html_parts.append('</table>')
+                        
+                        # Plot image (CAN vs Oscilloscope)
+                        osc_ch1 = plot_data.get('osc_ch1', [])
+                        osc_ch2 = plot_data.get('osc_ch2', [])
+                        can_v = plot_data.get('can_v', [])
+                        can_w = plot_data.get('can_w', [])
+                        
+                        if (osc_ch1 or osc_ch2 or can_v or can_w):
+                            plot_base64 = self._generate_phase_current_plot_base64(test_name, osc_ch1, can_v, osc_ch2, can_w)
+                            if plot_base64:
+                                html_parts.append('<h3>Plot: Average Phase Current (CAN vs Oscilloscope)</h3>')
+                                html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Phase Current Plot for {test_name}" class="plot-image">')
                 
                 html_parts.append('</div>')
             
@@ -5493,6 +5795,13 @@ Data Points Used: {data_points}"""
                     params = exec_data.get('parameters', 'N/A')
                     notes = exec_data.get('notes', 'N/A')
                     
+                    # Find test config
+                    test_config = None
+                    for test in self._tests:
+                        if test.get('name', '') == test_name:
+                            test_config = test
+                            break
+                    
                     story.append(Paragraph(f'<b>{test_name}</b>', styles['Heading2']))
                     story.append(Spacer(1, 0.1*inch))
                     
@@ -5593,6 +5902,68 @@ Data Points Used: {data_points}"""
                                     story.append(Spacer(1, 0.1*inch))
                                     story.append(Paragraph('<b>Plot</b>', styles['Heading3']))
                                     img = Image(tmp_path, width=5*inch, height=3*inch)
+                                    story.append(img)
+                                    
+                                    # Clean up temp file
+                                    try:
+                                        os.unlink(tmp_path)
+                                    except Exception:
+                                        pass
+                    
+                    # Phase current calibration test results
+                    elif test_type == 'Phase Current Calibration' or (test_config and test_config.get('type') == 'phase_current_calibration'):
+                        plot_data = exec_data.get('plot_data')
+                        if plot_data:
+                            # Gain error and correction data
+                            avg_gain_error_v = plot_data.get('avg_gain_error_v')
+                            avg_gain_correction_v = plot_data.get('avg_gain_correction_v')
+                            avg_gain_error_w = plot_data.get('avg_gain_error_w')
+                            avg_gain_correction_w = plot_data.get('avg_gain_correction_w')
+                            
+                            if (avg_gain_error_v is not None or avg_gain_error_w is not None or
+                                avg_gain_correction_v is not None or avg_gain_correction_w is not None):
+                                story.append(Spacer(1, 0.1*inch))
+                                story.append(Paragraph('<b>Gain Error and Correction Factor</b>', styles['Heading3']))
+                                
+                                gain_data = [['Parameter', 'Phase V', 'Phase W']]
+                                if avg_gain_error_v is not None:
+                                    gain_data.append(['Average Gain Error (%)', f'{avg_gain_error_v:+.4f}%', f'{avg_gain_error_w:+.4f}%'])
+                                if avg_gain_correction_v is not None:
+                                    gain_data.append(['Average Gain Correction Factor', f'{avg_gain_correction_v:.6f}', f'{avg_gain_correction_w:.6f}'])
+                                
+                                gain_table = Table(gain_data)
+                                gain_table.setStyle(TableStyle([
+                                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                    ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                                ]))
+                                
+                                story.append(gain_table)
+                            
+                            # Plot image (CAN vs Oscilloscope)
+                            osc_ch1 = plot_data.get('osc_ch1', [])
+                            osc_ch2 = plot_data.get('osc_ch2', [])
+                            can_v = plot_data.get('can_v', [])
+                            can_w = plot_data.get('can_w', [])
+                            
+                            if (osc_ch1 or osc_ch2 or can_v or can_w):
+                                import tempfile
+                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                    tmp_path = tmp_file.name
+                                
+                                plot_bytes = self._generate_phase_current_plot_image(test_name, osc_ch1, can_v, osc_ch2, can_w, 'png')
+                                if plot_bytes:
+                                    with open(tmp_path, 'wb') as f:
+                                        f.write(plot_bytes)
+                                    
+                                    story.append(Spacer(1, 0.1*inch))
+                                    story.append(Paragraph('<b>Plot: Average Phase Current (CAN vs Oscilloscope)</b>', styles['Heading3']))
+                                    img = Image(tmp_path, width=6*inch, height=2.5*inch)
                                     story.append(img)
                                     
                                     # Clean up temp file

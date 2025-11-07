@@ -411,8 +411,8 @@ class PhaseCurrentTestStateMachine:
         
         try:
             # Set TDIV:1 (1 second per division)
-            logger.info("Setting TDIV:500MS")
-            self.oscilloscope_service.send_command("TDIV:500MS")
+            logger.info("Setting TDIV:1")
+            self.oscilloscope_service.send_command("TDIV:1")
             time.sleep(0.2)
             
             # Readback TDIV?
@@ -460,10 +460,11 @@ class PhaseCurrentTestStateMachine:
         
         errors = []
         
-        # Set C1:VDIV <Iq_ref>
+        # Set C1:VDIV <abs(Iq_ref)> (use absolute value for vertical scale)
         try:
-            logger.info(f"Setting C1:VDIV {self.iq_ref}")
-            self.oscilloscope_service.send_command(f"C1:VDIV {self.iq_ref}")
+            vdiv_value = abs(self.iq_ref)
+            logger.info(f"Setting C1:VDIV {vdiv_value} (abs of Iq_ref={self.iq_ref})")
+            self.oscilloscope_service.send_command(f"C1:VDIV {vdiv_value}")
             time.sleep(0.2)
             
             # Readback C1:VDIV?
@@ -495,16 +496,17 @@ class PhaseCurrentTestStateMachine:
                         c1_vdiv = None
                 
                 if c1_vdiv is not None:
-                    logger.info(f"C1:VDIV? = {c1_vdiv} (expected: {self.iq_ref})")
-                    if abs(c1_vdiv - self.iq_ref) > self.tolerance:
-                        errors.append(f"C1:VDIV mismatch: set={self.iq_ref}, readback={c1_vdiv}, tolerance={self.tolerance}")
+                    logger.info(f"C1:VDIV? = {c1_vdiv} (expected: {vdiv_value})")
+                    if abs(c1_vdiv - vdiv_value) > self.tolerance:
+                        errors.append(f"C1:VDIV mismatch: set={vdiv_value}, readback={c1_vdiv}, tolerance={self.tolerance}")
         except Exception as e:
             errors.append(f"C1:VDIV configuration failed: {e}")
         
-        # Set C2:VDIV <Iq_ref>
+        # Set C2:VDIV <abs(Iq_ref)> (use absolute value for vertical scale)
         try:
-            logger.info(f"Setting C2:VDIV {self.iq_ref}")
-            self.oscilloscope_service.send_command(f"C2:VDIV {self.iq_ref}")
+            vdiv_value = abs(self.iq_ref)
+            logger.info(f"Setting C2:VDIV {vdiv_value} (abs of Iq_ref={self.iq_ref})")
+            self.oscilloscope_service.send_command(f"C2:VDIV {vdiv_value}")
             time.sleep(0.2)
             
             # Readback C2:VDIV?
@@ -536,9 +538,9 @@ class PhaseCurrentTestStateMachine:
                         c2_vdiv = None
                 
                 if c2_vdiv is not None:
-                    logger.info(f"C2:VDIV? = {c2_vdiv} (expected: {self.iq_ref})")
-                    if abs(c2_vdiv - self.iq_ref) > self.tolerance:
-                        errors.append(f"C2:VDIV mismatch: set={self.iq_ref}, readback={c2_vdiv}, tolerance={self.tolerance}")
+                    logger.info(f"C2:VDIV? = {c2_vdiv} (expected: {vdiv_value})")
+                    if abs(c2_vdiv - vdiv_value) > self.tolerance:
+                        errors.append(f"C2:VDIV mismatch: set={vdiv_value}, readback={c2_vdiv}, tolerance={self.tolerance}")
         except Exception as e:
             errors.append(f"C2:VDIV configuration failed: {e}")
         
