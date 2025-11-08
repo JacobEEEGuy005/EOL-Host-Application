@@ -91,6 +91,7 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ GradientMode m100 : 19|1@1+ (1,0) [0|1] ""  Host_PC
  SG_ NeutralMode m100 : 20|1@1+ (1,0) [0|1] ""  Host_PC
  SG_ ReverseMode m100 : 21|1@1+ (1,0) [0|1] ""  Host_PC
+ SG_ external5V m104 : 48|16@1+ (1,0) [0|65535] "mV" Vector__XXX
 
 BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
  SG_ NewSignal_0020 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
@@ -164,6 +165,7 @@ CM_ SG_ 250 BoostMode "Boost Mode Switch Input";
 CM_ SG_ 250 GradientMode "Gradient Mode Switch Input";
 CM_ SG_ 250 NeutralMode "Neutral Mode Switch Input";
 CM_ SG_ 250 ReverseMode "Reverse Mode Switch Input";
+CM_ SG_ 250 external5V "external 5V Rail Voltage ";
 CM_ SG_ 3221225472 PhaseWCurrentFSR "Full Scale Reading of Phase W Current Sensor";
 CM_ SG_ 3221225472 PhaseVCurrentFSR "Full Scale Reading of Phase V Current Sensor";
 CM_ SG_ 3221225472 DCBusVoltageFSR "Full Scale Reading of DC Bus Voltage Sensor";
