@@ -7,10 +7,10 @@ from typing import Optional, Dict, Any, List
 
 @dataclass
 class ActuationConfig:
-    """Configuration for test actuation (digital, analog, or phase_current_calibration).
+    """Configuration for test actuation (digital, analog, phase_current_calibration, or analog_static).
     
     Attributes:
-        type: Test type ('digital', 'analog', or 'phase_current_calibration')
+        type: Test type ('digital', 'analog', 'phase_current_calibration', or 'analog_static')
         can_id: CAN message ID for actuation commands (digital tests)
         signal: Signal name for actuation (optional)
         value_low: Low value for digital tests
@@ -39,8 +39,17 @@ class ActuationConfig:
         timing: Timing configuration dictionary
         data_collection: Data collection configuration dictionary
         steady_state_detection: Steady-state detection configuration dictionary
+        
+        For analog_static tests:
+        feedback_signal_source: CAN message ID containing feedback signal
+        feedback_signal: Signal name for feedback signal
+        eol_signal_source: CAN message ID containing EOL signal
+        eol_signal: Signal name for EOL signal
+        tolerance_mv: Tolerance in millivolts for pass/fail determination
+        pre_dwell_time_ms: Pre-dwell time in milliseconds (system stabilization)
+        dwell_time_ms: Dwell time in milliseconds (data collection period)
     """
-    type: str  # 'digital', 'analog', or 'phase_current_calibration'
+    type: str  # 'digital', 'analog', 'phase_current_calibration', or 'analog_static'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -71,6 +80,15 @@ class ActuationConfig:
     timing: Optional[Dict[str, int]] = None
     data_collection: Optional[Dict[str, Any]] = None
     steady_state_detection: Optional[Dict[str, Any]] = None
+    
+    # Analog Static Test fields
+    feedback_signal_source: Optional[int] = None  # CAN message ID
+    feedback_signal: Optional[str] = None  # Signal name
+    eol_signal_source: Optional[int] = None  # CAN message ID
+    eol_signal: Optional[str] = None  # Signal name
+    tolerance_mv: Optional[float] = None  # Tolerance in millivolts
+    pre_dwell_time_ms: Optional[int] = None  # Pre-dwell time in milliseconds
+    dwell_time_ms: Optional[int] = None  # Dwell time in milliseconds
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -128,6 +146,21 @@ class ActuationConfig:
                 result['data_collection'] = self.data_collection
             if self.steady_state_detection:
                 result['steady_state_detection'] = self.steady_state_detection
+        elif self.type == 'analog_static':
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.feedback_signal:
+                result['feedback_signal'] = self.feedback_signal
+            if self.eol_signal_source is not None:
+                result['eol_signal_source'] = self.eol_signal_source
+            if self.eol_signal:
+                result['eol_signal'] = self.eol_signal
+            if self.tolerance_mv is not None:
+                result['tolerance_mv'] = self.tolerance_mv
+            if self.pre_dwell_time_ms is not None:
+                result['pre_dwell_time_ms'] = self.pre_dwell_time_ms
+            if self.dwell_time_ms is not None:
+                result['dwell_time_ms'] = self.dwell_time_ms
         return result
     
     @classmethod

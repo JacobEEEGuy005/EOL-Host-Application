@@ -98,7 +98,7 @@ try:
         SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
         MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
         LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-        PLOT_GRID_ALPHA
+        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
     )
     constants_imported = True
     logger.debug("Successfully imported constants from host_gui.constants")
@@ -113,10 +113,10 @@ except ImportError:
             MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
             CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
             WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
-            SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
-            MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
-            LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-            PLOT_GRID_ALPHA
+        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
         )
         constants_imported = True
         logger.debug("Successfully imported constants using relative import")
@@ -135,10 +135,10 @@ except ImportError:
                 MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
                 CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
                 WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
-                SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
-                MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
-                LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-                PLOT_GRID_ALPHA
+        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
             )
             constants_imported = True
             logger.debug("Successfully imported constants after adding parent directory to sys.path")
@@ -153,10 +153,10 @@ except ImportError:
                     MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
                     CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
                     WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
-                    SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
-                    MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
-                    LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-                    PLOT_GRID_ALPHA
+        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
                 )
                 constants_imported = True
                 logger.debug("Successfully imported constants using direct import")
@@ -194,6 +194,7 @@ if not constants_imported:
     MUX_CHANNEL_MAX = 65535
     DWELL_TIME_MAX_MS = 60000
     PLOT_GRID_ALPHA = 0.3
+    ADC_A3_GAIN_FACTOR = 1.998
     logger.warning("Could not import constants, using fallback values")
 
 # Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
@@ -2923,6 +2924,131 @@ class TestRunner:
                         logger.debug(f"Failed to capture plot data for {test_name}: {e}", exc_info=True)
                 
                 return success, info
+            elif act.get('type') == 'analog_static':
+                # Analog Static Test execution:
+                # 1) Wait for pre-dwell time (system stabilization)
+                # 2) Collect feedback and EOL signal values during dwell time
+                # 3) Calculate averages
+                # 4) Compare: |feedback_avg - eol_avg| <= tolerance -> PASS
+                
+                # Extract parameters
+                feedback_msg_id = act.get('feedback_signal_source')
+                feedback_signal = act.get('feedback_signal')
+                eol_msg_id = act.get('eol_signal_source')
+                eol_signal = act.get('eol_signal')
+                tolerance_mv = float(act.get('tolerance_mv', 0))
+                pre_dwell_ms = int(act.get('pre_dwell_time_ms', 0))
+                dwell_ms = int(act.get('dwell_time_ms', 0))
+                
+                # Validate parameters
+                if not all([feedback_msg_id, feedback_signal, eol_msg_id, eol_signal]):
+                    return False, "Missing required Analog Static Test parameters"
+                
+                if tolerance_mv < 0:
+                    return False, "Tolerance must be non-negative"
+                
+                if pre_dwell_ms < 0:
+                    return False, "Pre-dwell time must be non-negative"
+                
+                if dwell_ms <= 0:
+                    return False, "Dwell time must be positive"
+                
+                def _nb_sleep(sec: float):
+                    """Non-blocking sleep that processes Qt events."""
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Step 1: Wait for pre-dwell time (system stabilization)
+                logger.info(f"Analog Static Test: Waiting {pre_dwell_ms}ms for system stabilization...")
+                _nb_sleep(pre_dwell_ms / 1000.0)
+                
+                # Step 2: Collect data during dwell time
+                feedback_values = []
+                eol_values = []
+                start_time = time.time()
+                end_time = start_time + (dwell_ms / 1000.0)
+                
+                logger.info(f"Analog Static Test: Collecting data for {dwell_ms}ms...")
+                
+                while time.time() < end_time:
+                    # Read feedback signal
+                    try:
+                        ts_fb, fb_val = gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        if fb_val is not None:
+                            try:
+                                feedback_values.append(float(fb_val))
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading feedback signal: {e}")
+                    
+                    # Read EOL signal
+                    try:
+                        ts_eol, eol_val = gui.get_latest_signal(eol_msg_id, eol_signal)
+                        if eol_val is not None:
+                            try:
+                                eol_values.append(float(eol_val))
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading EOL signal: {e}")
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 3: Calculate averages
+                if not feedback_values or not eol_values:
+                    return False, f"No data collected during dwell time (Feedback samples: {len(feedback_values)}, EOL samples: {len(eol_values)})"
+                
+                feedback_avg = sum(feedback_values) / len(feedback_values)
+                eol_avg = sum(eol_values) / len(eol_values)
+                
+                # Step 4: Compare and determine pass/fail
+                difference = abs(feedback_avg - eol_avg)
+                passed = difference <= tolerance_mv
+                
+                # Build info string
+                info = f"Feedback Avg: {feedback_avg:.2f} mV, EOL Avg: {eol_avg:.2f} mV, "
+                info += f"Difference: {difference:.2f} mV, Tolerance: {tolerance_mv:.2f} mV"
+                info += f"\nFeedback samples: {len(feedback_values)}, EOL samples: {len(eol_values)}"
+                
+                if not passed:
+                    info += f"\nFAIL: Difference {difference:.2f} mV exceeds tolerance {tolerance_mv:.2f} mV"
+                else:
+                    info += f"\nPASS: Difference {difference:.2f} mV within tolerance {tolerance_mv:.2f} mV"
+                
+                # Store results for display
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'feedback_avg': feedback_avg,
+                    'eol_avg': eol_avg,
+                    'difference': difference,
+                    'tolerance': tolerance_mv,
+                    'feedback_samples': len(feedback_values),
+                    'eol_samples': len(eol_values),
+                    'feedback_values': feedback_values,
+                    'eol_values': eol_values
+                }
+                
+                # Store in temporary storage for retrieval by _on_test_finished
+                if not hasattr(gui, '_test_result_data_temp'):
+                    gui._test_result_data_temp = {}
+                gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"Analog Static Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             else:
                 pass
         except Exception as e:
@@ -3964,6 +4090,21 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"MUX Value: {act['mux_value']}")
             if act.get('mux_enable_signal'):
                 params.append(f"MUX Enable Signal: {act['mux_enable_signal']}")
+        elif test_type == 'analog_static':
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_signal'):
+                params.append(f"Feedback Signal: {act['feedback_signal']}")
+            if act.get('eol_signal_source'):
+                params.append(f"EOL Source: 0x{act['eol_signal_source']:X}")
+            if act.get('eol_signal'):
+                params.append(f"EOL Signal: {act['eol_signal']}")
+            if act.get('tolerance_mv') is not None:
+                params.append(f"Tolerance: {act['tolerance_mv']:.2f} mV")
+            if act.get('pre_dwell_time_ms') is not None:
+                params.append(f"Pre-dwell: {act['pre_dwell_time_ms']} ms")
+            if act.get('dwell_time_ms') is not None:
+                params.append(f"Dwell: {act['dwell_time_ms']} ms")
         
         return ', '.join(params) if params else 'None'
     
@@ -4114,7 +4255,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         """
         test_name = test.get('name', '<unnamed>')
         act = test.get('actuation', {})
-        test_type = act.get('type', 'Unknown').capitalize()
+        test_type_raw = act.get('type', 'Unknown')
+        # Capitalize properly for display
+        if test_type_raw == 'analog_static':
+            test_type = 'Analog Static'
+        elif test_type_raw == 'phase_current_calibration':
+            test_type = 'Phase Current Calibration'
+        else:
+            test_type = test_type_raw.capitalize()
         
         # Store execution data for popup display
         params_str = self._get_test_parameters_string(test)
@@ -4213,6 +4361,19 @@ class BaseGUI(QtWidgets.QMainWindow):
                     'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
                     'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
                 }
+            elif test_type == 'analog_static':
+                # Store plot data and statistics for analog_static tests
+                if plot_data:
+                    exec_data['plot_data'] = {
+                        'feedback_values': list(plot_data.get('feedback_values', [])),
+                        'eol_values': list(plot_data.get('eol_values', []))
+                    }
+                # Statistics should already be stored in _test_execution_data by _on_test_finished
+                # But ensure they're in exec_data for display
+                if test_name in self._test_execution_data:
+                    stats = self._test_execution_data[test_name].get('statistics')
+                    if stats:
+                        exec_data['statistics'] = stats
         
         # Update exec_data with final status and notes (may have been modified by gain tolerance check)
         exec_data['status'] = status
@@ -4331,6 +4492,37 @@ class BaseGUI(QtWidgets.QMainWindow):
         notes_text.setPlainText(notes)
         notes_text.setReadOnly(True)
         layout.addWidget(notes_text)
+        
+        # Statistical Analysis section for analog_static tests
+        is_analog_static = test_config and test_config.get('type') == 'analog_static'
+        statistics = exec_data.get('statistics')
+        
+        if is_analog_static and statistics:
+            stats_label = QtWidgets.QLabel('<b>Statistical Analysis:</b>')
+            layout.addWidget(stats_label)
+            
+            stats_text = QtWidgets.QTextEdit()
+            stats_text.setReadOnly(True)
+            stats_text.setMaximumHeight(150)
+            
+            feedback_avg = statistics.get('feedback_avg', 0)
+            eol_avg = statistics.get('eol_avg', 0)
+            difference = statistics.get('difference', 0)
+            tolerance = statistics.get('tolerance', 0)
+            passed = statistics.get('passed', False)
+            fb_samples = statistics.get('feedback_samples', 0)
+            eol_samples = statistics.get('eol_samples', 0)
+            
+            stats_info = f"""Feedback Signal Average: {feedback_avg:.2f} mV
+EOL Signal Average: {eol_avg:.2f} mV
+Difference: {difference:.2f} mV
+Tolerance: {tolerance:.2f} mV
+Result: {'PASS' if passed else 'FAIL'}
+Feedback Samples Collected: {fb_samples}
+EOL Samples Collected: {eol_samples}"""
+            
+            stats_text.setPlainText(stats_info)
+            layout.addWidget(stats_text)
         
         # Calibration Parameters section for analog tests
         is_analog = test_config and test_config.get('type') == 'analog'
@@ -4735,7 +4927,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital', 'Analog'])
+        self.report_type_filter.addItems(['All', 'Digital', 'Analog', 'Analog Static', 'Phase Current Calibration'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -4815,6 +5007,9 @@ Data Points Used: {data_points}"""
             
             status = exec_data.get('status', 'Not Run')
             test_type = exec_data.get('test_type', 'Unknown')
+            # Handle analog_static -> Analog Static
+            if test_type == 'Analog_static':
+                test_type = 'Analog Static'
             
             # Apply filters
             if status_filter != 'All':
@@ -4832,6 +5027,10 @@ Data Points Used: {data_points}"""
                     continue
                 elif type_filter == 'Analog' and test_type != 'Analog':
                     continue
+                elif type_filter == 'Analog Static' and test_type != 'Analog Static':
+                    continue
+                elif type_filter == 'Phase Current Calibration' and test_type != 'Phase Current Calibration':
+                    continue
             
             test_items.append((test_name, test_config, exec_data))
         
@@ -4842,11 +5041,18 @@ Data Points Used: {data_points}"""
                 if test_name not in self._test_execution_data:
                     act = test.get('actuation', {})
                     test_type = act.get('type', 'Unknown').capitalize()
+                    # Handle analog_static -> Analog Static
+                    if test_type == 'Analog_static':
+                        test_type = 'Analog Static'
                     
                     if type_filter != 'All':
                         if type_filter == 'Digital' and test_type != 'Digital':
                             continue
                         elif type_filter == 'Analog' and test_type != 'Analog':
+                            continue
+                        elif type_filter == 'Analog Static' and test_type != 'Analog Static':
+                            continue
+                        elif type_filter == 'Phase Current Calibration' and test_type != 'Phase Current Calibration':
                             continue
                     
                     test_items.append((test_name, test, {'status': 'Not Run', 'test_type': test_type}))
@@ -7996,18 +8202,37 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['digital', 'analog', 'phase_current_calibration'])
+        type_combo.addItems(['digital', 'analog', 'phase_current_calibration', 'analog_static'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container
         act_widget = QtWidgets.QWidget()
         act_layout = QtWidgets.QFormLayout(act_widget)
-        # separate digital, analog, and phase_current_calibration sub-widgets so we can show/hide based on type
+        # separate digital, analog, phase_current_calibration, and analog_static sub-widgets so we can show/hide based on type
         digital_widget = QtWidgets.QWidget()
         digital_layout = QtWidgets.QFormLayout(digital_widget)
         analog_widget = QtWidgets.QWidget()
         analog_layout = QtWidgets.QFormLayout(analog_widget)
         phase_current_widget = QtWidgets.QWidget()
         phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
+        analog_static_widget = QtWidgets.QWidget()
+        analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
+        
+        # Initialize analog_static variables to None (will be set in if/else blocks)
+        analog_static_fb_msg_combo = None
+        analog_static_fb_signal_combo = None
+        analog_static_eol_msg_combo = None
+        analog_static_eol_signal_combo = None
+        tolerance_edit = None
+        pre_dwell_time_edit = None
+        dwell_time_edit = None
+        analog_static_fb_msg_edit = None
+        analog_static_fb_signal_edit = None
+        analog_static_eol_msg_edit = None
+        analog_static_eol_signal_edit = None
+        tolerance_edit_fallback = None
+        pre_dwell_time_edit_fallback = None
+        dwell_time_edit_fallback = None
+        
     # if a DBC is loaded, provide message+signal dropdowns
         if self.dbc_service is not None and self.dbc_service.is_loaded():
             # collect messages
@@ -8246,6 +8471,79 @@ Data Points Used: {data_points}"""
             phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
             phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
             phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
+            
+            # Analog Static Test fields (DBC mode)
+            # Feedback Signal Source: dropdown of CAN Messages
+            analog_static_fb_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_static_fb_msg_combo.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            analog_static_fb_signal_combo = QtWidgets.QComboBox()
+            
+            # EOL Signal Source: dropdown of CAN Messages
+            analog_static_eol_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_static_eol_msg_combo.addItem(label, fid)
+            
+            # EOL Signal: dropdown based on selected message
+            analog_static_eol_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_analog_static_fb_signals(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                analog_static_fb_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_static_fb_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            def _update_analog_static_eol_signals(idx=0):
+                """Update EOL signal dropdown based on selected message."""
+                analog_static_eol_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_static_eol_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_analog_static_fb_signals(0)
+                _update_analog_static_eol_signals(0)
+            analog_static_fb_msg_combo.currentIndexChanged.connect(_update_analog_static_fb_signals)
+            analog_static_eol_msg_combo.currentIndexChanged.connect(_update_analog_static_eol_signals)
+            
+            # Tolerance input (float, in mV)
+            tolerance_validator = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            tolerance_edit = QtWidgets.QLineEdit()
+            tolerance_edit.setValidator(tolerance_validator)
+            tolerance_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Pre-dwell time input (int, in ms)
+            pre_dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            pre_dwell_time_edit = QtWidgets.QLineEdit()
+            pre_dwell_time_edit.setValidator(pre_dwell_validator)
+            pre_dwell_time_edit.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            dwell_time_validator = QtGui.QIntValidator(1, 60000, self)
+            dwell_time_edit = QtWidgets.QLineEdit()
+            dwell_time_edit.setValidator(dwell_time_validator)
+            dwell_time_edit.setPlaceholderText('e.g., 500')
+            
+            # Populate analog static sub-widget
+            analog_static_layout.addRow('Feedback Signal Source:', analog_static_fb_msg_combo)
+            analog_static_layout.addRow('Feedback Signal:', analog_static_fb_signal_combo)
+            analog_static_layout.addRow('EOL Signal Source:', analog_static_eol_msg_combo)
+            analog_static_layout.addRow('EOL Signal:', analog_static_eol_signal_combo)
+            analog_static_layout.addRow('Tolerance (mV):', tolerance_edit)
+            analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit)
+            analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -8343,6 +8641,40 @@ Data Points Used: {data_points}"""
             # Initialize dropdowns
             _update_osc_channel_dropdowns()
             
+            # Analog Static Test fields (fallback when no DBC)
+            analog_static_fb_msg_edit = QtWidgets.QLineEdit()
+            analog_static_fb_signal_edit = QtWidgets.QLineEdit()
+            analog_static_eol_msg_edit = QtWidgets.QLineEdit()
+            analog_static_eol_signal_edit = QtWidgets.QLineEdit()
+            
+            # Tolerance input (float, in mV)
+            tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            tolerance_edit_fallback = QtWidgets.QLineEdit()
+            tolerance_edit_fallback.setValidator(tolerance_validator_fallback)
+            tolerance_edit_fallback.setPlaceholderText('e.g., 10.0')
+            
+            # Pre-dwell time input (int, in ms)
+            pre_dwell_validator_fallback = QtGui.QIntValidator(0, 60000, self)
+            pre_dwell_time_edit_fallback = QtWidgets.QLineEdit()
+            pre_dwell_time_edit_fallback.setValidator(pre_dwell_validator_fallback)
+            pre_dwell_time_edit_fallback.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            dwell_time_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            dwell_time_edit_fallback = QtWidgets.QLineEdit()
+            dwell_time_edit_fallback.setValidator(dwell_time_validator_fallback)
+            dwell_time_edit_fallback.setPlaceholderText('e.g., 500')
+            
+            # Populate analog static sub-widget (fallback)
+            analog_static_layout.addRow('Feedback Signal Source (CAN ID):', analog_static_fb_msg_edit)
+            analog_static_layout.addRow('Feedback Signal:', analog_static_fb_signal_edit)
+            analog_static_layout.addRow('EOL Signal Source (CAN ID):', analog_static_eol_msg_edit)
+            analog_static_layout.addRow('EOL Signal:', analog_static_eol_signal_edit)
+            analog_static_layout.addRow('Tolerance (mV):', tolerance_edit_fallback)
+            analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit_fallback)
+            analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit_fallback)
+            
             phase_current_layout.addRow('Command Message (CAN ID):', phase_current_cmd_msg_edit)
             phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_edit)
             phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_edit)
@@ -8403,6 +8735,7 @@ Data Points Used: {data_points}"""
         act_layout.addRow('Digital:', digital_widget)
         act_layout.addRow('Analog:', analog_widget)
         act_layout.addRow('Phase Current Calibration:', phase_current_widget)
+        act_layout.addRow('Analog Static:', analog_static_widget)
         v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
         v.addWidget(act_widget)
 
@@ -8412,6 +8745,7 @@ Data Points Used: {data_points}"""
                     digital_widget.show()
                     analog_widget.hide()
                     phase_current_widget.hide()
+                    analog_static_widget.hide()
                     # Show feedback fields for digital and analog
                     if fb_msg_label is not None:
                         fb_msg_label.show()
@@ -8425,6 +8759,7 @@ Data Points Used: {data_points}"""
                     digital_widget.hide()
                     analog_widget.show()
                     phase_current_widget.hide()
+                    analog_static_widget.hide()
                     # Show feedback fields for digital and analog
                     if fb_msg_label is not None:
                         fb_msg_label.show()
@@ -8438,7 +8773,22 @@ Data Points Used: {data_points}"""
                     digital_widget.hide()
                     analog_widget.hide()
                     phase_current_widget.show()
+                    analog_static_widget.hide()
                     # Hide feedback fields for phase current calibration
+                    if fb_msg_label is not None:
+                        fb_msg_label.hide()
+                        fb_msg_combo.hide()
+                        fb_signal_label.hide()
+                        fb_signal_combo.hide()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.hide()
+                        feedback_edit.hide()
+                elif txt == 'analog_static':
+                    digital_widget.hide()
+                    analog_widget.hide()
+                    phase_current_widget.hide()
+                    analog_static_widget.show()
+                    # Hide feedback fields for analog_static (uses its own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
                         fb_msg_combo.hide()
@@ -8617,6 +8967,51 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
+                elif t == 'analog_static':
+                    # Analog Static Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = analog_static_fb_msg_combo.currentData()
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = analog_static_fb_signal_combo.currentText().strip() if analog_static_fb_signal_combo.count() else ''
+                    
+                    try:
+                        eol_msg_id = analog_static_eol_msg_combo.currentData()
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = analog_static_eol_signal_combo.currentText().strip() if analog_static_eol_signal_combo.count() else ''
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_tolerance(tolerance_edit)
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_time(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_time(pre_dwell_time_edit)
+                    dwell_time_val = _to_int_or_none_time(dwell_time_edit)
+                    
+                    act = {
+                        'type': 'analog_static',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'eol_signal_source': eol_msg_id,
+                        'eol_signal': eol_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             else:  # No DBC loaded
                 if t == 'digital':
                     try:
@@ -8754,6 +9149,51 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
+                elif t == 'analog_static':
+                    # Analog Static Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(analog_static_fb_msg_edit.text().strip(), 0) if analog_static_fb_msg_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = analog_static_fb_signal_edit.text().strip()
+                    
+                    try:
+                        eol_msg_id = int(analog_static_eol_msg_edit.text().strip(), 0) if analog_static_eol_msg_edit.text().strip() else None
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = analog_static_eol_signal_edit.text().strip()
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_tolerance_fallback(tolerance_edit_fallback)
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_time_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_time_fallback(pre_dwell_time_edit_fallback)
+                    dwell_time_val = _to_int_or_none_time_fallback(dwell_time_edit_fallback)
+                    
+                    act = {
+                        'type': 'analog_static',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'eol_signal_source': eol_msg_id,
+                        'eol_signal': eol_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -8835,8 +9275,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('digital', 'analog', 'phase_current_calibration'):
-            return False, f"Invalid test type: {test_type}. Must be 'digital', 'analog', or 'phase_current_calibration'"
+        if test_type not in ('digital', 'analog', 'phase_current_calibration', 'analog_static'):
+            return False, f"Invalid test type: {test_type}. Must be 'digital', 'analog', 'phase_current_calibration', or 'analog_static'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -8870,6 +9310,28 @@ Data Points Used: {data_points}"""
             # Phase current calibration validation - fields are optional but should be validated if present
             # No strict requirements for now, but could add validation for required fields later
             pass
+        elif test_type == 'analog_static':
+            # Validate required fields
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Analog Static test requires feedback signal source (CAN ID)"
+            if not actuation.get('feedback_signal'):
+                return False, "Analog Static test requires feedback signal name"
+            if actuation.get('eol_signal_source') is None:
+                return False, "Analog Static test requires EOL signal source (CAN ID)"
+            if not actuation.get('eol_signal'):
+                return False, "Analog Static test requires EOL signal name"
+            if actuation.get('tolerance_mv') is None:
+                return False, "Analog Static test requires tolerance (mV)"
+            if actuation.get('tolerance_mv', 0) < 0:
+                return False, "Tolerance must be non-negative"
+            if actuation.get('pre_dwell_time_ms') is None:
+                return False, "Analog Static test requires pre-dwell time (ms)"
+            if actuation.get('pre_dwell_time_ms', 0) < 0:
+                return False, "Pre-dwell time must be non-negative"
+            if actuation.get('dwell_time_ms') is None:
+                return False, "Analog Static test requires dwell time (ms)"
+            if actuation.get('dwell_time_ms', 0) <= 0:
+                return False, "Dwell time must be positive"
         
         return True, ""
     
@@ -9265,7 +9727,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['digital', 'analog', 'phase_current_calibration'])
+        type_combo.addItems(['digital', 'analog', 'phase_current_calibration', 'analog_static'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -9317,10 +9779,11 @@ Data Points Used: {data_points}"""
             except Exception:
                 pass
 
-        # actuation sub-widgets (digital/analog/phase_current_calibration)
+        # actuation sub-widgets (digital/analog/phase_current_calibration/analog_static)
         digital_widget = QtWidgets.QWidget(); digital_layout = QtWidgets.QFormLayout(digital_widget)
         analog_widget = QtWidgets.QWidget(); analog_layout = QtWidgets.QFormLayout(analog_widget)
         phase_current_widget = QtWidgets.QWidget(); phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
+        analog_static_widget = QtWidgets.QWidget(); analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
 
         # populate actuation controls from stored data
         act = data.get('actuation', {}) or {}
@@ -9609,6 +10072,109 @@ Data Points Used: {data_points}"""
             phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
             phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
             phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
+            
+            # Analog Static Test fields (DBC mode) - for edit dialog
+            # Feedback Signal Source: dropdown of CAN Messages
+            analog_static_fb_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_static_fb_msg_combo_edit.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            analog_static_fb_signal_combo_edit = QtWidgets.QComboBox()
+            
+            # EOL Signal Source: dropdown of CAN Messages
+            analog_static_eol_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_static_eol_msg_combo_edit.addItem(label, fid)
+            
+            # EOL Signal: dropdown based on selected message
+            analog_static_eol_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_analog_static_fb_signals_edit(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                analog_static_fb_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_static_fb_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            def _update_analog_static_eol_signals_edit(idx=0):
+                """Update EOL signal dropdown based on selected message."""
+                analog_static_eol_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_static_eol_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_analog_static_fb_signals_edit(0)
+                _update_analog_static_eol_signals_edit(0)
+            analog_static_fb_msg_combo_edit.currentIndexChanged.connect(_update_analog_static_fb_signals_edit)
+            analog_static_eol_msg_combo_edit.currentIndexChanged.connect(_update_analog_static_eol_signals_edit)
+            
+            # Tolerance input (float, in mV)
+            tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('tolerance_mv', '')))
+            tolerance_edit_edit.setValidator(tolerance_validator_edit)
+            tolerance_edit_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Pre-dwell time input (int, in ms)
+            pre_dwell_validator_edit = QtGui.QIntValidator(0, 60000, self)
+            pre_dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('pre_dwell_time_ms', '')))
+            pre_dwell_time_edit_edit.setValidator(pre_dwell_validator_edit)
+            pre_dwell_time_edit_edit.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            dwell_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            dwell_time_edit_edit.setValidator(dwell_time_validator_edit)
+            dwell_time_edit_edit.setPlaceholderText('e.g., 500')
+            
+            # Populate analog static fields from stored data
+            try:
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(analog_static_fb_msg_combo_edit.count()):
+                        if analog_static_fb_msg_combo_edit.itemData(i) == fb_msg_id:
+                            analog_static_fb_msg_combo_edit.setCurrentIndex(i)
+                            _update_analog_static_fb_signals_edit(i)
+                            break
+                if act.get('feedback_signal') and analog_static_fb_signal_combo_edit.count():
+                    try:
+                        analog_static_fb_signal_combo_edit.setCurrentText(str(act.get('feedback_signal')))
+                    except Exception:
+                        pass
+                
+                eol_msg_id = act.get('eol_signal_source')
+                if eol_msg_id is not None:
+                    for i in range(analog_static_eol_msg_combo_edit.count()):
+                        if analog_static_eol_msg_combo_edit.itemData(i) == eol_msg_id:
+                            analog_static_eol_msg_combo_edit.setCurrentIndex(i)
+                            _update_analog_static_eol_signals_edit(i)
+                            break
+                if act.get('eol_signal') and analog_static_eol_signal_combo_edit.count():
+                    try:
+                        analog_static_eol_signal_combo_edit.setCurrentText(str(act.get('eol_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate analog static sub-widget
+            analog_static_layout.addRow('Feedback Signal Source:', analog_static_fb_msg_combo_edit)
+            analog_static_layout.addRow('Feedback Signal:', analog_static_fb_signal_combo_edit)
+            analog_static_layout.addRow('EOL Signal Source:', analog_static_eol_msg_combo_edit)
+            analog_static_layout.addRow('EOL Signal:', analog_static_eol_signal_combo_edit)
+            analog_static_layout.addRow('Tolerance (mV):', tolerance_edit_edit)
+            analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit_edit)
+            analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -9717,6 +10283,40 @@ Data Points Used: {data_points}"""
             phase_current_layout.addRow('IPC Test Duration (ms):', ipc_test_duration_edit)
             phase_current_layout.addRow('Oscilloscope Phase V CH:', osc_phase_v_ch_combo)
             phase_current_layout.addRow('Oscilloscope Phase W CH:', osc_phase_w_ch_combo)
+            
+            # Analog Static Test fields (fallback when no DBC) - for edit dialog
+            analog_static_fb_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_signal_source', '')))
+            analog_static_fb_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_signal', '')))
+            analog_static_eol_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('eol_signal_source', '')))
+            analog_static_eol_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('eol_signal', '')))
+            
+            # Tolerance input (float, in mV)
+            tolerance_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            tolerance_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            tolerance_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('tolerance_mv', '')))
+            tolerance_edit_fallback_edit.setValidator(tolerance_validator_fallback_edit)
+            tolerance_edit_fallback_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Pre-dwell time input (int, in ms)
+            pre_dwell_validator_fallback_edit = QtGui.QIntValidator(0, 60000, self)
+            pre_dwell_time_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('pre_dwell_time_ms', '')))
+            pre_dwell_time_edit_fallback_edit.setValidator(pre_dwell_validator_fallback_edit)
+            pre_dwell_time_edit_fallback_edit.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            dwell_time_validator_fallback_edit = QtGui.QIntValidator(1, 60000, self)
+            dwell_time_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            dwell_time_edit_fallback_edit.setValidator(dwell_time_validator_fallback_edit)
+            dwell_time_edit_fallback_edit.setPlaceholderText('e.g., 500')
+            
+            # Populate analog static sub-widget (fallback)
+            analog_static_layout.addRow('Feedback Signal Source (CAN ID):', analog_static_fb_msg_edit_edit)
+            analog_static_layout.addRow('Feedback Signal:', analog_static_fb_signal_edit_edit)
+            analog_static_layout.addRow('EOL Signal Source (CAN ID):', analog_static_eol_msg_edit_edit)
+            analog_static_layout.addRow('EOL Signal:', analog_static_eol_signal_edit_edit)
+            analog_static_layout.addRow('Tolerance (mV):', tolerance_edit_fallback_edit)
+            analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit_fallback_edit)
+            analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit_fallback_edit)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -9738,6 +10338,7 @@ Data Points Used: {data_points}"""
         act_layout_parent.addRow('Digital:', digital_widget)
         act_layout_parent.addRow('Analog:', analog_widget)
         act_layout_parent.addRow('Phase Current Calibration:', phase_current_widget)
+        act_layout_parent.addRow('Analog Static:', analog_static_widget)
         v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
         v.addWidget(act_widget)
 
@@ -9747,6 +10348,7 @@ Data Points Used: {data_points}"""
                     digital_widget.show()
                     analog_widget.hide()
                     phase_current_widget.hide()
+                    analog_static_widget.hide()
                     # Show feedback fields for digital and analog
                     if fb_msg_label is not None:
                         fb_msg_label.show()
@@ -9760,6 +10362,7 @@ Data Points Used: {data_points}"""
                     digital_widget.hide()
                     analog_widget.show()
                     phase_current_widget.hide()
+                    analog_static_widget.hide()
                     # Show feedback fields for digital and analog
                     if fb_msg_label is not None:
                         fb_msg_label.show()
@@ -9773,7 +10376,22 @@ Data Points Used: {data_points}"""
                     digital_widget.hide()
                     analog_widget.hide()
                     phase_current_widget.show()
+                    analog_static_widget.hide()
                     # Hide feedback fields for phase current calibration
+                    if fb_msg_label is not None:
+                        fb_msg_label.hide()
+                        fb_msg_combo.hide()
+                        fb_signal_label.hide()
+                        fb_signal_combo.hide()
+                    elif feedback_edit_label is not None:
+                        feedback_edit_label.hide()
+                        feedback_edit.hide()
+                elif txt == 'analog_static':
+                    digital_widget.hide()
+                    analog_widget.hide()
+                    phase_current_widget.hide()
+                    analog_static_widget.show()
+                    # Hide feedback fields for analog_static (uses its own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
                         fb_msg_combo.hide()
@@ -9950,6 +10568,51 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
+                elif data['type'] == 'analog_static':
+                    # Analog Static Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = analog_static_fb_msg_combo_edit.currentData() if 'analog_static_fb_msg_combo_edit' in locals() else None
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = analog_static_fb_signal_combo_edit.currentText().strip() if 'analog_static_fb_signal_combo_edit' in locals() and analog_static_fb_signal_combo_edit.count() else ''
+                    
+                    try:
+                        eol_msg_id = analog_static_eol_msg_combo_edit.currentData() if 'analog_static_eol_msg_combo_edit' in locals() else None
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = analog_static_eol_signal_combo_edit.currentText().strip() if 'analog_static_eol_signal_combo_edit' in locals() and analog_static_eol_signal_combo_edit.count() else ''
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_tolerance_edit(tolerance_edit_edit) if 'tolerance_edit_edit' in locals() else None
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_time_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_time_edit(pre_dwell_time_edit_edit) if 'pre_dwell_time_edit_edit' in locals() else None
+                    dwell_time_val = _to_int_or_none_time_edit(dwell_time_edit_edit) if 'dwell_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'analog_static',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'eol_signal_source': eol_msg_id,
+                        'eol_signal': eol_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             else:
                 if data['type'] == 'digital':
                     try:
@@ -10073,6 +10736,51 @@ Data Points Used: {data_points}"""
                         'ipc_test_duration_ms': ipc_test_duration,
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
+                    }
+                elif data['type'] == 'analog_static':
+                    # Analog Static Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(analog_static_fb_msg_edit_edit.text().strip(), 0) if 'analog_static_fb_msg_edit_edit' in locals() and analog_static_fb_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = analog_static_fb_signal_edit_edit.text().strip() if 'analog_static_fb_signal_edit_edit' in locals() else ''
+                    
+                    try:
+                        eol_msg_id = int(analog_static_eol_msg_edit_edit.text().strip(), 0) if 'analog_static_eol_msg_edit_edit' in locals() and analog_static_eol_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = analog_static_eol_signal_edit_edit.text().strip() if 'analog_static_eol_signal_edit_edit' in locals() else ''
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_tolerance_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_tolerance_fallback_edit(tolerance_edit_fallback_edit) if 'tolerance_edit_fallback_edit' in locals() else None
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_time_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_time_fallback_edit(pre_dwell_time_edit_fallback_edit) if 'pre_dwell_time_edit_fallback_edit' in locals() else None
+                    dwell_time_val = _to_int_or_none_time_fallback_edit(dwell_time_edit_fallback_edit) if 'dwell_time_edit_fallback_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'analog_static',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'eol_signal_source': eol_msg_id,
+                        'eol_signal': eol_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
                     }
 
             # Validate test before saving
@@ -10469,6 +11177,32 @@ Data Points Used: {data_points}"""
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (phase current test)")
+                elif test_type == 'analog_static':
+                    # Retrieve result data for analog_static tests
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'feedback_avg': result_data.get('feedback_avg'),
+                            'eol_avg': result_data.get('eol_avg'),
+                            'difference': result_data.get('difference'),
+                            'tolerance': result_data.get('tolerance'),
+                            'feedback_samples': result_data.get('feedback_samples'),
+                            'eol_samples': result_data.get('eol_samples'),
+                            'passed': result_data.get('difference', float('inf')) <= result_data.get('tolerance', 0)
+                        }
+                        # Store raw data for potential plotting
+                        plot_data = {
+                            'feedback_values': result_data.get('feedback_values', []),
+                            'eol_values': result_data.get('eol_values', [])
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (analog static test)")
+                    else:
+                        plot_data = None
                 
                 self._update_test_plan_row(t, result, f"{exec_time:.2f}s", info, plot_data)
         except Exception:
@@ -10967,6 +11701,13 @@ Data Points Used: {data_points}"""
                             val = sig_val.value
                             ts = sig_val.timestamp or time.time()
                             
+                            # Apply gain factor to ADC_A3_mV signal
+                            if sig_name == 'ADC_A3_mV':
+                                try:
+                                    val = float(val) * ADC_A3_GAIN_FACTOR
+                                except (ValueError, TypeError):
+                                    pass  # Keep original value if conversion fails
+                            
                             if key in self._signal_rows:
                                 row = self._signal_rows[key]
                                 try:
@@ -10999,6 +11740,7 @@ Data Points Used: {data_points}"""
                                         this_id = int(fid)
                                         if cur_id is not None and this_id is not None and cur_id == this_id:
                                             try:
+                                                # Use the gain-adjusted value for feedback label
                                                 self.feedback_signal_label.setText(str(val))
                                             except Exception:
                                                 pass
@@ -11030,13 +11772,21 @@ Data Points Used: {data_points}"""
             key = f"{can_id}:{signal_name}"
         # Use SignalService if available
         if self.signal_service is not None:
-            return self.signal_service.get_latest_signal(can_id, signal_name)
+            ts, val = self.signal_service.get_latest_signal(can_id, signal_name)
+            # Apply gain factor to ADC_A3_mV signal
+            if signal_name == 'ADC_A3_mV' and val is not None:
+                try:
+                    val = float(val) * ADC_A3_GAIN_FACTOR
+                except (ValueError, TypeError):
+                    pass  # Keep original value if conversion fails
+            return (ts, val)
         
         # Fallback to legacy cache if SignalService not available
         if key in self._signal_values:
             entry = self._signal_values.get(key)
             if entry is not None:
                 ts, v = entry
+                # Note: Gain is already applied when storing in _signal_values in _decode_and_add_signals
                 return (ts, v)
         
         return (None, None)

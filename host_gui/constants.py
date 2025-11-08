@@ -88,3 +88,6 @@ DWELL_TIME_MAX_MS = 60000  # Maximum dwell time in milliseconds (60 seconds)
 # Plot settings
 PLOT_GRID_ALPHA = 0.3  # Grid transparency for matplotlib plots
 
+# Signal processing gain factors
+ADC_A3_GAIN_FACTOR = 1.998  # Gain factor to apply to ADC_A3_mV signal for display in Signal View
+

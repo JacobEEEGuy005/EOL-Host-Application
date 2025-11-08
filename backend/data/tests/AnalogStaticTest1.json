@@ -1,0 +1,38 @@
+{
+  "tests": [
+    {
+      "name": "MtrTemp",
+      "type": "analog_static",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "analog_static",
+        "feedback_signal_source": 250,
+        "feedback_signal": "MtrTempVoltage",
+        "eol_signal_source": 256,
+        "eol_signal": "ADC_A2_mV",
+        "tolerance_mv": 50.0,
+        "pre_dwell_time_ms": 1000,
+        "dwell_time_ms": 3000
+      },
+      "created_at": "2025-11-08T11:09:19.018969Z"
+    },
+    {
+      "name": "Ext5V",
+      "type": "analog_static",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "analog_static",
+        "feedback_signal_source": 250,
+        "feedback_signal": "external5V",
+        "eol_signal_source": 256,
+        "eol_signal": "ADC_A3_mV",
+        "tolerance_mv": 50.0,
+        "pre_dwell_time_ms": 1000,
+        "dwell_time_ms": 3000
+      },
+      "created_at": "2025-11-08T11:18:34.889928Z"
+    }
+  ]
+}
