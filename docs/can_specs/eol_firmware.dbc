@@ -70,6 +70,8 @@ BO_ 272 Command: 8 Host_PC
  SG_ Mctrl_Phase_I_Test_Enable m20 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ Mctrl_Set_Iq_Ref m20 : 32|16@1- (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
  SG_ Mctrl_Set_Id_Ref m20 : 48|16@1- (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
+ SG_ Fan_Ctrl m21 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Ext_5V_Ctrl m22 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
 
 BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ DeviceID : 0|8@1+ (1,0) [0|255] ""  Host_PC
@@ -92,6 +94,14 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ NeutralMode m100 : 20|1@1+ (1,0) [0|1] ""  Host_PC
  SG_ ReverseMode m100 : 21|1@1+ (1,0) [0|1] ""  Host_PC
  SG_ external5V m104 : 48|16@1+ (1,0) [0|65535] "mV" Vector__XXX
+ SG_ IPCTestState m150 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ IPCTestEnabled m150 : 24|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ FanEnabled m105 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ FanTachGood m105 : 17|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ FanFault m105 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ InverterTemperature m106 : 16|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
+ SG_ RectifierTemperature m106 : 32|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
+ SG_ MotorTemperature m106 : 48|16@1+ (0.01,0) [-327.67|327.67] "degC" Vector__XXX
 
 BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
  SG_ NewSignal_0020 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
@@ -145,6 +155,8 @@ CM_ SG_ 272 CMD_Relay_4 "0 = Relay Off, 1 = Relay On";
 CM_ SG_ 272 Mctrl_Phase_I_Test_Enable "Set Enable Flag to start Phase Current Calibration";
 CM_ SG_ 272 Mctrl_Set_Iq_Ref "Set Quadrature Axis Current Reference for Phase Current Testing";
 CM_ SG_ 272 Mctrl_Set_Id_Ref "Set Direct Axis Current Reference for Phase Current Testing";
+CM_ SG_ 272 Fan_Ctrl "Command to enable or disable Fan";
+CM_ SG_ 272 Ext_5V_Ctrl "Command to enable or disable External 5V ";
 CM_ BO_ 250 "Status and data messages from IPC Hardware to Host PC (MessageType determines content)";
 CM_ SG_ 250 DeviceID "Device ID (0x03 for IPC Hardware)";
 CM_ SG_ 250 MessageType "Message type identifier (multiplexor for payload interpretation)";
@@ -166,6 +178,14 @@ CM_ SG_ 250 GradientMode "Gradient Mode Switch Input";
 CM_ SG_ 250 NeutralMode "Neutral Mode Switch Input";
 CM_ SG_ 250 ReverseMode "Reverse Mode Switch Input";
 CM_ SG_ 250 external5V "external 5V Rail Voltage ";
+CM_ SG_ 250 IPCTestState "Test Statemachine Status";
+CM_ SG_ 250 IPCTestEnabled "Flag for Check if Test Mode is enabled";
+CM_ SG_ 250 FanEnabled "Flag to check if Fan control is enabled";
+CM_ SG_ 250 FanTachGood "Flag to check if fan is acutally spinning.";
+CM_ SG_ 250 FanFault "Flag to check if fan control has fault";
+CM_ SG_ 250 InverterTemperature "Inverter Module Temperature";
+CM_ SG_ 250 RectifierTemperature "Rectifier Module Temperature";
+CM_ SG_ 250 MotorTemperature "Motor Temperature";
 CM_ SG_ 3221225472 PhaseWCurrentFSR "Full Scale Reading of Phase W Current Sensor";
 CM_ SG_ 3221225472 PhaseVCurrentFSR "Full Scale Reading of Phase V Current Sensor";
 CM_ SG_ 3221225472 DCBusVoltageFSR "Full Scale Reading of DC Bus Voltage Sensor";
@@ -192,6 +212,8 @@ VAL_ 256 MUX_Enabled 0 "Disabled" 1 "Enabled" ;
 VAL_ 272 MessageType 16 "CMD_SetRelay" 17 "CMD_SetMUX" 18 "CMD_SetDAC" 19 "CMD_Req_IPC_Data" ;
 VAL_ 272 MUX_Enable 0 "Disable" 1 "Enable" ;
 VAL_ 272 RequestIPCData 111 "AnalogParams1" 112 "AnalogParams2" 113 "AnalogParams3" 114 "AnalogParams4" ;
+VAL_ 272 Fan_Ctrl 0 "Disable" 1 "Enable" ;
+VAL_ 272 Ext_5V_Ctrl 0 "Disable" 1 "Enable" ;
 VAL_ 250 MessageType 100 "DigSig1" 101 "AnalogValues1" 102 "AnalogValues2" 103 "AnalogValues3" 104 "AnalogValues4" 111 "AnalogParams1" 112 "AnalogParams2" 113 "AnalogParams3" 114 "AnalogParams4" ;
 VAL_ 250 KeySwitchIndicator 0 "Off" 1 "On" ;
 VAL_ 250 ForwardMode 0 "Off" 1 "On" ;
@@ -199,4 +221,9 @@ VAL_ 250 BoostMode 0 "Off" 1 "On" ;
 VAL_ 250 GradientMode 0 "Off" 1 "On" ;
 VAL_ 250 NeutralMode 0 "Off" 1 "On" ;
 VAL_ 250 ReverseMode 0 "Off" 1 "On" ;
+VAL_ 250 IPCTestState 0 "TEST_MODE_DISABLED" 1 "TEST_INIT" 2 "TEST_MCTRL" 3 "TEST_MCTRL_RUNNING" 4 "TEST_PSFB" 5 "TEST_PSFB_RUNNING" 6 "TEST_STOP" ;
+VAL_ 250 IPCTestEnabled 0 "FALSE" 1 "TRUE" ;
+VAL_ 250 FanEnabled 0 "FALSE" 1 "TRUE" ;
+VAL_ 250 FanTachGood 0 "FALSE" 1 "TRUE" ;
+VAL_ 250 FanFault 0 "FALSE" 1 "TRUE" ;
 
