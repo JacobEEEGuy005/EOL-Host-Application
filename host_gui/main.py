@@ -33,7 +33,7 @@ import base64
 import re
 import struct
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any, List, Union
+from typing import Optional, Tuple, Dict, Any, List, Union, Callable
 from html import escape
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -256,25 +256,91 @@ class TestRunner:
     - Analog tests: Stepping DAC voltages and monitoring feedback signals
     - Phase Current Calibration: State machine-based oscilloscope and CAN data collection
     
-    The TestRunner is designed to be called from the GUI's main thread,
-    but can be moved to a background thread for non-blocking execution
-    in future refactoring.
+    The TestRunner can be initialized with either:
+    1. A GUI instance (legacy mode - services extracted from GUI)
+    2. Services and callbacks directly (new decoupled mode)
     
     Attributes:
-        gui: Reference to the BaseGUI instance for UI updates and frame sending
+        gui: Optional reference to BaseGUI instance (for backward compatibility)
+        can_service: CanService instance
+        dbc_service: DbcService instance
+        signal_service: SignalService instance
+        oscilloscope_service: Optional oscilloscope service
+        eol_hw_config: Optional EOL hardware configuration
+        plot_update_callback: Optional callback for plot updates
+        plot_clear_callback: Optional callback to clear plots
+        label_update_callback: Optional callback to update UI labels
+        oscilloscope_init_callback: Optional callback to initialize oscilloscope
     """
     
-    def __init__(self, gui: 'BaseGUI'):
-        """Initialize the TestRunner with a reference to the GUI.
+    def __init__(
+        self,
+        gui: Optional['BaseGUI'] = None,
+        can_service: Optional[Any] = None,
+        dbc_service: Optional[Any] = None,
+        signal_service: Optional[Any] = None,
+        oscilloscope_service: Optional[Any] = None,
+        eol_hw_config: Optional[Dict[str, Any]] = None,
+        plot_update_callback: Optional[Callable[[float, float, Optional[str]], None]] = None,
+        plot_clear_callback: Optional[Callable[[], None]] = None,
+        label_update_callback: Optional[Callable[[str], None]] = None,
+        oscilloscope_init_callback: Optional[Callable[[Dict[str, Any]], bool]] = None
+    ):
+        """Initialize the TestRunner.
         
         Args:
-            gui: BaseGUI instance for sending frames and updating UI
+            gui: Optional BaseGUI instance (for backward compatibility)
+            can_service: Optional CanService instance (if not provided, extracted from GUI)
+            dbc_service: Optional DbcService instance (if not provided, extracted from GUI)
+            signal_service: Optional SignalService instance (if not provided, extracted from GUI)
+            oscilloscope_service: Optional oscilloscope service
+            eol_hw_config: Optional EOL hardware configuration dictionary
+            plot_update_callback: Optional callback for plot updates (dac_voltage, feedback_value, test_name)
+            plot_clear_callback: Optional callback to clear plots
+            label_update_callback: Optional callback to update UI labels (text)
+            oscilloscope_init_callback: Optional callback to initialize oscilloscope (test) -> bool
         """
         self.gui = gui
-        # Phase 1: Access services through GUI
-        self.can_service = getattr(gui, 'can_service', None)
-        self.dbc_service = getattr(gui, 'dbc_service', None)
-        self.signal_service = getattr(gui, 'signal_service', None)
+        
+        # Extract services from GUI if not provided directly (backward compatibility)
+        if gui is not None:
+            self.can_service = can_service or getattr(gui, 'can_service', None)
+            self.dbc_service = dbc_service or getattr(gui, 'dbc_service', None)
+            self.signal_service = signal_service or getattr(gui, 'signal_service', None)
+            self.oscilloscope_service = oscilloscope_service or getattr(gui, 'oscilloscope_service', None)
+            self.eol_hw_config = eol_hw_config or getattr(gui, '_eol_hw_config', None)
+            
+            # Create callbacks from GUI methods if not provided
+            if plot_update_callback is None and hasattr(gui, '_update_plot'):
+                self.plot_update_callback = lambda dac, fb, name: gui._update_plot(dac, fb, name)
+            else:
+                self.plot_update_callback = plot_update_callback
+            
+            if plot_clear_callback is None and hasattr(gui, '_clear_plot'):
+                self.plot_clear_callback = lambda: gui._clear_plot()
+            else:
+                self.plot_clear_callback = plot_clear_callback
+            
+            if label_update_callback is None and hasattr(gui, 'current_signal_label'):
+                self.label_update_callback = lambda text: gui.current_signal_label.setText(str(text))
+            else:
+                self.label_update_callback = label_update_callback
+            
+            if oscilloscope_init_callback is None and hasattr(gui, '_initialize_oscilloscope_for_test'):
+                self.oscilloscope_init_callback = lambda test: gui._initialize_oscilloscope_for_test(test)
+            else:
+                self.oscilloscope_init_callback = oscilloscope_init_callback
+        else:
+            # Direct service injection mode (fully decoupled)
+            self.can_service = can_service
+            self.dbc_service = dbc_service
+            self.signal_service = signal_service
+            self.oscilloscope_service = oscilloscope_service
+            self.eol_hw_config = eol_hw_config or {}
+            self.plot_update_callback = plot_update_callback
+            self.plot_clear_callback = plot_clear_callback
+            self.label_update_callback = label_update_callback
+            self.oscilloscope_init_callback = oscilloscope_init_callback
 
     def run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Execute a single test using the same behavior as the previous
@@ -287,8 +353,7 @@ class TestRunner:
         Returns:
             Tuple of (success: bool, info: str)
         """
-        gui = self.gui
-        # ensure adapter running - check CanService
+        # Ensure adapter running - check CanService
         adapter_available = (self.can_service is not None and self.can_service.is_connected())
         if not adapter_available:
             logger.error("Attempted to run test without adapter running")
@@ -297,25 +362,35 @@ class TestRunner:
         
         # Initialize oscilloscope before phase current tests
         if act.get('type') == 'phase_current_calibration':
-            if gui.oscilloscope_service:
-                osc_init_success = gui._initialize_oscilloscope_for_test(test)
+            if self.oscilloscope_service and self.oscilloscope_init_callback:
+                osc_init_success = self.oscilloscope_init_callback(test)
                 if not osc_init_success:
                     logger.warning("Oscilloscope initialization failed, continuing test anyway")
             
             # Execute phase current test using state machine
+            # Note: PhaseCurrentTestStateMachine still needs GUI reference for plot updates
+            # This is a limitation that should be addressed in future refactoring
             try:
-                state_machine = PhaseCurrentTestStateMachine(gui, test)
+                # Use GUI if available, otherwise create a proxy
+                gui_for_state_machine = self.gui
+                if gui_for_state_machine is None:
+                    # Create minimal proxy for PhaseCurrentTestStateMachine
+                    # This is temporary until PhaseCurrentTestStateMachine is fully decoupled
+                    gui_for_state_machine = self._create_gui_proxy()
                 
-                # Store state machine reference for potential future use
-                gui._phase_current_state_machine = state_machine
+                state_machine = PhaseCurrentTestStateMachine(gui_for_state_machine, test)
+                
+                # Store state machine reference if GUI is available
+                if self.gui is not None:
+                    self.gui._phase_current_state_machine = state_machine
                 
                 try:
                     success, info = state_machine.run()
                     return success, info
                 finally:
                     # Clean up state machine reference
-                    if hasattr(gui, '_phase_current_state_machine'):
-                        delattr(gui, '_phase_current_state_machine')
+                    if self.gui is not None and hasattr(self.gui, '_phase_current_state_machine'):
+                        delattr(self.gui, '_phase_current_state_machine')
             except Exception as e:
                 logger.error(f"Phase current test execution failed: {e}", exc_info=True)
                 return False, f"Phase current test error: {e}"
@@ -351,12 +426,12 @@ class TestRunner:
                 def _encode_value_to_bytes(v):
                     # Try DBC encoding if available and signal specified
                     # Phase 1: Use DbcService if available
-                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
                     if dbc_available and sig:
                         if self.dbc_service is not None:
                             msg = self.dbc_service.find_message_by_id(can_id)
                         else:
-                            msg = gui._find_message_by_id(can_id)
+                            msg = None
                         if msg is not None:
                             try:
                                 vv = v
@@ -395,16 +470,16 @@ class TestRunner:
                         class F: pass
                         f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                     try:
-                        if gui.can_service is not None and gui.can_service.is_connected():
-                            gui.can_service.send_frame(f)
-                    except Exception:
-                        pass
+                        if self.can_service is not None and self.can_service.is_connected():
+                            self.can_service.send_frame(f)
+                    except Exception as e:
+                        logger.debug(f"Failed to send frame: {e}")
                     # Loopback handled by adapter if supported
-                    if gui.can_service is not None and gui.can_service.is_connected() and hasattr(gui.can_service.adapter, 'loopback'):
+                    if self.can_service is not None and self.can_service.is_connected() and hasattr(self.can_service.adapter, 'loopback'):
                         try:
-                            gui.can_service.adapter.loopback(f)
-                        except Exception:
-                            pass
+                            self.can_service.adapter.loopback(f)
+                        except Exception as e:
+                            logger.debug(f"Loopback not supported or failed: {e}")
 
                 ok = False
                 info = ''
@@ -447,20 +522,26 @@ class TestRunner:
                                     # Phase 1: Use SignalService if available
                                     if self.signal_service is not None:
                                         ts, val = self.signal_service.get_latest_signal(fb_mid, fb)
+                                    elif self.gui is not None:
+                                        ts, val = self.gui.get_latest_signal(fb_mid, fb)
                                     else:
-                                        ts, val = gui.get_latest_signal(fb_mid, fb)
+                                        ts, val = (None, None)
                                 else:
-                                    candidates = []
-                                    for k, (t, v) in gui._signal_values.items():
-                                        try:
-                                            _cid, sname = k.split(':', 1)
-                                        except Exception:
-                                            continue
-                                        if sname == fb:
-                                            candidates.append((t, v))
-                                    if candidates:
-                                        candidates.sort(key=lambda x: x[0], reverse=True)
-                                        ts, val = candidates[0]
+                                    # Legacy: search signal cache (deprecated - should use signal_service)
+                                    if self.gui is not None and hasattr(self.gui, '_signal_values'):
+                                        candidates = []
+                                        for k, (t, v) in self.gui._signal_values.items():
+                                            try:
+                                                _cid, sname = k.split(':', 1)
+                                            except Exception:
+                                                continue
+                                            if sname == fb:
+                                                candidates.append((t, v))
+                                        if candidates:
+                                            candidates.sort(key=lambda x: x[0], reverse=True)
+                                            ts, val = candidates[0]
+                                        else:
+                                            ts, val = (None, None)
                                     else:
                                         ts, val = (None, None)
                             else:
@@ -752,15 +833,28 @@ class TestRunner:
                         # Collect feedback data points on every loop iteration during collection period
                         if fb_signal and fb_msg_id:
                             try:
-                                ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                # Use signal_service if available, otherwise fallback to GUI
+                                if self.signal_service is not None:
+                                    ts, fb_val = self.signal_service.get_latest_signal(fb_msg_id, fb_signal)
+                                elif self.gui is not None:
+                                    ts, fb_val = self.gui.get_latest_signal(fb_msg_id, fb_signal)
+                                else:
+                                    ts, fb_val = (None, None)
+                                
                                 if fb_val is not None:
                                     # Get measured DAC voltage from EOL configuration
                                     measured_dac_voltage = dac_voltage  # Default to commanded value
-                                    if hasattr(gui, '_eol_hw_config') and gui._eol_hw_config.get('feedback_message_id'):
+                                    if self.eol_hw_config and self.eol_hw_config.get('feedback_message_id'):
                                         try:
-                                            eol_msg_id = gui._eol_hw_config['feedback_message_id']
-                                            eol_signal_name = gui._eol_hw_config['measured_dac_signal']
-                                            ts_measured, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            eol_msg_id = self.eol_hw_config['feedback_message_id']
+                                            eol_signal_name = self.eol_hw_config['measured_dac_signal']
+                                            if self.signal_service is not None:
+                                                ts_measured, measured_val = self.signal_service.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            elif self.gui is not None:
+                                                ts_measured, measured_val = self.gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            else:
+                                                ts_measured, measured_val = (None, None)
+                                            
                                             if measured_val is not None:
                                                 measured_dac_voltage = float(measured_val)
                                                 logger.debug(
@@ -786,7 +880,8 @@ class TestRunner:
                                             f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
                                             f"Feedback={fb_val} (no timestamp available)"
                                         )
-                                        gui._update_plot(measured_dac_voltage, fb_val, test_name)
+                                        if self.plot_update_callback:
+                                            self.plot_update_callback(measured_dac_voltage, fb_val, test_name)
                                         data_points_collected += 1
                                     elif ts >= (dac_command_timestamp - TIMESTAMP_TOLERANCE_SEC):
                                         # This feedback value is fresh enough (within tolerance window)
@@ -795,7 +890,8 @@ class TestRunner:
                                             f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
                                             f"Feedback={fb_val}, timestamp_age={(time.time() - ts)*1000:.1f}ms"
                                         )
-                                        gui._update_plot(measured_dac_voltage, fb_val, test_name)
+                                        if self.plot_update_callback:
+                                            self.plot_update_callback(measured_dac_voltage, fb_val, test_name)
                                         data_points_collected += 1
                                     else:
                                         # Stale feedback value - skip it (logged at debug level only if significant)
@@ -854,12 +950,12 @@ class TestRunner:
                     mux_value = None
                     data_bytes = b''
                     # Phase 1: Use DbcService if available
-                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
                     if dbc_available:
                         if self.dbc_service is not None:
                             target_msg = self.dbc_service.find_message_by_id(can_id)
                         else:
-                            target_msg = gui._find_message_by_id(can_id)
+                            target_msg = None
                     else:
                         target_msg = None
                     
@@ -933,14 +1029,15 @@ class TestRunner:
                             data_bytes = b''
 
                     # Update real-time monitoring: when commanding the DAC, show the commanded value
-                    try:
-                        if dac_cmd_sig and dac_cmd_sig in signals:
-                            gui.current_signal_label.setText(str(signals[dac_cmd_sig]))
-                        elif len(signals) == 1:
-                            # if a single signal is being sent, show its value
-                            gui.current_signal_label.setText(str(list(signals.values())[0]))
-                    except Exception:
-                        pass
+                    if self.label_update_callback:
+                        try:
+                            if dac_cmd_sig and dac_cmd_sig in signals:
+                                self.label_update_callback(str(signals[dac_cmd_sig]))
+                            elif len(signals) == 1:
+                                # if a single signal is being sent, show its value
+                                self.label_update_callback(str(list(signals.values())[0]))
+                        except Exception as e:
+                            logger.debug(f"Failed to update label: {e}")
 
                     # Phase 1: Use CanService if available
                     if self.can_service is not None and self.can_service.is_connected():
@@ -977,16 +1074,17 @@ class TestRunner:
                 test_name = test.get('name', 'Analog Test')
                 
                 # Clear plot before starting new analog test
-                try:
-                    gui._clear_plot()
-                except Exception:
-                    pass
+                if self.plot_clear_callback:
+                    try:
+                        self.plot_clear_callback()
+                    except Exception as e:
+                        logger.debug(f"Failed to clear plot: {e}")
                 
                 # Clear signal cache before starting analog test to ensure fresh timestamps
                 # This prevents stale cached feedback values from previous tests from being used
                 try:
-                    if gui.signal_service is not None:
-                        gui.signal_service.clear_cache()
+                    if self.signal_service is not None:
+                        self.signal_service.clear_cache()
                         logger.debug("Cleared signal cache before starting analog test")
                 except Exception as e:
                     logger.debug(f"Failed to clear signal cache before analog test: {e}")
@@ -1034,20 +1132,33 @@ class TestRunner:
                         _nb_sleep(float(dwell_ms) / 1000.0)
                         if fb_signal and fb_msg_id:
                             try:
-                                ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                if self.signal_service is not None:
+                                    ts, fb_val = self.signal_service.get_latest_signal(fb_msg_id, fb_signal)
+                                elif self.gui is not None:
+                                    ts, fb_val = self.gui.get_latest_signal(fb_msg_id, fb_signal)
+                                else:
+                                    ts, fb_val = (None, None)
+                                
                                 if fb_val is not None:
                                     # Get measured DAC voltage if configured
                                     measured_dac = dac_min
-                                    if hasattr(gui, '_eol_hw_config') and gui._eol_hw_config.get('feedback_message_id'):
+                                    if self.eol_hw_config and self.eol_hw_config.get('feedback_message_id'):
                                         try:
-                                            eol_msg_id = gui._eol_hw_config['feedback_message_id']
-                                            eol_signal_name = gui._eol_hw_config['measured_dac_signal']
-                                            _, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            eol_msg_id = self.eol_hw_config['feedback_message_id']
+                                            eol_signal_name = self.eol_hw_config['measured_dac_signal']
+                                            if self.signal_service is not None:
+                                                _, measured_val = self.signal_service.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            elif self.gui is not None:
+                                                _, measured_val = self.gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                            else:
+                                                _, measured_val = (None, None)
+                                            
                                             if measured_val is not None:
                                                 measured_dac = float(measured_val)
                                         except Exception as e:
                                             logger.debug(f"Failed to get signal value during analog test: {e}")
-                                    gui._update_plot(measured_dac, fb_val, test_name)
+                                    if self.plot_update_callback:
+                                        self.plot_update_callback(measured_dac, fb_val, test_name)
                             except Exception as e:
                                 logger.debug(f"Error updating plot during analog test: {e}", exc_info=True)
                     
@@ -1064,20 +1175,33 @@ class TestRunner:
                             _nb_sleep(float(dwell_ms) / 1000.0)
                             if fb_signal and fb_msg_id:
                                 try:
-                                    ts, fb_val = gui.get_latest_signal(fb_msg_id, fb_signal)
+                                    if self.signal_service is not None:
+                                        ts, fb_val = self.signal_service.get_latest_signal(fb_msg_id, fb_signal)
+                                    elif self.gui is not None:
+                                        ts, fb_val = self.gui.get_latest_signal(fb_msg_id, fb_signal)
+                                    else:
+                                        ts, fb_val = (None, None)
+                                    
                                     if fb_val is not None:
                                         # Get measured DAC voltage if configured
                                         measured_dac = cur
-                                        if hasattr(gui, '_eol_hw_config') and gui._eol_hw_config.get('feedback_message_id'):
+                                        if self.eol_hw_config and self.eol_hw_config.get('feedback_message_id'):
                                             try:
-                                                eol_msg_id = gui._eol_hw_config['feedback_message_id']
-                                                eol_signal_name = gui._eol_hw_config['measured_dac_signal']
-                                                _, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                                eol_msg_id = self.eol_hw_config['feedback_message_id']
+                                                eol_signal_name = self.eol_hw_config['measured_dac_signal']
+                                                if self.signal_service is not None:
+                                                    _, measured_val = self.signal_service.get_latest_signal(eol_msg_id, eol_signal_name)
+                                                elif self.gui is not None:
+                                                    _, measured_val = self.gui.get_latest_signal(eol_msg_id, eol_signal_name)
+                                                else:
+                                                    _, measured_val = (None, None)
+                                                
                                                 if measured_val is not None:
                                                     measured_dac = float(measured_val)
                                             except Exception as e:
                                                 logger.debug(f"Failed to get signal value during analog test ramp: {e}")
-                                        gui._update_plot(measured_dac, fb_val, test_name)
+                                        if self.plot_update_callback:
+                                            self.plot_update_callback(measured_dac, fb_val, test_name)
                                 except Exception as e:
                                     logger.debug(f"Error updating plot during analog test ramp: {e}", exc_info=True)
                     success = True
@@ -1108,17 +1232,17 @@ class TestRunner:
                 if test.get('type') == 'analog':
                     test_name = test.get('name', '<unnamed>')
                     try:
-                        if hasattr(gui, 'plot_dac_voltages') and hasattr(gui, 'plot_feedback_values'):
-                            if gui.plot_dac_voltages and gui.plot_feedback_values:
+                        if self.gui is not None and hasattr(self.gui, 'plot_dac_voltages') and hasattr(self.gui, 'plot_feedback_values'):
+                            if self.gui.plot_dac_voltages and self.gui.plot_feedback_values:
                                 plot_data = {
-                                    'dac_voltages': list(gui.plot_dac_voltages),
-                                    'feedback_values': list(gui.plot_feedback_values)
+                                    'dac_voltages': list(self.gui.plot_dac_voltages),
+                                    'feedback_values': list(self.gui.plot_feedback_values)
                                 }
                                 # Store plot data immediately in execution data (will be merged with other data later)
                                 # Use a temporary key structure that _on_test_finished can access
-                                if not hasattr(gui, '_test_plot_data_temp'):
-                                    gui._test_plot_data_temp = {}
-                                gui._test_plot_data_temp[test_name] = plot_data
+                                if not hasattr(self.gui, '_test_plot_data_temp'):
+                                    self.gui._test_plot_data_temp = {}
+                                self.gui._test_plot_data_temp[test_name] = plot_data
                                 logger.debug(f"Captured and stored plot data for {test_name}: {len(plot_data['dac_voltages'])} points")
                     except Exception as e:
                         logger.debug(f"Failed to capture plot data for {test_name}: {e}", exc_info=True)
@@ -1185,7 +1309,13 @@ class TestRunner:
                 while time.time() < end_time:
                     # Read feedback signal
                     try:
-                        ts_fb, fb_val = gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        if self.signal_service is not None:
+                            ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                        elif self.gui is not None:
+                            ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        else:
+                            ts_fb, fb_val = (None, None)
+                        
                         if fb_val is not None:
                             try:
                                 feedback_values.append(float(fb_val))
@@ -1196,7 +1326,13 @@ class TestRunner:
                     
                     # Read EOL signal
                     try:
-                        ts_eol, eol_val = gui.get_latest_signal(eol_msg_id, eol_signal)
+                        if self.signal_service is not None:
+                            ts_eol, eol_val = self.signal_service.get_latest_signal(eol_msg_id, eol_signal)
+                        elif self.gui is not None:
+                            ts_eol, eol_val = self.gui.get_latest_signal(eol_msg_id, eol_signal)
+                        else:
+                            ts_eol, eol_val = (None, None)
+                        
                         if eol_val is not None:
                             try:
                                 eol_values.append(float(eol_val))
@@ -1247,9 +1383,10 @@ class TestRunner:
                 }
                 
                 # Store in temporary storage for retrieval by _on_test_finished
-                if not hasattr(gui, '_test_result_data_temp'):
-                    gui._test_result_data_temp = {}
-                gui._test_result_data_temp[test_name] = result_data
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
                 
                 logger.info(f"Analog Static Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
@@ -1267,11 +1404,16 @@ class TestRunner:
             waited += poll_interval
             fb = test.get('feedback_signal')
             try:
-                rows = gui.frame_table.rowCount()
+                # Legacy: Access frame table directly if GUI is available
+                # This should be refactored to use a callback or service method in the future
+                if self.gui is None or not hasattr(self.gui, 'frame_table'):
+                    continue
+                
+                rows = self.gui.frame_table.rowCount()
                 for r in range(max(0, rows-10), rows):
                     try:
-                        can_id_item = gui.frame_table.item(r,1)
-                        data_item = gui.frame_table.item(r,3)
+                        can_id_item = self.gui.frame_table.item(r,1)
+                        data_item = self.gui.frame_table.item(r,3)
                         if can_id_item is None or data_item is None:
                             continue
                         try:
@@ -1284,7 +1426,7 @@ class TestRunner:
                         raw_hex = data_item.text()
                         raw = bytes.fromhex(raw_hex) if raw_hex else b''
                         # Phase 1: Use services if available
-                        dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
+                        dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
                         if dbc_available and fb:
                             if self.dbc_service is not None:
                                 target_msg, target_sig = self.dbc_service.find_message_and_signal(row_can, fb)
@@ -1308,6 +1450,48 @@ class TestRunner:
                 logger.warning(f"Error processing manual CAN frame send: {e}", exc_info=True)
 
         return False, observed_info
+    
+    def _create_gui_proxy(self) -> Any:
+        """Create a minimal GUI proxy object for PhaseCurrentTestStateMachine.
+        
+        This is a temporary solution until PhaseCurrentTestStateMachine is fully decoupled.
+        The proxy provides the minimal interface needed by PhaseCurrentTestStateMachine.
+        
+        Returns:
+            Proxy object with services and callbacks
+        """
+        class GUIProxy:
+            def __init__(self, runner: 'TestRunner'):
+                self.runner = runner
+                self.oscilloscope_service = runner.oscilloscope_service
+                self.can_service = runner.can_service
+                self.dbc_service = runner.dbc_service
+                self.signal_service = runner.signal_service
+                self._oscilloscope_config = getattr(runner, '_oscilloscope_config', None)
+                self._test_plot_data_temp = {}
+                self.plot_canvas = None
+                self.plot_figure = None
+                self.plot_axes = None
+                self.plot_axes_v = None
+                self.plot_axes_w = None
+                self.plot_line_v = None
+                self.plot_line_w = None
+            
+            def processEvents(self):
+                """Process Qt events if available."""
+                try:
+                    from PySide6 import QtCore
+                    QtCore.QCoreApplication.processEvents()
+                except Exception:
+                    pass
+            
+            def get_latest_signal(self, can_id: int, signal_name: str) -> Tuple[Optional[float], Optional[Any]]:
+                """Get latest signal value."""
+                if self.runner.signal_service:
+                    return self.runner.signal_service.get_latest_signal(can_id, signal_name)
+                return None, None
+        
+        return GUIProxy(self)
 
 
 class BaseGUI(QtWidgets.QMainWindow):
