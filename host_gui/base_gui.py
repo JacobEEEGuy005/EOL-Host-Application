@@ -1212,6 +1212,17 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Pre-dwell: {act['pre_dwell_time_ms']} ms")
             if act.get('dwell_time_ms') is not None:
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
+        elif test_type == 'Temperature Validation Test':
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_signal'):
+                params.append(f"Feedback Signal: {act['feedback_signal']}")
+            if act.get('reference_temperature_c') is not None:
+                params.append(f"Reference: {act['reference_temperature_c']:.2f} °C")
+            if act.get('tolerance_c') is not None:
+                params.append(f"Tolerance: {act['tolerance_c']:.2f} °C")
+            if act.get('dwell_time_ms') is not None:
+                params.append(f"Dwell: {act['dwell_time_ms']} ms")
         
         return ', '.join(params) if params else 'None'
     
@@ -2029,7 +2040,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -2133,6 +2144,8 @@ Data Points Used: {data_points}"""
                     continue
                 elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
                     continue
+                elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
+                    continue
             
             test_items.append((test_name, test_config, exec_data))
         
@@ -2155,6 +2168,8 @@ Data Points Used: {data_points}"""
                         elif type_filter == 'Analog Static Test' and test_type != 'Analog Static Test':
                             continue
                         elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
+                            continue
+                        elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                             continue
                     
                     test_items.append((test_name, test, {'status': 'Not Run', 'test_type': test_type}))
@@ -5307,11 +5322,10 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'])
         feedback_edit = QtWidgets.QLineEdit()
-        # actuation fields container
-        act_widget = QtWidgets.QWidget()
-        act_layout = QtWidgets.QFormLayout(act_widget)
+        # actuation fields container - use QStackedWidget to show only relevant fields
+        act_stacked = QtWidgets.QStackedWidget()
         # separate digital, analog, phase_current_calibration, and analog_static sub-widgets so we can show/hide based on type
         digital_widget = QtWidgets.QWidget()
         digital_layout = QtWidgets.QFormLayout(digital_widget)
@@ -5321,8 +5335,21 @@ Data Points Used: {data_points}"""
         phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
         analog_static_widget = QtWidgets.QWidget()
         analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
+        temperature_validation_widget = QtWidgets.QWidget()
+        temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
         
         # Initialize analog_static variables to None (will be set in if/else blocks)
+        # Initialize temperature_validation variables to None (will be set in if/else blocks)
+        temp_val_fb_msg_combo = None
+        temp_val_fb_signal_combo = None
+        temp_val_reference_edit = None
+        temp_val_tolerance_edit = None
+        temp_val_dwell_time_edit = None
+        temp_val_fb_msg_edit = None
+        temp_val_fb_signal_edit = None
+        temp_val_reference_edit_fallback = None
+        temp_val_tolerance_edit_fallback = None
+        temp_val_dwell_time_edit_fallback = None
         analog_static_fb_msg_combo = None
         analog_static_fb_signal_combo = None
         analog_static_eol_msg_combo = None
@@ -5649,6 +5676,57 @@ Data Points Used: {data_points}"""
             analog_static_layout.addRow('Tolerance (mV):', tolerance_edit)
             analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit)
             analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit)
+            
+            # Temperature Validation Test fields (DBC mode)
+            # Feedback Signal Source: dropdown of CAN Messages
+            temp_val_fb_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                temp_val_fb_msg_combo.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            temp_val_fb_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_temp_val_fb_signals(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                temp_val_fb_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    temp_val_fb_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_temp_val_fb_signals(0)
+            temp_val_fb_msg_combo.currentIndexChanged.connect(_update_temp_val_fb_signals)
+            
+            # Reference temperature input (float, in °C)
+            reference_validator = QtGui.QDoubleValidator(-273.15, 1000.0, 2, self)
+            reference_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_reference_edit = QtWidgets.QLineEdit()
+            temp_val_reference_edit.setValidator(reference_validator)
+            temp_val_reference_edit.setPlaceholderText('e.g., 25.0')
+            
+            # Tolerance input (float, in °C)
+            temp_tolerance_validator = QtGui.QDoubleValidator(0.0, 1000.0, 2, self)
+            temp_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_tolerance_edit = QtWidgets.QLineEdit()
+            temp_val_tolerance_edit.setValidator(temp_tolerance_validator)
+            temp_val_tolerance_edit.setPlaceholderText('e.g., 2.0')
+            
+            # Dwell time input (int, in ms)
+            temp_dwell_time_validator = QtGui.QIntValidator(1, 60000, self)
+            temp_val_dwell_time_edit = QtWidgets.QLineEdit()
+            temp_val_dwell_time_edit.setValidator(temp_dwell_time_validator)
+            temp_val_dwell_time_edit.setPlaceholderText('e.g., 1000')
+            
+            # Populate temperature validation sub-widget
+            temperature_validation_layout.addRow('Feedback Signal Source:', temp_val_fb_msg_combo)
+            temperature_validation_layout.addRow('Feedback Signal:', temp_val_fb_signal_combo)
+            temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit)
+            temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit)
+            temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -5780,6 +5858,37 @@ Data Points Used: {data_points}"""
             analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit_fallback)
             analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit_fallback)
             
+            # Temperature Validation Test fields (fallback when no DBC)
+            temp_val_fb_msg_edit = QtWidgets.QLineEdit()
+            temp_val_fb_signal_edit = QtWidgets.QLineEdit()
+            
+            # Reference temperature input (float, in °C)
+            reference_validator_fallback = QtGui.QDoubleValidator(-273.15, 1000.0, 2, self)
+            reference_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_reference_edit_fallback = QtWidgets.QLineEdit()
+            temp_val_reference_edit_fallback.setValidator(reference_validator_fallback)
+            temp_val_reference_edit_fallback.setPlaceholderText('e.g., 25.0')
+            
+            # Tolerance input (float, in °C)
+            temp_tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 1000.0, 2, self)
+            temp_tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_tolerance_edit_fallback = QtWidgets.QLineEdit()
+            temp_val_tolerance_edit_fallback.setValidator(temp_tolerance_validator_fallback)
+            temp_val_tolerance_edit_fallback.setPlaceholderText('e.g., 2.0')
+            
+            # Dwell time input (int, in ms)
+            temp_dwell_time_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            temp_val_dwell_time_edit_fallback = QtWidgets.QLineEdit()
+            temp_val_dwell_time_edit_fallback.setValidator(temp_dwell_time_validator_fallback)
+            temp_val_dwell_time_edit_fallback.setPlaceholderText('e.g., 1000')
+            
+            # Populate temperature validation sub-widget (fallback)
+            temperature_validation_layout.addRow('Feedback Signal Source (CAN ID):', temp_val_fb_msg_edit)
+            temperature_validation_layout.addRow('Feedback Signal:', temp_val_fb_signal_edit)
+            temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit_fallback)
+            temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback)
+            temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback)
+            
             phase_current_layout.addRow('Command Message (CAN ID):', phase_current_cmd_msg_edit)
             phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_edit)
             phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_edit)
@@ -5836,21 +5945,26 @@ Data Points Used: {data_points}"""
             fb_signal_label = None
             fb_signal_field = None
         v.addLayout(form)
-        # add sub-widgets to container and show only the appropriate one
-        act_layout.addRow('Digital:', digital_widget)
-        act_layout.addRow('Analog:', analog_widget)
-        act_layout.addRow('Phase Current Calibration:', phase_current_widget)
-        act_layout.addRow('Analog Static:', analog_static_widget)
-        v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
-        v.addWidget(act_widget)
+        # add sub-widgets to stacked widget - each test type gets its own page
+        # Create mapping of test type to index
+        test_type_to_index = {}
+        test_type_to_index['Digital Logic Test'] = act_stacked.addWidget(digital_widget)
+        test_type_to_index['Analog Sweep Test'] = act_stacked.addWidget(analog_widget)
+        test_type_to_index['Phase Current Test'] = act_stacked.addWidget(phase_current_widget)
+        test_type_to_index['Analog Static Test'] = act_stacked.addWidget(analog_static_widget)
+        test_type_to_index['Temperature Validation Test'] = act_stacked.addWidget(temperature_validation_widget)
+        
+        v.addWidget(QtWidgets.QLabel('Test Configuration:'))
+        v.addWidget(act_stacked)
 
         def _on_type_change(txt: str):
             try:
-                if txt == 'Digital Logic Test':
-                    digital_widget.show()
-                    analog_widget.hide()
-                    phase_current_widget.hide()
-                    analog_static_widget.hide()
+                # Switch to the appropriate page in the stacked widget
+                if txt in test_type_to_index:
+                    act_stacked.setCurrentIndex(test_type_to_index[txt])
+                
+                # Handle feedback fields visibility based on test type
+                if txt in ('Digital Logic Test', 'Analog Sweep Test'):
                     # Show feedback fields for digital and analog
                     if fb_msg_label is not None:
                         fb_msg_label.show()
@@ -5860,40 +5974,8 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt == 'Analog Sweep Test':
-                    digital_widget.hide()
-                    analog_widget.show()
-                    phase_current_widget.hide()
-                    analog_static_widget.hide()
-                    # Show feedback fields for digital and analog
-                    if fb_msg_label is not None:
-                        fb_msg_label.show()
-                        fb_msg_combo.show()
-                        fb_signal_label.show()
-                        fb_signal_combo.show()
-                    elif feedback_edit_label is not None:
-                        feedback_edit_label.show()
-                        feedback_edit.show()
-                elif txt == 'Phase Current Test':
-                    digital_widget.hide()
-                    analog_widget.hide()
-                    phase_current_widget.show()
-                    analog_static_widget.hide()
-                    # Hide feedback fields for phase current calibration
-                    if fb_msg_label is not None:
-                        fb_msg_label.hide()
-                        fb_msg_combo.hide()
-                        fb_signal_label.hide()
-                        fb_signal_combo.hide()
-                    elif feedback_edit_label is not None:
-                        feedback_edit_label.hide()
-                        feedback_edit.hide()
-                elif txt == 'Analog Static Test':
-                    digital_widget.hide()
-                    analog_widget.hide()
-                    phase_current_widget.hide()
-                    analog_static_widget.show()
-                    # Hide feedback fields for analog_static (uses its own fields)
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'):
+                    # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
                         fb_msg_combo.hide()
@@ -6117,6 +6199,52 @@ Data Points Used: {data_points}"""
                         'pre_dwell_time_ms': pre_dwell_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Temperature Validation Test':
+                    # Temperature Validation Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = temp_val_fb_msg_combo.currentData()
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = temp_val_fb_signal_combo.currentText().strip() if temp_val_fb_signal_combo.count() else ''
+                    
+                    # Reference temperature (float)
+                    def _to_float_or_none_reference(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_temp_val = _to_float_or_none_reference(temp_val_reference_edit)
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_temp_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_c_val = _to_float_or_none_temp_tolerance(temp_val_tolerance_edit)
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dwell(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dwell(temp_val_dwell_time_edit)
+                    
+                    act = {
+                        'type': 'Temperature Validation Test',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'reference_temperature_c': reference_temp_val,
+                        'tolerance_c': tolerance_c_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -6299,6 +6427,52 @@ Data Points Used: {data_points}"""
                         'pre_dwell_time_ms': pre_dwell_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Temperature Validation Test':
+                    # Temperature Validation Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(temp_val_fb_msg_edit.text().strip(), 0) if temp_val_fb_msg_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = temp_val_fb_signal_edit.text().strip()
+                    
+                    # Reference temperature (float)
+                    def _to_float_or_none_reference_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_temp_val = _to_float_or_none_reference_fallback(temp_val_reference_edit_fallback)
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_temp_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_c_val = _to_float_or_none_temp_tolerance_fallback(temp_val_tolerance_edit_fallback)
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dwell_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dwell_fallback(temp_val_dwell_time_edit_fallback)
+                    
+                    act = {
+                        'type': 'Temperature Validation Test',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'reference_temperature_c': reference_temp_val,
+                        'tolerance_c': tolerance_c_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -6380,8 +6554,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', or 'Analog Static Test'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', or 'Temperature Validation Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -6435,6 +6609,22 @@ Data Points Used: {data_points}"""
                 return False, "Pre-dwell time must be non-negative"
             if actuation.get('dwell_time_ms') is None:
                 return False, "Analog Static test requires dwell time (ms)"
+            if actuation.get('dwell_time_ms', 0) <= 0:
+                return False, "Dwell time must be positive"
+        elif test_type == 'Temperature Validation Test':
+            # Validate required fields
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Temperature Validation test requires feedback signal source (CAN ID)"
+            if not actuation.get('feedback_signal'):
+                return False, "Temperature Validation test requires feedback signal name"
+            if actuation.get('reference_temperature_c') is None:
+                return False, "Temperature Validation test requires reference temperature (°C)"
+            if actuation.get('tolerance_c') is None:
+                return False, "Temperature Validation test requires tolerance (°C)"
+            if actuation.get('tolerance_c', 0) < 0:
+                return False, "Tolerance must be non-negative"
+            if actuation.get('dwell_time_ms') is None:
+                return False, "Temperature Validation test requires dwell time (ms)"
             if actuation.get('dwell_time_ms', 0) <= 0:
                 return False, "Dwell time must be positive"
         
@@ -6832,7 +7022,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -6884,11 +7074,12 @@ Data Points Used: {data_points}"""
             except Exception:
                 pass
 
-        # actuation sub-widgets (digital/analog/phase_current_calibration/analog_static)
+        # actuation sub-widgets (digital/analog/phase_current_calibration/analog_static/temperature_validation)
         digital_widget = QtWidgets.QWidget(); digital_layout = QtWidgets.QFormLayout(digital_widget)
         analog_widget = QtWidgets.QWidget(); analog_layout = QtWidgets.QFormLayout(analog_widget)
         phase_current_widget = QtWidgets.QWidget(); phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
         analog_static_widget = QtWidgets.QWidget(); analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
+        temperature_validation_widget = QtWidgets.QWidget(); temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
 
         # populate actuation controls from stored data
         act = data.get('actuation', {}) or {}
@@ -7280,6 +7471,72 @@ Data Points Used: {data_points}"""
             analog_static_layout.addRow('Tolerance (mV):', tolerance_edit_edit)
             analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit_edit)
             analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit_edit)
+            
+            # Temperature Validation Test fields (DBC mode) - for edit dialog
+            temp_val_fb_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                temp_val_fb_msg_combo_edit.addItem(label, fid)
+            
+            temp_val_fb_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_temp_val_fb_signals_edit(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                temp_val_fb_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    temp_val_fb_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_temp_val_fb_signals_edit(0)
+            temp_val_fb_msg_combo_edit.currentIndexChanged.connect(_update_temp_val_fb_signals_edit)
+            
+            # Reference temperature input (float, in °C)
+            reference_validator_edit = QtGui.QDoubleValidator(-273.15, 1000.0, 2, self)
+            reference_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_reference_edit_edit = QtWidgets.QLineEdit(str(act.get('reference_temperature_c', '')))
+            temp_val_reference_edit_edit.setValidator(reference_validator_edit)
+            temp_val_reference_edit_edit.setPlaceholderText('e.g., 25.0')
+            
+            # Tolerance input (float, in °C)
+            temp_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 1000.0, 2, self)
+            temp_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('tolerance_c', '')))
+            temp_val_tolerance_edit_edit.setValidator(temp_tolerance_validator_edit)
+            temp_val_tolerance_edit_edit.setPlaceholderText('e.g., 2.0')
+            
+            # Dwell time input (int, in ms)
+            temp_dwell_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            temp_val_dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            temp_val_dwell_time_edit_edit.setValidator(temp_dwell_time_validator_edit)
+            temp_val_dwell_time_edit_edit.setPlaceholderText('e.g., 1000')
+            
+            # Populate temperature validation fields from stored data
+            try:
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(temp_val_fb_msg_combo_edit.count()):
+                        if temp_val_fb_msg_combo_edit.itemData(i) == fb_msg_id:
+                            temp_val_fb_msg_combo_edit.setCurrentIndex(i)
+                            _update_temp_val_fb_signals_edit(i)
+                            break
+                if act.get('feedback_signal') and temp_val_fb_signal_combo_edit.count():
+                    try:
+                        temp_val_fb_signal_combo_edit.setCurrentText(str(act.get('feedback_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate temperature validation sub-widget
+            temperature_validation_layout.addRow('Feedback Signal Source:', temp_val_fb_msg_combo_edit)
+            temperature_validation_layout.addRow('Feedback Signal:', temp_val_fb_signal_combo_edit)
+            temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit_edit)
+            temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_edit)
+            temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -7422,6 +7679,37 @@ Data Points Used: {data_points}"""
             analog_static_layout.addRow('Tolerance (mV):', tolerance_edit_fallback_edit)
             analog_static_layout.addRow('Pre-dwell Time (ms):', pre_dwell_time_edit_fallback_edit)
             analog_static_layout.addRow('Dwell Time (ms):', dwell_time_edit_fallback_edit)
+            
+            # Temperature Validation Test fields (fallback when no DBC) - for edit dialog
+            temp_val_fb_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_signal_source', '')))
+            temp_val_fb_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_signal', '')))
+            
+            # Reference temperature input (float, in °C)
+            reference_validator_fallback_edit = QtGui.QDoubleValidator(-273.15, 1000.0, 2, self)
+            reference_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_reference_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('reference_temperature_c', '')))
+            temp_val_reference_edit_fallback_edit.setValidator(reference_validator_fallback_edit)
+            temp_val_reference_edit_fallback_edit.setPlaceholderText('e.g., 25.0')
+            
+            # Tolerance input (float, in °C)
+            temp_tolerance_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 1000.0, 2, self)
+            temp_tolerance_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            temp_val_tolerance_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('tolerance_c', '')))
+            temp_val_tolerance_edit_fallback_edit.setValidator(temp_tolerance_validator_fallback_edit)
+            temp_val_tolerance_edit_fallback_edit.setPlaceholderText('e.g., 2.0')
+            
+            # Dwell time input (int, in ms)
+            temp_dwell_time_validator_fallback_edit = QtGui.QIntValidator(1, 60000, self)
+            temp_val_dwell_time_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            temp_val_dwell_time_edit_fallback_edit.setValidator(temp_dwell_time_validator_fallback_edit)
+            temp_val_dwell_time_edit_fallback_edit.setPlaceholderText('e.g., 1000')
+            
+            # Populate temperature validation sub-widget (fallback)
+            temperature_validation_layout.addRow('Feedback Signal Source (CAN ID):', temp_val_fb_msg_edit_edit)
+            temperature_validation_layout.addRow('Feedback Signal:', temp_val_fb_signal_edit_edit)
+            temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit_fallback_edit)
+            temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback_edit)
+            temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback_edit)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -7439,21 +7727,27 @@ Data Points Used: {data_points}"""
             form.addRow(feedback_edit_label, feedback_edit)
 
         v.addLayout(form)
-        act_layout_parent = QtWidgets.QFormLayout(act_widget := QtWidgets.QWidget())
-        act_layout_parent.addRow('Digital:', digital_widget)
-        act_layout_parent.addRow('Analog:', analog_widget)
-        act_layout_parent.addRow('Phase Current Calibration:', phase_current_widget)
-        act_layout_parent.addRow('Analog Static:', analog_static_widget)
-        v.addWidget(QtWidgets.QLabel('Actuation mapping (fill appropriate fields):'))
-        v.addWidget(act_widget)
+        # Use QStackedWidget to show only relevant fields for selected test type
+        act_stacked_edit = QtWidgets.QStackedWidget()
+        # Create mapping of test type to index
+        test_type_to_index_edit = {}
+        test_type_to_index_edit['Digital Logic Test'] = act_stacked_edit.addWidget(digital_widget)
+        test_type_to_index_edit['Analog Sweep Test'] = act_stacked_edit.addWidget(analog_widget)
+        test_type_to_index_edit['Phase Current Test'] = act_stacked_edit.addWidget(phase_current_widget)
+        test_type_to_index_edit['Analog Static Test'] = act_stacked_edit.addWidget(analog_static_widget)
+        test_type_to_index_edit['Temperature Validation Test'] = act_stacked_edit.addWidget(temperature_validation_widget)
+        
+        v.addWidget(QtWidgets.QLabel('Test Configuration:'))
+        v.addWidget(act_stacked_edit)
 
         def _on_type_change_edit(txt: str):
             try:
-                if txt == 'Digital Logic Test':
-                    digital_widget.show()
-                    analog_widget.hide()
-                    phase_current_widget.hide()
-                    analog_static_widget.hide()
+                # Switch to the appropriate page in the stacked widget
+                if txt in test_type_to_index_edit:
+                    act_stacked_edit.setCurrentIndex(test_type_to_index_edit[txt])
+                
+                # Handle feedback fields visibility based on test type
+                if txt in ('Digital Logic Test', 'Analog Sweep Test'):
                     # Show feedback fields for digital and analog
                     if fb_msg_label is not None:
                         fb_msg_label.show()
@@ -7463,40 +7757,8 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt == 'Analog Sweep Test':
-                    digital_widget.hide()
-                    analog_widget.show()
-                    phase_current_widget.hide()
-                    analog_static_widget.hide()
-                    # Show feedback fields for digital and analog
-                    if fb_msg_label is not None:
-                        fb_msg_label.show()
-                        fb_msg_combo.show()
-                        fb_signal_label.show()
-                        fb_signal_combo.show()
-                    elif feedback_edit_label is not None:
-                        feedback_edit_label.show()
-                        feedback_edit.show()
-                elif txt == 'Phase Current Test':
-                    digital_widget.hide()
-                    analog_widget.hide()
-                    phase_current_widget.show()
-                    analog_static_widget.hide()
-                    # Hide feedback fields for phase current calibration
-                    if fb_msg_label is not None:
-                        fb_msg_label.hide()
-                        fb_msg_combo.hide()
-                        fb_signal_label.hide()
-                        fb_signal_combo.hide()
-                    elif feedback_edit_label is not None:
-                        feedback_edit_label.hide()
-                        feedback_edit.hide()
-                elif txt == 'Analog Static Test':
-                    digital_widget.hide()
-                    analog_widget.hide()
-                    phase_current_widget.hide()
-                    analog_static_widget.show()
-                    # Hide feedback fields for analog_static (uses its own fields)
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'):
+                    # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
                         fb_msg_combo.hide()
@@ -7718,6 +7980,52 @@ Data Points Used: {data_points}"""
                         'pre_dwell_time_ms': pre_dwell_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif data['type'] == 'Temperature Validation Test':
+                    # Temperature Validation Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = temp_val_fb_msg_combo_edit.currentData() if 'temp_val_fb_msg_combo_edit' in locals() else None
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = temp_val_fb_signal_combo_edit.currentText().strip() if 'temp_val_fb_signal_combo_edit' in locals() and temp_val_fb_signal_combo_edit.count() else ''
+                    
+                    # Reference temperature (float)
+                    def _to_float_or_none_reference_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_temp_val = _to_float_or_none_reference_edit(temp_val_reference_edit_edit) if 'temp_val_reference_edit_edit' in locals() else None
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_temp_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_c_val = _to_float_or_none_temp_tolerance_edit(temp_val_tolerance_edit_edit) if 'temp_val_tolerance_edit_edit' in locals() else None
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dwell_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dwell_edit(temp_val_dwell_time_edit_edit) if 'temp_val_dwell_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Temperature Validation Test',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'reference_temperature_c': reference_temp_val,
+                        'tolerance_c': tolerance_c_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             else:
                 if data['type'] == 'Digital Logic Test':
                     try:
@@ -7885,6 +8193,52 @@ Data Points Used: {data_points}"""
                         'eol_signal': eol_signal,
                         'tolerance_mv': tolerance_val,
                         'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
+                elif data['type'] == 'Temperature Validation Test':
+                    # Temperature Validation Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(temp_val_fb_msg_edit_edit.text().strip(), 0) if 'temp_val_fb_msg_edit_edit' in locals() and temp_val_fb_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    fb_signal = temp_val_fb_signal_edit_edit.text().strip() if 'temp_val_fb_signal_edit_edit' in locals() else ''
+                    
+                    # Reference temperature (float)
+                    def _to_float_or_none_reference_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_temp_val = _to_float_or_none_reference_fallback_edit(temp_val_reference_edit_fallback_edit) if 'temp_val_reference_edit_fallback_edit' in locals() else None
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_temp_tolerance_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_c_val = _to_float_or_none_temp_tolerance_fallback_edit(temp_val_tolerance_edit_fallback_edit) if 'temp_val_tolerance_edit_fallback_edit' in locals() else None
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dwell_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dwell_fallback_edit(temp_val_dwell_time_edit_fallback_edit) if 'temp_val_dwell_time_edit_fallback_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Temperature Validation Test',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_signal': fb_signal,
+                        'reference_temperature_c': reference_temp_val,
+                        'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
 
@@ -8306,6 +8660,30 @@ Data Points Used: {data_points}"""
                             'eol_values': result_data.get('eol_values', [])
                         }
                         logger.debug(f"Retrieved stored result data for {test_name} (analog static test)")
+                    else:
+                        plot_data = None
+                elif test_type == 'Temperature Validation Test':
+                    # Retrieve result data for temperature validation tests
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'reference_temperature_c': result_data.get('reference_temperature_c'),
+                            'measured_avg_c': result_data.get('measured_avg_c'),
+                            'difference_c': result_data.get('difference_c'),
+                            'tolerance_c': result_data.get('tolerance_c'),
+                            'samples': result_data.get('samples'),
+                            'passed': result_data.get('difference_c', float('inf')) <= result_data.get('tolerance_c', 0)
+                        }
+                        # Store raw data for potential plotting
+                        plot_data = {
+                            'temperature_values': result_data.get('temperature_values', [])
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (temperature validation test)")
                     else:
                         plot_data = None
                 

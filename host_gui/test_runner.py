@@ -1191,6 +1191,132 @@ class TestRunner:
                 
                 logger.info(f"Analog Static Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            elif act.get('type') == 'Temperature Validation Test':
+                # Temperature Validation Test execution:
+                # 1) Collect feedback signal values during dwell time
+                # 2) Calculate average
+                # 3) Compare: |average - reference_temperature| <= tolerance -> PASS
+                
+                # Extract parameters
+                feedback_msg_id = act.get('feedback_signal_source')
+                feedback_signal = act.get('feedback_signal')
+                reference_temp_c = float(act.get('reference_temperature_c', 0))
+                tolerance_c = float(act.get('tolerance_c', 0))
+                dwell_ms = int(act.get('dwell_time_ms', 0))
+                
+                # Validate parameters
+                if not all([feedback_msg_id, feedback_signal]):
+                    return False, "Missing required Temperature Validation Test parameters (feedback_signal_source, feedback_signal)"
+                
+                if tolerance_c < 0:
+                    return False, "Tolerance must be non-negative"
+                
+                if dwell_ms <= 0:
+                    return False, "Dwell time must be positive"
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events.
+                    
+                    Args:
+                        sec: Sleep duration in seconds
+                    """
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Step 1: Collect data during dwell time
+                temperature_values = []
+                start_time = time.time()
+                end_time = start_time + (dwell_ms / 1000.0)
+                
+                logger.info(f"Temperature Validation Test: Collecting temperature data for {dwell_ms}ms...")
+                
+                while time.time() < end_time:
+                    # Read feedback signal (temperature)
+                    try:
+                        if self.signal_service is not None:
+                            ts, temp_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                        elif self.gui is not None:
+                            ts, temp_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        else:
+                            ts, temp_val = (None, None)
+                        
+                        if temp_val is not None:
+                            try:
+                                temp_float = float(temp_val)
+                                temperature_values.append(temp_float)
+                                
+                                # Update real-time display with latest value (feedback signal, not current signal)
+                                if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
+                                    try:
+                                        self.gui.feedback_signal_label.setText(f"{temp_float:.2f} °C")
+                                    except Exception as e:
+                                        logger.debug(f"Failed to update feedback signal label: {e}")
+                                elif self.label_update_callback:
+                                    # Fallback: use callback if GUI not available (should update feedback label)
+                                    try:
+                                        self.label_update_callback(f"{temp_float:.2f} °C")
+                                    except Exception as e:
+                                        logger.debug(f"Failed to update label: {e}")
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading temperature signal: {e}")
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 2: Check if any data was collected
+                if not temperature_values:
+                    return False, f"No temperature data received during dwell time ({dwell_ms}ms). Check CAN connection and signal configuration."
+                
+                # Step 3: Calculate average
+                temperature_avg = sum(temperature_values) / len(temperature_values)
+                
+                # Step 4: Compare and determine pass/fail
+                difference = abs(temperature_avg - reference_temp_c)
+                passed = difference <= tolerance_c
+                
+                # Build info string
+                info = f"Reference: {reference_temp_c:.2f} °C, Measured Avg: {temperature_avg:.2f} °C, "
+                info += f"Difference: {difference:.2f} °C, Tolerance: {tolerance_c:.2f} °C"
+                info += f"\nSamples collected: {len(temperature_values)}"
+                
+                if not passed:
+                    info += f"\nFAIL: Difference {difference:.2f} °C exceeds tolerance {tolerance_c:.2f} °C"
+                else:
+                    info += f"\nPASS: Difference {difference:.2f} °C within tolerance {tolerance_c:.2f} °C"
+                
+                # Store results for display
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'reference_temperature_c': reference_temp_c,
+                    'measured_avg_c': temperature_avg,
+                    'difference_c': difference,
+                    'tolerance_c': tolerance_c,
+                    'samples': len(temperature_values),
+                    'temperature_values': temperature_values
+                }
+                
+                # Store in temporary storage for retrieval by _on_test_finished
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"Temperature Validation Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             else:
                 pass
         except Exception as e:

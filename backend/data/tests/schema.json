@@ -10,13 +10,30 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
             "oneOf": [
               {"properties": {"type":{"const":"Digital Logic Test"}, "can_id":{"type":"integer"}, "signal":{"type":"string"}, "value":{"type":["string","integer"]}}, "required":["can_id"]},
               {"properties": {"type":{"const":"Analog Sweep Test"}, "mux_channel":{"type":["integer","null"]}, "dac_can_id":{"type":"integer"}, "dac_command":{"type":"string"}}, "required":["dac_can_id"]},
+              {
+                "properties": {
+                  "type": {"const":"Temperature Validation Test"},
+                  "feedback_signal_source": {"type":"integer"},
+                  "feedback_signal": {"type":"string"},
+                  "reference_temperature_c": {"type":"number"},
+                  "tolerance_c": {"type":"number", "minimum":0},
+                  "dwell_time_ms": {"type":"integer", "minimum":1}
+                },
+                "required": [
+                  "feedback_signal_source",
+                  "feedback_signal",
+                  "reference_temperature_c",
+                  "tolerance_c",
+                  "dwell_time_ms"
+                ]
+              },
               {
                 "properties": {
                   "type": {"const":"Phase Current Test"},

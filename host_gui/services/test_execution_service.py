@@ -150,6 +150,12 @@ class TestExecutionService:
                 return self._run_analog_test(test, timeout)
             elif act.get('type') == 'Analog Static Test':
                 return self._run_analog_static_test(test, timeout)
+            elif act.get('type') == 'Temperature Validation Test':
+                # Temperature Validation Test uses the same execution logic as in test_runner
+                # For now, delegate to test_runner or implement here
+                # Since TestExecutionService is meant to be decoupled, we'll note this needs implementation
+                logger.warning("Temperature Validation Test execution not fully implemented in TestExecutionService")
+                return False, "Temperature Validation Test execution not yet implemented in TestExecutionService"
             else:
                 logger.error(f"Unknown test type: {act.get('type')}")
                 return False, f"Unknown test type: {act.get('type')}"

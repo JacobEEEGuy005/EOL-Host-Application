@@ -7,10 +7,10 @@ from typing import Optional, Dict, Any, List
 
 @dataclass
 class ActuationConfig:
-    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, or Analog Static Test).
+    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, or Temperature Validation Test).
     
     Attributes:
-        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', or 'Analog Static Test')
+        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', or 'Temperature Validation Test')
         can_id: CAN message ID for actuation commands (digital tests)
         signal: Signal name for actuation (optional)
         value_low: Low value for digital tests
@@ -48,8 +48,15 @@ class ActuationConfig:
         tolerance_mv: Tolerance in millivolts for pass/fail determination
         pre_dwell_time_ms: Pre-dwell time in milliseconds (system stabilization)
         dwell_time_ms: Dwell time in milliseconds (data collection period)
+        
+        For Temperature Validation Test:
+        feedback_signal_source: CAN message ID containing temperature signal
+        feedback_signal: Signal name for temperature signal
+        reference_temperature_c: Reference temperature in degrees Celsius
+        tolerance_c: Tolerance in degrees Celsius for pass/fail determination
+        dwell_time_ms: Dwell time in milliseconds (data collection period)
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', or 'Analog Static Test'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', or 'Temperature Validation Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -89,6 +96,10 @@ class ActuationConfig:
     tolerance_mv: Optional[float] = None  # Tolerance in millivolts
     pre_dwell_time_ms: Optional[int] = None  # Pre-dwell time in milliseconds
     dwell_time_ms: Optional[int] = None  # Dwell time in milliseconds
+    
+    # Temperature Validation Test fields
+    reference_temperature_c: Optional[float] = None  # Reference temperature in degrees Celsius
+    tolerance_c: Optional[float] = None  # Tolerance in degrees Celsius
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -159,6 +170,17 @@ class ActuationConfig:
                 result['tolerance_mv'] = self.tolerance_mv
             if self.pre_dwell_time_ms is not None:
                 result['pre_dwell_time_ms'] = self.pre_dwell_time_ms
+            if self.dwell_time_ms is not None:
+                result['dwell_time_ms'] = self.dwell_time_ms
+        elif self.type == 'Temperature Validation Test':
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.feedback_signal:
+                result['feedback_signal'] = self.feedback_signal
+            if self.reference_temperature_c is not None:
+                result['reference_temperature_c'] = self.reference_temperature_c
+            if self.tolerance_c is not None:
+                result['tolerance_c'] = self.tolerance_c
             if self.dwell_time_ms is not None:
                 result['dwell_time_ms'] = self.dwell_time_ms
         return result
