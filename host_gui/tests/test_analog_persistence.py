@@ -9,10 +9,10 @@ def test_analog_save_load_roundtrip(tmp_path):
     gui = BaseGUI()
     entry = {
         'name': 'analog-sample',
-        'type': 'analog',
+        'type': 'Analog Sweep Test',
         'feedback_signal': 'FB_SIG',
         'actuation': {
-            'type': 'analog',
+            'type': 'Analog Sweep Test',
             'dac_can_id': 0x123,
             'dac_command_signal': 'DAC_CMD',
             'mux_enable_signal': 'MUX_EN',

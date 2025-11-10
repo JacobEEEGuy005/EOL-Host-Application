@@ -11,9 +11,9 @@ def test_save_and_load_tests(tmp_path):
     # prepare sample tests
     sample = {
         'name': 'sample-dig',
-        'type': 'digital',
+        'type': 'Digital Logic Test',
         'feedback_signal': 'IGN_SW',
-        'actuation': {'type': 'digital', 'can_id': 0x100, 'signal': 'SW_CMD', 'value_low': '1', 'value_high': '1'}
+        'actuation': {'type': 'Digital Logic Test', 'can_id': 0x100, 'signal': 'SW_CMD', 'value_low': '1', 'value_high': '1'}
     }
     gui._tests = [sample]
     # save

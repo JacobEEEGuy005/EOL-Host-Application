@@ -2,11 +2,11 @@
   "tests": [
     {
       "name": "Key Signal Indicator",
-      "type": "digital",
+      "type": "Digital Logic Test",
       "feedback_signal": "KeySwitchIndicator",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "digital",
+        "type": "Digital Logic Test",
         "can_id": 272,
         "signal": "CMD_Relay_1",
         "value_low": "0",
@@ -17,11 +17,11 @@
     },
     {
       "name": "Forward Mode",
-      "type": "digital",
+      "type": "Digital Logic Test",
       "feedback_signal": "ForwardMode",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "digital",
+        "type": "Digital Logic Test",
         "can_id": 272,
         "signal": "CMD_Relay_2",
         "value_low": "0",
@@ -32,11 +32,11 @@
     },
     {
       "name": "Boost Mode",
-      "type": "digital",
+      "type": "Digital Logic Test",
       "feedback_signal": "BoostMode",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "digital",
+        "type": "Digital Logic Test",
         "can_id": 272,
         "signal": "CMD_Relay_3",
         "value_low": "0",
@@ -47,11 +47,11 @@
     },
     {
       "name": "Reverse Mode",
-      "type": "digital",
+      "type": "Digital Logic Test",
       "feedback_signal": "ReverseMode",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "digital",
+        "type": "Digital Logic Test",
         "can_id": 272,
         "signal": "CMD_Relay_4",
         "value_low": "0",
@@ -62,11 +62,11 @@
     },
     {
       "name": "Throttle1 Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "Throttle1Voltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",
@@ -83,11 +83,11 @@
     },
     {
       "name": "Throttle 2 Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "Throttle2Voltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",
@@ -104,11 +104,11 @@
     },
     {
       "name": "Brake Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "BrakeVoltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",
@@ -125,11 +125,11 @@
     },
     {
       "name": "Enc Sine Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "EncSineVoltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",
@@ -146,11 +146,11 @@
     },
     {
       "name": "Enc Cos Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "EncCosineVoltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",
@@ -167,11 +167,11 @@
     },
     {
       "name": "Analog 1 Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "Analog1Voltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",
@@ -188,11 +188,11 @@
     },
     {
       "name": "Analog 2 Voltage",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "Analog2Voltage",
       "feedback_message_id": 250,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 272,
         "dac_command_signal": "DAC_Voltage_mV",
         "mux_enable_signal": "MUX_Enable",

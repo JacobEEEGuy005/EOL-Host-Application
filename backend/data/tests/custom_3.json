@@ -2,11 +2,11 @@
   "tests": [
     {
       "name": "test-3",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 256,
         "dac_command_signal": "DeviceID",
         "mux_enable_signal": "DeviceID",
@@ -21,11 +21,11 @@
     },
     {
       "name": "test-1",
-      "type": "digital",
+      "type": "Digital Logic Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "digital",
+        "type": "Digital Logic Test",
         "can_id": 256,
         "signal": "DeviceID",
         "value_low": "",
@@ -35,11 +35,11 @@
     },
     {
       "name": "test-4",
-      "type": "analog",
+      "type": "Analog Sweep Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "analog",
+        "type": "Analog Sweep Test",
         "dac_can_id": 256,
         "dac_command_signal": "DeviceID",
         "mux_enable_signal": "DeviceID",
@@ -54,11 +54,11 @@
     },
     {
       "name": "test-2",
-      "type": "digital",
+      "type": "Digital Logic Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "digital",
+        "type": "Digital Logic Test",
         "can_id": 256,
         "signal": "DeviceID",
         "value_low": "",

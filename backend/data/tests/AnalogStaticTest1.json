@@ -2,11 +2,11 @@
   "tests": [
     {
       "name": "MtrTemp",
-      "type": "analog_static",
+      "type": "Analog Static Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "analog_static",
+        "type": "Analog Static Test",
         "feedback_signal_source": 250,
         "feedback_signal": "MtrTempVoltage",
         "eol_signal_source": 256,
@@ -19,11 +19,11 @@
     },
     {
       "name": "Ext5V",
-      "type": "analog_static",
+      "type": "Analog Static Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "analog_static",
+        "type": "Analog Static Test",
         "feedback_signal_source": 250,
         "feedback_signal": "external5V",
         "eol_signal_source": 256,

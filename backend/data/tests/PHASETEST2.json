@@ -2,11 +2,11 @@
   "tests": [
     {
       "name": "PhaseTest2",
-      "type": "phase_current_calibration",
+      "type": "Phase Current Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "phase_current_calibration",
+        "type": "Phase Current Test",
         "command_message": 272,
         "trigger_test_signal": "Mctrl_Phase_I_Test_Enable",
         "iq_ref_signal": "Mctrl_Set_Iq_Ref",

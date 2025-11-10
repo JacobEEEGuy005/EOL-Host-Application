@@ -1153,7 +1153,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         for test in self._tests:
             test_name = test.get('name', '<unnamed>')
             act = test.get('actuation', {})
-            test_type = act.get('type', 'Unknown').capitalize()
+            test_type = act.get('type', 'Unknown')
             
             # Check if test has execution data (has been run before)
             exec_data = self._test_execution_data.get(test_name, {})
@@ -1179,14 +1179,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         test_type = act.get('type', 'Unknown')
         params = []
         
-        if test_type == 'digital':
+        if test_type == 'Digital Logic Test':
             if act.get('can_id'):
                 params.append(f"CAN ID: {act['can_id']}")
             if act.get('signal'):
                 params.append(f"Signal: {act['signal']}")
             if act.get('value'):
                 params.append(f"Value: {act['value']}")
-        elif test_type == 'analog':
+        elif test_type == 'Analog Sweep Test':
             if act.get('dac_can_id'):
                 params.append(f"DAC CAN ID: {act['dac_can_id']}")
             if act.get('dac_command'):
@@ -1197,7 +1197,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"MUX Value: {act['mux_value']}")
             if act.get('mux_enable_signal'):
                 params.append(f"MUX Enable Signal: {act['mux_enable_signal']}")
-        elif test_type == 'analog_static':
+        elif test_type == 'Analog Static Test':
             if act.get('feedback_signal_source'):
                 params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
             if act.get('feedback_signal'):
@@ -1363,13 +1363,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         test_name = test.get('name', '<unnamed>')
         act = test.get('actuation', {})
         test_type_raw = act.get('type', 'Unknown')
-        # Capitalize properly for display
-        if test_type_raw == 'analog_static':
-            test_type = 'Analog Static'
-        elif test_type_raw == 'phase_current_calibration':
-            test_type = 'Phase Current Calibration'
-        else:
-            test_type = test_type_raw.capitalize()
+        # Use display name directly (types are now stored with display names)
+        test_type = test_type_raw
         
         # Store execution data for popup display
         params_str = self._get_test_parameters_string(test)
@@ -1398,7 +1393,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         if plot_data is not None:
             test_type = test.get('type', '')
             
-            if test_type == 'analog':
+            if test_type == 'Analog Sweep Test':
                 dac_voltages = list(plot_data.get('dac_voltages', []))
                 feedback_values = list(plot_data.get('feedback_values', []))
                 
@@ -1451,7 +1446,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                             except (ValueError, TypeError):
                                 pass
                         exec_data['calibration'] = calibration_params
-            elif test_type == 'phase_current_calibration':
+            elif test_type == 'Phase Current Test':
                 # Store plot data for phase current calibration tests
                 exec_data['plot_data'] = {
                     'iq_refs': list(plot_data.get('iq_refs', [])),
@@ -1468,7 +1463,7 @@ class BaseGUI(QtWidgets.QMainWindow):
                     'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
                     'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
                 }
-            elif test_type == 'analog_static':
+            elif test_type == 'Analog Static Test':
                 # Store plot data and statistics for analog_static tests
                 if plot_data:
                     exec_data['plot_data'] = {
@@ -1601,7 +1596,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         layout.addWidget(notes_text)
         
         # Statistical Analysis section for analog_static tests
-        is_analog_static = test_config and test_config.get('type') == 'analog_static'
+        is_analog_static = test_config and test_config.get('type') == 'Analog Static Test'
         statistics = exec_data.get('statistics')
         
         if is_analog_static and statistics:
@@ -1632,7 +1627,7 @@ EOL Samples Collected: {eol_samples}"""
             layout.addWidget(stats_text)
         
         # Calibration Parameters section for analog tests
-        is_analog = test_config and test_config.get('type') == 'analog'
+        is_analog = test_config and test_config.get('type') == 'Analog Sweep Test'
         calibration_params = exec_data.get('calibration')
         
         if is_analog and calibration_params:
@@ -1701,7 +1696,7 @@ Data Points Used: {data_points}"""
         
         # Plot section for analog tests and phase current calibration
         plot_data = exec_data.get('plot_data')
-        is_phase_current = test_config and test_config.get('type') == 'phase_current_calibration'
+        is_phase_current = test_config and test_config.get('type') == 'Phase Current Test'
         
         if is_analog and plot_data and matplotlib_available:
             plot_dac_voltages = plot_data.get('dac_voltages', [])
@@ -2034,7 +2029,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital', 'Analog', 'Analog Static', 'Phase Current Calibration'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -2114,9 +2109,9 @@ Data Points Used: {data_points}"""
             
             status = exec_data.get('status', 'Not Run')
             test_type = exec_data.get('test_type', 'Unknown')
-            # Handle analog_static -> Analog Static
-            if test_type == 'Analog_static':
-                test_type = 'Analog Static'
+            # Handle legacy analog_static -> Analog Static Test (for backward compatibility)
+            if test_type == 'Analog_static' or test_type == 'analog_static':
+                test_type = 'Analog Static Test'
             
             # Apply filters
             if status_filter != 'All':
@@ -2130,13 +2125,13 @@ Data Points Used: {data_points}"""
                     continue
             
             if type_filter != 'All':
-                if type_filter == 'Digital' and test_type != 'Digital':
+                if type_filter == 'Digital Logic Test' and test_type != 'Digital Logic Test':
                     continue
-                elif type_filter == 'Analog' and test_type != 'Analog':
+                elif type_filter == 'Analog Sweep Test' and test_type != 'Analog Sweep Test':
                     continue
-                elif type_filter == 'Analog Static' and test_type != 'Analog Static':
+                elif type_filter == 'Analog Static Test' and test_type != 'Analog Static Test':
                     continue
-                elif type_filter == 'Phase Current Calibration' and test_type != 'Phase Current Calibration':
+                elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
                     continue
             
             test_items.append((test_name, test_config, exec_data))
@@ -2147,19 +2142,19 @@ Data Points Used: {data_points}"""
                 test_name = test.get('name', '')
                 if test_name not in self._test_execution_data:
                     act = test.get('actuation', {})
-                    test_type = act.get('type', 'Unknown').capitalize()
-                    # Handle analog_static -> Analog Static
-                    if test_type == 'Analog_static':
-                        test_type = 'Analog Static'
+                    test_type = act.get('type', 'Unknown')
+                    # Handle legacy analog_static -> Analog Static Test (for backward compatibility)
+                    if test_type == 'Analog_static' or test_type == 'analog_static':
+                        test_type = 'Analog Static Test'
                     
                     if type_filter != 'All':
-                        if type_filter == 'Digital' and test_type != 'Digital':
+                        if type_filter == 'Digital Logic Test' and test_type != 'Digital Logic Test':
                             continue
-                        elif type_filter == 'Analog' and test_type != 'Analog':
+                        elif type_filter == 'Analog Sweep Test' and test_type != 'Analog Sweep Test':
                             continue
-                        elif type_filter == 'Analog Static' and test_type != 'Analog Static':
+                        elif type_filter == 'Analog Static Test' and test_type != 'Analog Static Test':
                             continue
-                        elif type_filter == 'Phase Current Calibration' and test_type != 'Phase Current Calibration':
+                        elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
                             continue
                     
                     test_items.append((test_name, test, {'status': 'Not Run', 'test_type': test_type}))
@@ -2234,7 +2229,7 @@ Data Points Used: {data_points}"""
             test_item.addChild(details_item)
             
             # For analog tests, add calibration and plot sections
-            if test_type == 'Analog' and test_config:
+            if test_type == 'Analog Sweep Test' and test_config:
                 exec_data_full = self._test_execution_data.get(test_name, exec_data)
                 calibration = exec_data_full.get('calibration')
                 plot_data = exec_data_full.get('plot_data')
@@ -2314,8 +2309,8 @@ Data Points Used: {data_points}"""
                     test_item.addChild(plot_item)
             
             # For phase current calibration tests, add gain error/correction and plot sections
-            is_phase_current = (test_type == 'Phase Current Calibration' or 
-                              (test_config and test_config.get('type') == 'phase_current_calibration'))
+            is_phase_current = (test_type == 'Phase Current Test' or 
+                              (test_config and test_config.get('type') == 'Phase Current Test'))
             if is_phase_current and test_config:
                 exec_data_full = self._test_execution_data.get(test_name, exec_data)
                 plot_data = exec_data_full.get('plot_data')
@@ -2697,7 +2692,7 @@ Data Points Used: {data_points}"""
                         test_result['calibration'] = calibration.copy()
                 
                 # Include plot data and gain error/correction for phase current tests
-                elif test_config and test_config.get('type') == 'phase_current_calibration':
+                elif test_config and test_config.get('type') == 'Phase Current Test':
                     plot_data = exec_data.get('plot_data')
                     if plot_data:
                         test_result['plot_data'] = {
@@ -2935,7 +2930,7 @@ Data Points Used: {data_points}"""
                                 html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Plot for {test_name}" class="plot-image">')
                 
                 # Phase current calibration test results
-                elif test_type == 'Phase Current Calibration' or (test_config and test_config.get('type') == 'phase_current_calibration'):
+                elif test_type == 'Phase Current Test' or (test_config and test_config.get('type') == 'Phase Current Test'):
                     plot_data = exec_data.get('plot_data')
                     if plot_data:
                         # Gain error and correction data
@@ -3224,7 +3219,7 @@ Data Points Used: {data_points}"""
                                         pass
                     
                     # Phase current calibration test results
-                    elif test_type == 'Phase Current Calibration' or (test_config and test_config.get('type') == 'phase_current_calibration'):
+                    elif test_type == 'Phase Current Test' or (test_config and test_config.get('type') == 'Phase Current Test'):
                         plot_data = exec_data.get('plot_data')
                         if plot_data:
                             # Gain error and correction data
@@ -5178,7 +5173,7 @@ Data Points Used: {data_points}"""
         """
         # Check if test type is phase_current_calibration
         act = test.get('actuation', {})
-        if act.get('type') != 'phase_current_calibration':
+        if act.get('type') != 'Phase Current Test':
             return True  # Not a phase current test, no initialization needed
         
         # Check if oscilloscope service is available and connected
@@ -5312,7 +5307,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['digital', 'analog', 'phase_current_calibration', 'analog_static'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container
         act_widget = QtWidgets.QWidget()
@@ -5851,7 +5846,7 @@ Data Points Used: {data_points}"""
 
         def _on_type_change(txt: str):
             try:
-                if txt == 'digital':
+                if txt == 'Digital Logic Test':
                     digital_widget.show()
                     analog_widget.hide()
                     phase_current_widget.hide()
@@ -5865,7 +5860,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt == 'analog':
+                elif txt == 'Analog Sweep Test':
                     digital_widget.hide()
                     analog_widget.show()
                     phase_current_widget.hide()
@@ -5879,7 +5874,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt == 'phase_current_calibration':
+                elif txt == 'Phase Current Test':
                     digital_widget.hide()
                     analog_widget.hide()
                     phase_current_widget.show()
@@ -5893,7 +5888,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.hide()
                         feedback_edit.hide()
-                elif txt == 'analog_static':
+                elif txt == 'Analog Static Test':
                     digital_widget.hide()
                     analog_widget.hide()
                     phase_current_widget.hide()
@@ -5929,7 +5924,7 @@ Data Points Used: {data_points}"""
             feedback = feedback_edit.text().strip()
             # build actuation dict depending on type
             if self.dbc_service is not None and self.dbc_service.is_loaded():
-                if t == 'digital':
+                if t == 'Digital Logic Test':
                     # read selected message id and signal
                     try:
                         can_id = dig_msg_combo.currentData()
@@ -5944,14 +5939,14 @@ Data Points Used: {data_points}"""
                     except Exception:
                         dig_dwell = None
                     act = {
-                        'type':'digital',
+                        'type':'Digital Logic Test',
                         'can_id': can_id,
                         'signal': sig,
                         'value_low': low,
                         'value_high': high,
                         'dwell_ms': dig_dwell,
                     }
-                elif t == 'analog':
+                elif t == 'Analog Sweep Test':
                     # analog: read selected DAC message and related signal selections and numeric params
                     try:
                         dac_id = dac_msg_combo.currentData()
@@ -6001,7 +5996,7 @@ Data Points Used: {data_points}"""
                     except (ValueError, TypeError):
                         pass
                     act = {
-                        'type': 'analog',
+                        'type': 'Analog Sweep Test',
                         'dac_can_id': dac_id,
                         'dac_command_signal': dac_cmd_sig,
                         'mux_enable_signal': mux_enable,
@@ -6016,7 +6011,7 @@ Data Points Used: {data_points}"""
                         act['expected_gain'] = expected_gain_val
                     if gain_tolerance_val is not None:
                         act['gain_tolerance_percent'] = gain_tolerance_val
-                elif t == 'phase_current_calibration':
+                elif t == 'Phase Current Test':
                     # Phase Current Calibration: read all fields
                     # Command Message and related signals
                     try:
@@ -6062,7 +6057,7 @@ Data Points Used: {data_points}"""
                     osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if osc_phase_w_ch_combo.count() else ''
                     
                     act = {
-                        'type': 'phase_current_calibration',
+                        'type': 'Phase Current Test',
                         'command_message': cmd_msg_id,
                         'trigger_test_signal': trigger_test_sig,
                         'iq_ref_signal': iq_ref_sig,
@@ -6077,7 +6072,7 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
-                elif t == 'analog_static':
+                elif t == 'Analog Static Test':
                     # Analog Static Test: read all fields (DBC mode)
                     try:
                         fb_msg_id = analog_static_fb_msg_combo.currentData()
@@ -6113,7 +6108,7 @@ Data Points Used: {data_points}"""
                     dwell_time_val = _to_int_or_none_time(dwell_time_edit)
                     
                     act = {
-                        'type': 'analog_static',
+                        'type': 'Analog Static Test',
                         'feedback_signal_source': fb_msg_id,
                         'feedback_signal': fb_signal,
                         'eol_signal_source': eol_msg_id,
@@ -6123,7 +6118,7 @@ Data Points Used: {data_points}"""
                         'dwell_time_ms': dwell_time_val,
                     }
             else:  # No DBC loaded
-                if t == 'digital':
+                if t == 'Digital Logic Test':
                     try:
                         can_id = int(dig_can.text().strip(), 0) if dig_can.text().strip() else None
                     except Exception:
@@ -6134,14 +6129,14 @@ Data Points Used: {data_points}"""
                     except Exception:
                         dig_dwell = None
                     act = {
-                        'type': 'digital',
+                        'type': 'Digital Logic Test',
                         'can_id': can_id,
                         'signal': dig_signal.text().strip(),
                         'value_low': dig_value_low.text().strip(),
                         'value_high': dig_value_high.text().strip(),
                         'dwell_ms': dig_dwell,
                     }
-                elif t == 'analog':
+                elif t == 'Analog Sweep Test':
                     # Non-DBC analog test: read all fields
                     try:
                         mux_channel_val = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
@@ -6185,7 +6180,7 @@ Data Points Used: {data_points}"""
                         pass
                     
                     act = {
-                        'type': 'analog',
+                        'type': 'Analog Sweep Test',
                         'dac_can_id': dac_id,
                         'dac_command_signal': dac_cmd_sig,
                         'mux_channel_value': mux_channel_val,
@@ -6198,7 +6193,7 @@ Data Points Used: {data_points}"""
                         act['expected_gain'] = expected_gain_val
                     if gain_tolerance_val is not None:
                         act['gain_tolerance_percent'] = gain_tolerance_val
-                elif t == 'phase_current_calibration':
+                elif t == 'Phase Current Test':
                     # Phase Current Calibration (no DBC): read from text fields
                     # Command Message and related signals
                     try:
@@ -6244,7 +6239,7 @@ Data Points Used: {data_points}"""
                     osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if osc_phase_w_ch_combo.count() else ''
                     
                     act = {
-                        'type': 'phase_current_calibration',
+                        'type': 'Phase Current Test',
                         'command_message': cmd_msg_id,
                         'trigger_test_signal': trigger_test_sig,
                         'iq_ref_signal': iq_ref_sig,
@@ -6259,7 +6254,7 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
-                elif t == 'analog_static':
+                elif t == 'Analog Static Test':
                     # Analog Static Test (no DBC): read from text fields
                     try:
                         fb_msg_id = int(analog_static_fb_msg_edit.text().strip(), 0) if analog_static_fb_msg_edit.text().strip() else None
@@ -6295,7 +6290,7 @@ Data Points Used: {data_points}"""
                     dwell_time_val = _to_int_or_none_time_fallback(dwell_time_edit_fallback)
                     
                     act = {
-                        'type': 'analog_static',
+                        'type': 'Analog Static Test',
                         'feedback_signal_source': fb_msg_id,
                         'feedback_signal': fb_signal,
                         'eol_signal_source': eol_msg_id,
@@ -6385,8 +6380,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('digital', 'analog', 'phase_current_calibration', 'analog_static'):
-            return False, f"Invalid test type: {test_type}. Must be 'digital', 'analog', 'phase_current_calibration', or 'analog_static'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', or 'Analog Static Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -6398,7 +6393,7 @@ Data Points Used: {data_points}"""
             return False, f"Actuation type '{act_type}' does not match test type '{test_type}'"
         
         # Type-specific validation
-        if test_type == 'analog':
+        if test_type == 'Analog Sweep Test':
             if actuation.get('dac_can_id') is None:
                 return False, "Analog test requires DAC CAN ID"
             if not actuation.get('dac_command_signal'):
@@ -6413,14 +6408,14 @@ Data Points Used: {data_points}"""
             if dac_min is not None and dac_max is not None and dac_max < dac_min:
                 return False, f"DAC max voltage {dac_max} cannot be less than min voltage {dac_min}"
         
-        elif test_type == 'digital':
+        elif test_type == 'Digital Logic Test':
             if actuation.get('can_id') is None:
                 return False, "Digital test requires CAN ID"
-        elif test_type == 'phase_current_calibration':
+        elif test_type == 'Phase Current Test':
             # Phase current calibration validation - fields are optional but should be validated if present
             # No strict requirements for now, but could add validation for required fields later
             pass
-        elif test_type == 'analog_static':
+        elif test_type == 'Analog Static Test':
             # Validate required fields
             if actuation.get('feedback_signal_source') is None:
                 return False, "Analog Static test requires feedback signal source (CAN ID)"
@@ -6837,7 +6832,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['digital', 'analog', 'phase_current_calibration', 'analog_static'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -7454,7 +7449,7 @@ Data Points Used: {data_points}"""
 
         def _on_type_change_edit(txt: str):
             try:
-                if txt == 'digital':
+                if txt == 'Digital Logic Test':
                     digital_widget.show()
                     analog_widget.hide()
                     phase_current_widget.hide()
@@ -7468,7 +7463,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt == 'analog':
+                elif txt == 'Analog Sweep Test':
                     digital_widget.hide()
                     analog_widget.show()
                     phase_current_widget.hide()
@@ -7482,7 +7477,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt == 'phase_current_calibration':
+                elif txt == 'Phase Current Test':
                     digital_widget.hide()
                     analog_widget.hide()
                     phase_current_widget.show()
@@ -7496,7 +7491,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.hide()
                         feedback_edit.hide()
-                elif txt == 'analog_static':
+                elif txt == 'Analog Static Test':
                     digital_widget.hide()
                     analog_widget.hide()
                     phase_current_widget.hide()
@@ -7544,7 +7539,7 @@ Data Points Used: {data_points}"""
 
             # actuation
             if self.dbc_service is not None and self.dbc_service.is_loaded():
-                if data['type'] == 'digital':
+                if data['type'] == 'Digital Logic Test':
                     can_id = dig_msg_combo.currentData() if 'dig_msg_combo' in locals() else None
                     sig = dig_signal_combo.currentText().strip() if 'dig_signal_combo' in locals() else ''
                     low = dig_value_low.text().strip()
@@ -7554,8 +7549,8 @@ Data Points Used: {data_points}"""
                         dig_dwell = int(dig_dwell_ms.text().strip()) if hasattr(dig_dwell_ms, 'text') and dig_dwell_ms.text().strip() else None
                     except Exception:
                         dig_dwell = None
-                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':sig,'value_low':low,'value_high':high,'dwell_ms':dig_dwell}
-                elif data['type'] == 'analog':
+                    data['actuation'] = {'type':'Digital Logic Test','can_id':can_id,'signal':sig,'value_low':low,'value_high':high,'dwell_ms':dig_dwell}
+                elif data['type'] == 'Analog Sweep Test':
                     # analog: capture selected DAC message and signal selections
                     try:
                         dac_id = dac_msg_combo.currentData() if 'dac_msg_combo' in locals() else None
@@ -7607,7 +7602,7 @@ Data Points Used: {data_points}"""
                     except (ValueError, TypeError):
                         pass
                     data['actuation'] = {
-                        'type':'analog',
+                        'type':'Analog Sweep Test',
                         'dac_can_id': dac_id,
                         'dac_command_signal': dac_cmd_sig,
                         'mux_enable_signal': mux_enable,
@@ -7622,7 +7617,7 @@ Data Points Used: {data_points}"""
                         data['actuation']['expected_gain'] = expected_gain_val
                     if gain_tolerance_val is not None:
                         data['actuation']['gain_tolerance_percent'] = gain_tolerance_val
-                elif data['type'] == 'phase_current_calibration':
+                elif data['type'] == 'Phase Current Test':
                     # Phase Current Calibration: read all fields
                     try:
                         cmd_msg_id = phase_current_cmd_msg_combo.currentData() if 'phase_current_cmd_msg_combo' in locals() else None
@@ -7663,7 +7658,7 @@ Data Points Used: {data_points}"""
                     osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if 'osc_phase_w_ch_combo' in locals() and osc_phase_w_ch_combo.count() else ''
                     
                     data['actuation'] = {
-                        'type': 'phase_current_calibration',
+                        'type': 'Phase Current Test',
                         'command_message': cmd_msg_id,
                         'trigger_test_signal': trigger_test_sig,
                         'iq_ref_signal': iq_ref_sig,
@@ -7678,7 +7673,7 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
-                elif data['type'] == 'analog_static':
+                elif data['type'] == 'Analog Static Test':
                     # Analog Static Test: read all fields (DBC mode)
                     try:
                         fb_msg_id = analog_static_fb_msg_combo_edit.currentData() if 'analog_static_fb_msg_combo_edit' in locals() else None
@@ -7714,7 +7709,7 @@ Data Points Used: {data_points}"""
                     dwell_time_val = _to_int_or_none_time_edit(dwell_time_edit_edit) if 'dwell_time_edit_edit' in locals() else None
                     
                     data['actuation'] = {
-                        'type': 'analog_static',
+                        'type': 'Analog Static Test',
                         'feedback_signal_source': fb_msg_id,
                         'feedback_signal': fb_signal,
                         'eol_signal_source': eol_msg_id,
@@ -7724,7 +7719,7 @@ Data Points Used: {data_points}"""
                         'dwell_time_ms': dwell_time_val,
                     }
             else:
-                if data['type'] == 'digital':
+                if data['type'] == 'Digital Logic Test':
                     try:
                         can_id = int(dig_can.text().strip(),0) if dig_can.text().strip() else None
                     except Exception:
@@ -7733,8 +7728,8 @@ Data Points Used: {data_points}"""
                         dig_dwell = int(dig_dwell_ms.text().strip()) if hasattr(dig_dwell_ms, 'text') and dig_dwell_ms.text().strip() else None
                     except Exception:
                         dig_dwell = None
-                    data['actuation'] = {'type':'digital','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip(),'dwell_ms':dig_dwell}
-                elif data['type'] == 'analog':
+                    data['actuation'] = {'type':'Digital Logic Test','can_id':can_id,'signal':dig_signal.text().strip(),'value_low':dig_value_low.text().strip(),'value_high':dig_value_high.text().strip(),'dwell_ms':dig_dwell}
+                elif data['type'] == 'Analog Sweep Test':
                     # Non-DBC analog test: read all fields
                     try:
                         mux_channel_val = int(mux_chan.text().strip(), 0) if mux_chan.text().strip() else None
@@ -7780,7 +7775,7 @@ Data Points Used: {data_points}"""
                         pass
                     
                     data['actuation'] = {
-                        'type': 'analog',
+                        'type': 'Analog Sweep Test',
                         'dac_can_id': dac_id,
                         'dac_command_signal': dac_cmd_sig,
                         'mux_channel_value': mux_channel_val,
@@ -7791,7 +7786,7 @@ Data Points Used: {data_points}"""
                     }
                     if expected_gain_val is not None:
                         data['actuation']['expected_gain'] = expected_gain_val
-                elif data['type'] == 'phase_current_calibration':
+                elif data['type'] == 'Phase Current Test':
                     # Phase Current Calibration (no DBC): read from text fields
                     try:
                         cmd_msg_id = int(phase_current_cmd_msg_edit.text().strip(), 0) if 'phase_current_cmd_msg_edit' in locals() and phase_current_cmd_msg_edit.text().strip() else None
@@ -7832,7 +7827,7 @@ Data Points Used: {data_points}"""
                     osc_phase_w_ch = osc_phase_w_ch_combo.currentText().strip() if 'osc_phase_w_ch_combo' in locals() and osc_phase_w_ch_combo.count() else ''
                     
                     data['actuation'] = {
-                        'type': 'phase_current_calibration',
+                        'type': 'Phase Current Test',
                         'command_message': cmd_msg_id,
                         'trigger_test_signal': trigger_test_sig,
                         'iq_ref_signal': iq_ref_sig,
@@ -7847,7 +7842,7 @@ Data Points Used: {data_points}"""
                         'oscilloscope_phase_v_ch': osc_phase_v_ch,
                         'oscilloscope_phase_w_ch': osc_phase_w_ch,
                     }
-                elif data['type'] == 'analog_static':
+                elif data['type'] == 'Analog Static Test':
                     # Analog Static Test (no DBC): read from text fields
                     try:
                         fb_msg_id = int(analog_static_fb_msg_edit_edit.text().strip(), 0) if 'analog_static_fb_msg_edit_edit' in locals() and analog_static_fb_msg_edit_edit.text().strip() else None
@@ -7883,7 +7878,7 @@ Data Points Used: {data_points}"""
                     dwell_time_val = _to_int_or_none_time_fallback_edit(dwell_time_edit_fallback_edit) if 'dwell_time_edit_fallback_edit' in locals() else None
                     
                     data['actuation'] = {
-                        'type': 'analog_static',
+                        'type': 'Analog Static Test',
                         'feedback_signal_source': fb_msg_id,
                         'feedback_signal': fb_signal,
                         'eol_signal_source': eol_msg_id,
@@ -7967,7 +7962,7 @@ Data Points Used: {data_points}"""
             test_name = t.get('name', '<unnamed>')
             test_type = t.get('type', '')
             
-            if test_type == 'analog':
+            if test_type == 'Analog Sweep Test':
                 # First try to get from temporary storage (captured in run_single_test)
                 if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                     plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -7980,7 +7975,7 @@ Data Points Used: {data_points}"""
                             'feedback_values': list(self.plot_feedback_values)
                         }
                         logger.debug(f"Used global plot data for {test_name} (single test, fallback)")
-            elif test_type == 'phase_current_calibration':
+            elif test_type == 'Phase Current Test':
                 # Retrieve plot data for phase current calibration tests
                 if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                     plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -7998,7 +7993,7 @@ Data Points Used: {data_points}"""
             test_name = t.get('name', '<unnamed>')
             test_type = t.get('type', '')
             
-            if test_type == 'analog':
+            if test_type == 'Analog Sweep Test':
                 # First try to get from temporary storage (captured in run_single_test)
                 if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                     plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -8011,7 +8006,7 @@ Data Points Used: {data_points}"""
                             'feedback_values': list(self.plot_feedback_values)
                         }
                         logger.debug(f"Used global plot data for {test_name} (exception case, fallback)")
-            elif test_type == 'phase_current_calibration':
+            elif test_type == 'Phase Current Test':
                 # Retrieve plot data for phase current calibration tests
                 if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                     plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -8269,7 +8264,7 @@ Data Points Used: {data_points}"""
                 test_name = t.get('name', '<unnamed>')
                 test_type = t.get('type', '')
                 
-                if test_type == 'analog':
+                if test_type == 'Analog Sweep Test':
                     # First try to get from temporary storage (captured in run_single_test)
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -8282,12 +8277,12 @@ Data Points Used: {data_points}"""
                                 'feedback_values': list(self.plot_feedback_values)
                             }
                             logger.debug(f"Used global plot data for {test_name} (fallback)")
-                elif test_type == 'phase_current_calibration':
+                elif test_type == 'Phase Current Test':
                     # Retrieve plot data for phase current calibration tests
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (phase current test)")
-                elif test_type == 'analog_static':
+                elif test_type == 'Analog Static Test':
                     # Retrieve result data for analog_static tests
                     if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
                         result_data = self._test_result_data_temp.pop(test_name)
@@ -8338,7 +8333,7 @@ Data Points Used: {data_points}"""
                 test_name = t.get('name', '<unnamed>')
                 test_type = t.get('type', '')
                 
-                if test_type == 'analog':
+                if test_type == 'Analog Sweep Test':
                     # First try to get from temporary storage (captured in run_single_test)
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
@@ -8351,7 +8346,7 @@ Data Points Used: {data_points}"""
                                 'feedback_values': list(self.plot_feedback_values)
                             }
                             logger.debug(f"Used global plot data for {test_name} (error case, fallback)")
-                elif test_type == 'phase_current_calibration':
+                elif test_type == 'Phase Current Test':
                     # Retrieve plot data for phase current calibration tests
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval

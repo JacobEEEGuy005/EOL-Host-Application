@@ -162,7 +162,7 @@ class TestRunner:
         act = test.get('actuation', {})
         
         # Initialize oscilloscope before phase current tests
-        if act.get('type') == 'phase_current_calibration':
+        if act.get('type') == 'Phase Current Test':
             if self.oscilloscope_service and self.oscilloscope_init_callback:
                 osc_init_success = self.oscilloscope_init_callback(test)
                 if not osc_init_success:
@@ -197,7 +197,7 @@ class TestRunner:
                 return False, f"Phase current test error: {e}"
         
         try:
-            if act.get('type') == 'digital' and act.get('can_id') is not None:
+            if act.get('type') == 'Digital Logic Test' and act.get('can_id') is not None:
                 can_id = act.get('can_id')
                 
                 # Validate CAN ID
@@ -436,7 +436,7 @@ class TestRunner:
                 info = '; '.join(info_parts)
                 # Return the computed result so callers receive the correct PASS/FAIL
                 return ok, info
-            elif act.get('type') == 'analog' and act.get('dac_can_id') is not None:
+            elif act.get('type') == 'Analog Sweep Test' and act.get('dac_can_id') is not None:
                 # Analog test sequence:
                 # 1) Disable MUX (mux_enable_signal = 0)
                 # 2) Set MUX channel (mux_channel_signal = mux_channel_value)
@@ -1030,7 +1030,7 @@ class TestRunner:
                         logger.debug(f"Failed to disable multiplexor signal: {e}")
                 # Capture and store plot data immediately for analog tests before returning
                 # This prevents plot data from being lost when the next test clears the plot arrays
-                if test.get('type') == 'analog':
+                if test.get('type') == 'Analog Sweep Test':
                     test_name = test.get('name', '<unnamed>')
                     try:
                         if self.gui is not None and hasattr(self.gui, 'plot_dac_voltages') and hasattr(self.gui, 'plot_feedback_values'):
@@ -1049,7 +1049,7 @@ class TestRunner:
                         logger.debug(f"Failed to capture plot data for {test_name}: {e}", exc_info=True)
                 
                 return success, info
-            elif act.get('type') == 'analog_static':
+            elif act.get('type') == 'Analog Static Test':
                 # Analog Static Test execution:
                 # 1) Wait for pre-dwell time (system stabilization)
                 # 2) Collect feedback and EOL signal values during dwell time

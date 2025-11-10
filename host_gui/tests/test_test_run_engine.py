@@ -15,9 +15,9 @@ def test_run_single_with_sim_adapter():
     # create a simple raw-actuation test
     t = {
         'name': 'run-raw',
-        'type': 'analog',
+        'type': 'Analog Sweep Test',
         'feedback_signal': None,
-        'actuation': {'type':'analog','dac_can_id':0x100,'dac_command':'010203'}
+        'actuation': {'type':'Analog Sweep Test','dac_can_id':0x100,'dac_command':'010203'}
     }
     gui._tests = [t]
     gui.test_list.clear()

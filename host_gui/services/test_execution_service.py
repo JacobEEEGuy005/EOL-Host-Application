@@ -117,7 +117,7 @@ class TestExecutionService:
         act = test.get('actuation', {})
         
         # Initialize oscilloscope before phase current tests
-        if act.get('type') == 'phase_current_calibration':
+        if act.get('type') == 'Phase Current Test':
             if self.oscilloscope_service and self.oscilloscope_init_callback:
                 osc_init_success = self.oscilloscope_init_callback(test)
                 if not osc_init_success:
@@ -144,11 +144,11 @@ class TestExecutionService:
                 return False, f"Phase current test error: {e}"
         
         try:
-            if act.get('type') == 'digital' and act.get('can_id') is not None:
+            if act.get('type') == 'Digital Logic Test' and act.get('can_id') is not None:
                 return self._run_digital_test(test, timeout)
-            elif act.get('type') == 'analog':
+            elif act.get('type') == 'Analog Sweep Test':
                 return self._run_analog_test(test, timeout)
-            elif act.get('type') == 'analog_static':
+            elif act.get('type') == 'Analog Static Test':
                 return self._run_analog_static_test(test, timeout)
             else:
                 logger.error(f"Unknown test type: {act.get('type')}")

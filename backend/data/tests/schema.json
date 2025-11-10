@@ -10,16 +10,16 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["digital","analog","phase_current_calibration"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
             "oneOf": [
-              {"properties": {"type":{"const":"digital"}, "can_id":{"type":"integer"}, "signal":{"type":"string"}, "value":{"type":["string","integer"]}}, "required":["can_id"]},
-              {"properties": {"type":{"const":"analog"}, "mux_channel":{"type":["integer","null"]}, "dac_can_id":{"type":"integer"}, "dac_command":{"type":"string"}}, "required":["dac_can_id"]},
+              {"properties": {"type":{"const":"Digital Logic Test"}, "can_id":{"type":"integer"}, "signal":{"type":"string"}, "value":{"type":["string","integer"]}}, "required":["can_id"]},
+              {"properties": {"type":{"const":"Analog Sweep Test"}, "mux_channel":{"type":["integer","null"]}, "dac_can_id":{"type":"integer"}, "dac_command":{"type":"string"}}, "required":["dac_can_id"]},
               {
                 "properties": {
-                  "type": {"const":"phase_current_calibration"},
+                  "type": {"const":"Phase Current Test"},
                   "can_id": {"type":"integer"},
                   "message_type": {"type":"integer"},
                   "device_id": {"type":"integer"},

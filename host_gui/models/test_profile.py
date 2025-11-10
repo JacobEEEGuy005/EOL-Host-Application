@@ -7,10 +7,10 @@ from typing import Optional, Dict, Any, List
 
 @dataclass
 class ActuationConfig:
-    """Configuration for test actuation (digital, analog, phase_current_calibration, or analog_static).
+    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, or Analog Static Test).
     
     Attributes:
-        type: Test type ('digital', 'analog', 'phase_current_calibration', or 'analog_static')
+        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', or 'Analog Static Test')
         can_id: CAN message ID for actuation commands (digital tests)
         signal: Signal name for actuation (optional)
         value_low: Low value for digital tests
@@ -28,7 +28,7 @@ class ActuationConfig:
         dac_step_mv: DAC voltage step in millivolts
         dac_dwell_ms: Dwell time per DAC voltage step
         
-        For phase_current_calibration tests:
+        For Phase Current Test:
         message_type: CAN message type for phase current test command
         device_id: Target device ID (IPC_Hardware = 0x03)
         enable_signal: Signal name for enabling phase current test
@@ -40,7 +40,7 @@ class ActuationConfig:
         data_collection: Data collection configuration dictionary
         steady_state_detection: Steady-state detection configuration dictionary
         
-        For analog_static tests:
+        For Analog Static Test:
         feedback_signal_source: CAN message ID containing feedback signal
         feedback_signal: Signal name for feedback signal
         eol_signal_source: CAN message ID containing EOL signal
@@ -49,7 +49,7 @@ class ActuationConfig:
         pre_dwell_time_ms: Pre-dwell time in milliseconds (system stabilization)
         dwell_time_ms: Dwell time in milliseconds (data collection period)
     """
-    type: str  # 'digital', 'analog', 'phase_current_calibration', or 'analog_static'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', or 'Analog Static Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -93,7 +93,7 @@ class ActuationConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
         result = {'type': self.type}
-        if self.type == 'digital':
+        if self.type == 'Digital Logic Test':
             if self.can_id is not None:
                 result['can_id'] = self.can_id
             if self.signal:
@@ -104,7 +104,7 @@ class ActuationConfig:
                 result['value_high'] = self.value_high
             if self.dwell_ms is not None:
                 result['dwell_ms'] = self.dwell_ms
-        elif self.type == 'analog':
+        elif self.type == 'Analog Sweep Test':
             if self.dac_can_id is not None:
                 result['dac_can_id'] = self.dac_can_id
             if self.dac_command_signal:
@@ -123,7 +123,7 @@ class ActuationConfig:
                 result['dac_step_mv'] = self.dac_step_mv
             if self.dac_dwell_ms is not None:
                 result['dac_dwell_ms'] = self.dac_dwell_ms
-        elif self.type == 'phase_current_calibration':
+        elif self.type == 'Phase Current Test':
             if self.can_id is not None:
                 result['can_id'] = self.can_id
             if self.message_type is not None:
@@ -146,7 +146,7 @@ class ActuationConfig:
                 result['data_collection'] = self.data_collection
             if self.steady_state_detection:
                 result['steady_state_detection'] = self.steady_state_detection
-        elif self.type == 'analog_static':
+        elif self.type == 'Analog Static Test':
             if self.feedback_signal_source is not None:
                 result['feedback_signal_source'] = self.feedback_signal_source
             if self.feedback_signal:
