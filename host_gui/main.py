@@ -892,7 +892,7 @@ class PhaseCurrentTestStateMachine:
             self.gui.plot_axes_v.grid(True, alpha=0.3)
             # Add diagonal reference line (y=x) for Phase V
             self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            self.gui.plot_axes_v.legend()
+            # Legend removed for Phase Current test
             
             self.gui.plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
             self.gui.plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
@@ -900,7 +900,7 @@ class PhaseCurrentTestStateMachine:
             self.gui.plot_axes_w.grid(True, alpha=0.3)
             # Add diagonal reference line (y=x) for Phase W
             self.gui.plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            self.gui.plot_axes_w.legend()
+            # Legend removed for Phase Current test
             
             # Tight layout
             self.gui.plot_figure.tight_layout()
