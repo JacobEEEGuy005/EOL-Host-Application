@@ -10015,15 +10015,8 @@ Data Points Used: {data_points}"""
                             key = sig_val.key
                             fid = sig_val.message_id
                             sig_name = sig_val.signal_name
-                            val = sig_val.value
+                            val = sig_val.value  # SignalService already applies gain factors (e.g., ADC_A3_GAIN_FACTOR)
                             ts = sig_val.timestamp or time.time()
-                            
-                            # Apply gain factor to ADC_A3_mV signal
-                            if sig_name == 'ADC_A3_mV':
-                                try:
-                                    val = float(val) * ADC_A3_GAIN_FACTOR
-                                except (ValueError, TypeError):
-                                    pass  # Keep original value if conversion fails
                             
                             if key in self._signal_rows:
                                 row = self._signal_rows[key]
