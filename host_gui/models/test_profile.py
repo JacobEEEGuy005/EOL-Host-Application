@@ -65,8 +65,19 @@ class ActuationConfig:
         fan_fault_feedback_signal: Signal name for fan fault feedback
         dwell_time_ms: Dwell time in milliseconds (data collection period)
         test_timeout_ms: Test timeout in milliseconds (for fan enabled verification)
+        
+        For External 5V Test:
+        ext_5v_test_trigger_source: CAN message ID for External 5V test trigger command
+        ext_5v_test_trigger_signal: Signal name for External 5V test trigger
+        eol_ext_5v_measurement_source: CAN message ID containing EOL Ext 5V measurement signal
+        eol_ext_5v_measurement_signal: Signal name for EOL Ext 5V measurement
+        feedback_signal_source: CAN message ID containing feedback signal
+        feedback_signal: Signal name for feedback signal
+        tolerance_mv: Tolerance in millivolts for pass/fail determination
+        pre_dwell_time_ms: Pre-dwell time in milliseconds (system stabilization)
+        dwell_time_ms: Dwell time in milliseconds (data collection period)
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', or 'Fan Control Test'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', or 'External 5V Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -119,6 +130,14 @@ class ActuationConfig:
     fan_tach_feedback_signal: Optional[str] = None  # Signal name for fan tach feedback
     fan_fault_feedback_signal: Optional[str] = None  # Signal name for fan fault feedback
     test_timeout_ms: Optional[int] = None  # Test timeout in milliseconds
+    
+    # External 5V Test fields
+    ext_5v_test_trigger_source: Optional[int] = None  # CAN message ID for External 5V test trigger
+    ext_5v_test_trigger_signal: Optional[str] = None  # Signal name for External 5V test trigger
+    eol_ext_5v_measurement_source: Optional[int] = None  # CAN message ID containing EOL Ext 5V measurement
+    eol_ext_5v_measurement_signal: Optional[str] = None  # Signal name for EOL Ext 5V measurement
+    # Note: feedback_signal_source and feedback_signal are already defined for Analog Static Test
+    # tolerance_mv, pre_dwell_time_ms, and dwell_time_ms are also already defined
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -219,6 +238,25 @@ class ActuationConfig:
                 result['dwell_time_ms'] = self.dwell_time_ms
             if self.test_timeout_ms is not None:
                 result['test_timeout_ms'] = self.test_timeout_ms
+        elif self.type == 'External 5V Test':
+            if self.ext_5v_test_trigger_source is not None:
+                result['ext_5v_test_trigger_source'] = self.ext_5v_test_trigger_source
+            if self.ext_5v_test_trigger_signal:
+                result['ext_5v_test_trigger_signal'] = self.ext_5v_test_trigger_signal
+            if self.eol_ext_5v_measurement_source is not None:
+                result['eol_ext_5v_measurement_source'] = self.eol_ext_5v_measurement_source
+            if self.eol_ext_5v_measurement_signal:
+                result['eol_ext_5v_measurement_signal'] = self.eol_ext_5v_measurement_signal
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.feedback_signal:
+                result['feedback_signal'] = self.feedback_signal
+            if self.tolerance_mv is not None:
+                result['tolerance_mv'] = self.tolerance_mv
+            if self.pre_dwell_time_ms is not None:
+                result['pre_dwell_time_ms'] = self.pre_dwell_time_ms
+            if self.dwell_time_ms is not None:
+                result['dwell_time_ms'] = self.dwell_time_ms
         return result
     
     @classmethod

@@ -2057,7 +2057,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -5343,7 +5343,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -5360,6 +5360,8 @@ Data Points Used: {data_points}"""
         temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
         fan_control_widget = QtWidgets.QWidget()
         fan_control_layout = QtWidgets.QFormLayout(fan_control_widget)
+        ext_5v_test_widget = QtWidgets.QWidget()
+        ext_5v_test_layout = QtWidgets.QFormLayout(ext_5v_test_widget)
         
         # Initialize analog_static variables to None (will be set in if/else blocks)
         # Initialize temperature_validation variables to None (will be set in if/else blocks)
@@ -5390,6 +5392,24 @@ Data Points Used: {data_points}"""
         fan_control_fault_signal_edit = None
         fan_control_dwell_time_edit_fallback = None
         fan_control_timeout_edit_fallback = None
+        ext_5v_test_trigger_msg_combo = None
+        ext_5v_test_trigger_signal_combo = None
+        ext_5v_test_eol_msg_combo = None
+        ext_5v_test_eol_signal_combo = None
+        ext_5v_test_feedback_msg_combo = None
+        ext_5v_test_feedback_signal_combo = None
+        ext_5v_test_tolerance_edit = None
+        ext_5v_test_pre_dwell_time_edit = None
+        ext_5v_test_dwell_time_edit = None
+        ext_5v_test_trigger_msg_edit = None
+        ext_5v_test_trigger_signal_edit = None
+        ext_5v_test_eol_msg_edit = None
+        ext_5v_test_eol_signal_edit = None
+        ext_5v_test_feedback_msg_edit = None
+        ext_5v_test_feedback_signal_edit = None
+        ext_5v_test_tolerance_edit_fallback = None
+        ext_5v_test_pre_dwell_time_edit_fallback = None
+        ext_5v_test_dwell_time_edit_fallback = None
         analog_static_fb_msg_combo = None
         analog_static_fb_signal_combo = None
         analog_static_eol_msg_combo = None
@@ -5844,6 +5864,106 @@ Data Points Used: {data_points}"""
             fan_control_layout.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_combo)
             fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit)
             fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit)
+            
+            # External 5V Test fields (DBC mode)
+            # Ext 5V Test Trigger Source: dropdown of CAN Messages
+            ext_5v_test_trigger_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                ext_5v_test_trigger_msg_combo.addItem(label, fid)
+            
+            # Ext 5V Test Trigger Signal: dropdown based on selected message
+            ext_5v_test_trigger_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_ext_5v_test_trigger_signals(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                ext_5v_test_trigger_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    ext_5v_test_trigger_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_ext_5v_test_trigger_signals(0)
+            ext_5v_test_trigger_msg_combo.currentIndexChanged.connect(_update_ext_5v_test_trigger_signals)
+            
+            # EOL Ext 5V Measurement Source: dropdown of CAN Messages
+            ext_5v_test_eol_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                ext_5v_test_eol_msg_combo.addItem(label, fid)
+            
+            # EOL Ext 5V Measurement Signal: dropdown based on selected message
+            ext_5v_test_eol_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_ext_5v_test_eol_signals(idx=0):
+                """Update EOL signal dropdown based on selected message."""
+                ext_5v_test_eol_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    ext_5v_test_eol_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_ext_5v_test_eol_signals(0)
+            ext_5v_test_eol_msg_combo.currentIndexChanged.connect(_update_ext_5v_test_eol_signals)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            ext_5v_test_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                ext_5v_test_feedback_msg_combo.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            ext_5v_test_feedback_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_ext_5v_test_feedback_signals(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                ext_5v_test_feedback_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    ext_5v_test_feedback_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_ext_5v_test_feedback_signals(0)
+            ext_5v_test_feedback_msg_combo.currentIndexChanged.connect(_update_ext_5v_test_feedback_signals)
+            
+            # Tolerance input (float, in mV)
+            ext_5v_tolerance_validator = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            ext_5v_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            ext_5v_test_tolerance_edit = QtWidgets.QLineEdit()
+            ext_5v_test_tolerance_edit.setValidator(ext_5v_tolerance_validator)
+            ext_5v_test_tolerance_edit.setPlaceholderText('e.g., 50.0')
+            
+            # Pre-dwell time input (int, in ms)
+            ext_5v_pre_dwell_validator = QtGui.QIntValidator(0, 60000, self)
+            ext_5v_test_pre_dwell_time_edit = QtWidgets.QLineEdit()
+            ext_5v_test_pre_dwell_time_edit.setValidator(ext_5v_pre_dwell_validator)
+            ext_5v_test_pre_dwell_time_edit.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            ext_5v_dwell_time_validator = QtGui.QIntValidator(1, 60000, self)
+            ext_5v_test_dwell_time_edit = QtWidgets.QLineEdit()
+            ext_5v_test_dwell_time_edit.setValidator(ext_5v_dwell_time_validator)
+            ext_5v_test_dwell_time_edit.setPlaceholderText('e.g., 500')
+            
+            # Populate External 5V Test sub-widget
+            ext_5v_test_layout.addRow('Ext 5V Test Trigger Source:', ext_5v_test_trigger_msg_combo)
+            ext_5v_test_layout.addRow('Ext 5V Test Trigger Signal:', ext_5v_test_trigger_signal_combo)
+            ext_5v_test_layout.addRow('EOL Ext 5V Measurement Source:', ext_5v_test_eol_msg_combo)
+            ext_5v_test_layout.addRow('EOL Ext 5V Measurement Signal:', ext_5v_test_eol_signal_combo)
+            ext_5v_test_layout.addRow('Feedback Signal Source:', ext_5v_test_feedback_msg_combo)
+            ext_5v_test_layout.addRow('Feedback Signal:', ext_5v_test_feedback_signal_combo)
+            ext_5v_test_layout.addRow('Tolerance (mV):', ext_5v_test_tolerance_edit)
+            ext_5v_test_layout.addRow('Pre-dwell Time (ms):', ext_5v_test_pre_dwell_time_edit)
+            ext_5v_test_layout.addRow('Dwell Time (ms):', ext_5v_test_dwell_time_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -6036,6 +6156,44 @@ Data Points Used: {data_points}"""
             fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit_fallback)
             fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit_fallback)
             
+            # External 5V Test fields (fallback when no DBC)
+            ext_5v_test_trigger_msg_edit = QtWidgets.QLineEdit()
+            ext_5v_test_trigger_signal_edit = QtWidgets.QLineEdit()
+            ext_5v_test_eol_msg_edit = QtWidgets.QLineEdit()
+            ext_5v_test_eol_signal_edit = QtWidgets.QLineEdit()
+            ext_5v_test_feedback_msg_edit = QtWidgets.QLineEdit()
+            ext_5v_test_feedback_signal_edit = QtWidgets.QLineEdit()
+            
+            # Tolerance input (float, in mV)
+            ext_5v_tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            ext_5v_tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            ext_5v_test_tolerance_edit_fallback = QtWidgets.QLineEdit()
+            ext_5v_test_tolerance_edit_fallback.setValidator(ext_5v_tolerance_validator_fallback)
+            ext_5v_test_tolerance_edit_fallback.setPlaceholderText('e.g., 50.0')
+            
+            # Pre-dwell time input (int, in ms)
+            ext_5v_pre_dwell_validator_fallback = QtGui.QIntValidator(0, 60000, self)
+            ext_5v_test_pre_dwell_time_edit_fallback = QtWidgets.QLineEdit()
+            ext_5v_test_pre_dwell_time_edit_fallback.setValidator(ext_5v_pre_dwell_validator_fallback)
+            ext_5v_test_pre_dwell_time_edit_fallback.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            ext_5v_dwell_time_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            ext_5v_test_dwell_time_edit_fallback = QtWidgets.QLineEdit()
+            ext_5v_test_dwell_time_edit_fallback.setValidator(ext_5v_dwell_time_validator_fallback)
+            ext_5v_test_dwell_time_edit_fallback.setPlaceholderText('e.g., 500')
+            
+            # Populate External 5V Test sub-widget (fallback)
+            ext_5v_test_layout.addRow('Ext 5V Test Trigger Source (CAN ID):', ext_5v_test_trigger_msg_edit)
+            ext_5v_test_layout.addRow('Ext 5V Test Trigger Signal:', ext_5v_test_trigger_signal_edit)
+            ext_5v_test_layout.addRow('EOL Ext 5V Measurement Source (CAN ID):', ext_5v_test_eol_msg_edit)
+            ext_5v_test_layout.addRow('EOL Ext 5V Measurement Signal:', ext_5v_test_eol_signal_edit)
+            ext_5v_test_layout.addRow('Feedback Signal Source (CAN ID):', ext_5v_test_feedback_msg_edit)
+            ext_5v_test_layout.addRow('Feedback Signal:', ext_5v_test_feedback_signal_edit)
+            ext_5v_test_layout.addRow('Tolerance (mV):', ext_5v_test_tolerance_edit_fallback)
+            ext_5v_test_layout.addRow('Pre-dwell Time (ms):', ext_5v_test_pre_dwell_time_edit_fallback)
+            ext_5v_test_layout.addRow('Dwell Time (ms):', ext_5v_test_dwell_time_edit_fallback)
+            
             phase_current_layout.addRow('Command Message (CAN ID):', phase_current_cmd_msg_edit)
             phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_edit)
             phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_edit)
@@ -6101,6 +6259,7 @@ Data Points Used: {data_points}"""
         test_type_to_index['Analog Static Test'] = act_stacked.addWidget(analog_static_widget)
         test_type_to_index['Temperature Validation Test'] = act_stacked.addWidget(temperature_validation_widget)
         test_type_to_index['Fan Control Test'] = act_stacked.addWidget(fan_control_widget)
+        test_type_to_index['External 5V Test'] = act_stacked.addWidget(ext_5v_test_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -6122,7 +6281,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -6440,6 +6599,59 @@ Data Points Used: {data_points}"""
                         'dwell_time_ms': dwell_time_val,
                         'test_timeout_ms': timeout_val,
                     }
+                elif t == 'External 5V Test':
+                    # External 5V Test: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = ext_5v_test_trigger_msg_combo.currentData()
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = ext_5v_test_trigger_signal_combo.currentText().strip() if ext_5v_test_trigger_signal_combo.count() else ''
+                    
+                    try:
+                        eol_msg_id = ext_5v_test_eol_msg_combo.currentData()
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = ext_5v_test_eol_signal_combo.currentText().strip() if ext_5v_test_eol_signal_combo.count() else ''
+                    
+                    try:
+                        feedback_msg_id = ext_5v_test_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = ext_5v_test_feedback_signal_combo.currentText().strip() if ext_5v_test_feedback_signal_combo.count() else ''
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_ext5v_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_ext5v_tolerance(ext_5v_test_tolerance_edit)
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_ext5v_time(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_ext5v_time(ext_5v_test_pre_dwell_time_edit)
+                    dwell_time_val = _to_int_or_none_ext5v_time(ext_5v_test_dwell_time_edit)
+                    
+                    act = {
+                        'type': 'External 5V Test',
+                        'ext_5v_test_trigger_source': trigger_msg_id,
+                        'ext_5v_test_trigger_signal': trigger_signal,
+                        'eol_ext_5v_measurement_source': eol_msg_id,
+                        'eol_ext_5v_measurement_signal': eol_signal,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -6715,6 +6927,59 @@ Data Points Used: {data_points}"""
                         'dwell_time_ms': dwell_time_val,
                         'test_timeout_ms': timeout_val,
                     }
+                elif t == 'External 5V Test':
+                    # External 5V Test (no DBC): read from text fields
+                    try:
+                        trigger_msg_id = int(ext_5v_test_trigger_msg_edit.text().strip(), 0) if ext_5v_test_trigger_msg_edit.text().strip() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = ext_5v_test_trigger_signal_edit.text().strip()
+                    
+                    try:
+                        eol_msg_id = int(ext_5v_test_eol_msg_edit.text().strip(), 0) if ext_5v_test_eol_msg_edit.text().strip() else None
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = ext_5v_test_eol_signal_edit.text().strip()
+                    
+                    try:
+                        feedback_msg_id = int(ext_5v_test_feedback_msg_edit.text().strip(), 0) if ext_5v_test_feedback_msg_edit.text().strip() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = ext_5v_test_feedback_signal_edit.text().strip()
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_ext5v_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_ext5v_tolerance_fallback(ext_5v_test_tolerance_edit_fallback)
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_ext5v_time_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_ext5v_time_fallback(ext_5v_test_pre_dwell_time_edit_fallback)
+                    dwell_time_val = _to_int_or_none_ext5v_time_fallback(ext_5v_test_dwell_time_edit_fallback)
+                    
+                    act = {
+                        'type': 'External 5V Test',
+                        'ext_5v_test_trigger_source': trigger_msg_id,
+                        'ext_5v_test_trigger_signal': trigger_signal,
+                        'eol_ext_5v_measurement_source': eol_msg_id,
+                        'eol_ext_5v_measurement_signal': eol_signal,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -6816,8 +7081,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', or 'Fan Control Test'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', or 'External 5V Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -6911,6 +7176,32 @@ Data Points Used: {data_points}"""
                 return False, "Fan Control test requires test timeout (ms)"
             if actuation.get('test_timeout_ms', 0) <= 0:
                 return False, "Test timeout must be positive"
+        elif test_type == 'External 5V Test':
+            # Validate required fields
+            if actuation.get('ext_5v_test_trigger_source') is None:
+                return False, "External 5V Test requires trigger source (CAN ID)"
+            if not actuation.get('ext_5v_test_trigger_signal'):
+                return False, "External 5V Test requires trigger signal name"
+            if actuation.get('eol_ext_5v_measurement_source') is None:
+                return False, "External 5V Test requires EOL measurement source (CAN ID)"
+            if not actuation.get('eol_ext_5v_measurement_signal'):
+                return False, "External 5V Test requires EOL measurement signal name"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "External 5V Test requires feedback signal source (CAN ID)"
+            if not actuation.get('feedback_signal'):
+                return False, "External 5V Test requires feedback signal name"
+            if actuation.get('tolerance_mv') is None:
+                return False, "External 5V Test requires tolerance (mV)"
+            if actuation.get('tolerance_mv', 0) < 0:
+                return False, "Tolerance must be non-negative"
+            if actuation.get('pre_dwell_time_ms') is None:
+                return False, "External 5V Test requires pre-dwell time (ms)"
+            if actuation.get('pre_dwell_time_ms', 0) < 0:
+                return False, "Pre-dwell time must be non-negative"
+            if actuation.get('dwell_time_ms') is None:
+                return False, "External 5V Test requires dwell time (ms)"
+            if actuation.get('dwell_time_ms', 0) <= 0:
+                return False, "Dwell time must be positive"
         
         return True, ""
     
@@ -7306,7 +7597,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -8182,7 +8473,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -9796,14 +10087,9 @@ Data Points Used: {data_points}"""
         except Exception:
             key = f"{can_id}:{signal_name}"
         # Use SignalService if available
+        # Note: SignalService now handles signal processing (e.g., ADC_A3_GAIN_FACTOR) internally
         if self.signal_service is not None:
             ts, val = self.signal_service.get_latest_signal(can_id, signal_name)
-            # Apply gain factor to ADC_A3_mV signal
-            if signal_name == 'ADC_A3_mV' and val is not None:
-                try:
-                    val = float(val) * ADC_A3_GAIN_FACTOR
-                except (ValueError, TypeError):
-                    pass  # Keep original value if conversion fails
             return (ts, val)
         
         # No fallback - signal_service should always be available

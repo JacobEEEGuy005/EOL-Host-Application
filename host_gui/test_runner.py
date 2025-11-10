@@ -1317,6 +1317,288 @@ class TestRunner:
                 
                 logger.info(f"Temperature Validation Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            elif act.get('type') == 'External 5V Test':
+                # External 5V Test execution:
+                # 1) Send trigger with value 0 (disable External 5V)
+                # 2) Wait for pre-dwell time
+                # 3) Collect EOL and Feedback signal values during dwell time
+                # 4) Send trigger with value 1 (enable External 5V)
+                # 5) Wait for pre-dwell time
+                # 6) Collect EOL and Feedback signal values during dwell time (clear plot first)
+                # 7) Send trigger with value 0 (disable External 5V)
+                # 8) Calculate averages for both phases
+                # 9) Compare: |feedback_avg - eol_avg| <= tolerance for both phases -> PASS
+                
+                # Extract parameters
+                trigger_msg_id = act.get('ext_5v_test_trigger_source')
+                trigger_signal = act.get('ext_5v_test_trigger_signal')
+                eol_msg_id = act.get('eol_ext_5v_measurement_source')
+                eol_signal = act.get('eol_ext_5v_measurement_signal')
+                feedback_msg_id = act.get('feedback_signal_source')
+                feedback_signal = act.get('feedback_signal')
+                tolerance_mv = float(act.get('tolerance_mv', 0))
+                pre_dwell_ms = int(act.get('pre_dwell_time_ms', 0))
+                dwell_ms = int(act.get('dwell_time_ms', 0))
+                
+                # Validate parameters
+                if not all([trigger_msg_id, trigger_signal, eol_msg_id, eol_signal, feedback_msg_id, feedback_signal]):
+                    return False, "Missing required External 5V Test parameters"
+                
+                if tolerance_mv < 0:
+                    return False, "Tolerance must be non-negative"
+                
+                if pre_dwell_ms < 0:
+                    return False, "Pre-dwell time must be non-negative"
+                
+                if dwell_ms <= 0:
+                    return False, "Dwell time must be positive"
+                
+                # Import AdapterFrame at function level (same pattern as Fan Control Test)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events."""
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                def _send_trigger(value: int) -> bool:
+                    """Send trigger signal with specified value (0=disable, 1=enable)."""
+                    try:
+                        dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
+                        if dbc_available:
+                            msg = self.dbc_service.find_message_by_id(trigger_msg_id)
+                            if msg is not None:
+                                # Include DeviceID if required by the message (default to 0)
+                                device_id = act.get('device_id', 0)
+                                signal_values = {'DeviceID': device_id, trigger_signal: value}
+                                
+                                # Check if signal is multiplexed and get MessageType from multiplexer_ids
+                                # (Same logic as Fan Control Test - only set MessageType if signal is actually multiplexed)
+                                mux_value = None
+                                for sig in msg.signals:
+                                    if sig.name == trigger_signal and getattr(sig, 'multiplexer_ids', None):
+                                        mux_value = sig.multiplexer_ids[0]
+                                        break
+                                
+                                # Only set MessageType if signal is actually multiplexed (same as Fan Control Test)
+                                if mux_value is not None:
+                                    signal_values['MessageType'] = mux_value
+                                
+                                frame_data = self.dbc_service.encode_message(msg, signal_values)
+                            else:
+                                logger.warning(f"Could not find message for CAN ID 0x{trigger_msg_id:X}")
+                                return False
+                        else:
+                            # Fallback: raw encoding
+                            frame_data = bytes([value & 0xFF])
+                        
+                        if AdapterFrame is not None:
+                            frame = AdapterFrame(can_id=trigger_msg_id, data=frame_data)
+                        else:
+                            class F: pass
+                            frame = F()
+                            frame.can_id = trigger_msg_id
+                            frame.data = frame_data
+                            frame.timestamp = time.time()
+                        
+                        if self.can_service is not None and self.can_service.is_connected():
+                            self.can_service.send_frame(frame)
+                            logger.info(f"External 5V Test: Sent trigger signal {trigger_signal}={value}")
+                            return True
+                        return False
+                    except Exception as e:
+                        logger.error(f"Failed to send trigger: {e}")
+                        return False
+                
+                def _collect_data_phase(phase_name: str, clear_plot: bool = False) -> tuple[list, list]:
+                    """Collect data during dwell time for a phase.
+                    
+                    Returns:
+                        Tuple of (eol_values, feedback_values)
+                    """
+                    if clear_plot and self.plot_clear_callback is not None:
+                        self.plot_clear_callback()
+                    
+                    eol_values = []
+                    feedback_values = []
+                    start_time = time.time()
+                    end_time = start_time + (dwell_ms / 1000.0)
+                    
+                    logger.info(f"External 5V Test ({phase_name}): Collecting data for {dwell_ms}ms...")
+                    
+                    while time.time() < end_time:
+                        # Read EOL signal
+                        try:
+                            if self.signal_service is not None:
+                                ts_eol, eol_val = self.signal_service.get_latest_signal(eol_msg_id, eol_signal)
+                            elif self.gui is not None:
+                                ts_eol, eol_val = self.gui.get_latest_signal(eol_msg_id, eol_signal)
+                            else:
+                                ts_eol, eol_val = (None, None)
+                            
+                            if eol_val is not None:
+                                try:
+                                    eol_float = float(eol_val)
+                                    eol_values.append(eol_float)
+                                    # Update plot with EOL value (as "Current Signal")
+                                    if self.plot_update_callback is not None:
+                                        # Use feedback value if available, otherwise use EOL value for x-axis
+                                        fb_val_for_plot = feedback_values[-1] if feedback_values else eol_float
+                                        self.plot_update_callback(fb_val_for_plot, eol_float, 'EOL')
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading EOL signal: {e}")
+                        
+                        # Read feedback signal
+                        try:
+                            if self.signal_service is not None:
+                                ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                            elif self.gui is not None:
+                                ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                            else:
+                                ts_fb, fb_val = (None, None)
+                            
+                            if fb_val is not None:
+                                try:
+                                    fb_float = float(fb_val)
+                                    feedback_values.append(fb_float)
+                                    # Update plot with Feedback value (as "Feedback Signal")
+                                    if self.plot_update_callback is not None:
+                                        eol_val_for_plot = eol_values[-1] if eol_values else fb_float
+                                        self.plot_update_callback(fb_float, eol_val_for_plot, 'Feedback')
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading feedback signal: {e}")
+                        
+                        # Update labels for real-time monitoring
+                        if self.label_update_callback is not None:
+                            fb_display = feedback_values[-1] if feedback_values else None
+                            eol_display = eol_values[-1] if eol_values else None
+                            if fb_display is not None:
+                                self.label_update_callback(f"Feedback Signal: {fb_display:.2f} mV")
+                            if eol_display is not None:
+                                self.label_update_callback(f"Current Signal: {eol_display:.2f} mV")
+                        
+                        # Process events and sleep
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                    
+                    return eol_values, feedback_values
+                
+                # Phase 1: Disabled state
+                logger.info("External 5V Test: Phase 1 - Disabling External 5V...")
+                if not _send_trigger(0):
+                    return False, "Failed to send disable trigger"
+                
+                logger.info(f"External 5V Test: Waiting {pre_dwell_ms}ms for system stabilization (disabled)...")
+                _nb_sleep(pre_dwell_ms / 1000.0)
+                
+                eol_values_disabled, feedback_values_disabled = _collect_data_phase("Disabled", clear_plot=False)
+                
+                # Phase 2: Enabled state
+                logger.info("External 5V Test: Phase 2 - Enabling External 5V...")
+                if not _send_trigger(1):
+                    return False, "Failed to send enable trigger"
+                
+                logger.info(f"External 5V Test: Waiting {pre_dwell_ms}ms for system stabilization (enabled)...")
+                _nb_sleep(pre_dwell_ms / 1000.0)
+                
+                eol_values_enabled, feedback_values_enabled = _collect_data_phase("Enabled", clear_plot=True)
+                
+                # Disable again
+                logger.info("External 5V Test: Disabling External 5V...")
+                _send_trigger(0)
+                
+                # Calculate averages for both phases
+                if not eol_values_disabled or not feedback_values_disabled:
+                    return False, f"No data collected during disabled phase (EOL samples: {len(eol_values_disabled)}, Feedback samples: {len(feedback_values_disabled)})"
+                
+                if not eol_values_enabled or not feedback_values_enabled:
+                    return False, f"No data collected during enabled phase (EOL samples: {len(eol_values_enabled)}, Feedback samples: {len(feedback_values_enabled)})"
+                
+                eol_avg_disabled = sum(eol_values_disabled) / len(eol_values_disabled)
+                feedback_avg_disabled = sum(feedback_values_disabled) / len(feedback_values_disabled)
+                
+                eol_avg_enabled = sum(eol_values_enabled) / len(eol_values_enabled)
+                feedback_avg_enabled = sum(feedback_values_enabled) / len(feedback_values_enabled)
+                
+                # Compare for both phases
+                difference_disabled = abs(feedback_avg_disabled - eol_avg_disabled)
+                difference_enabled = abs(feedback_avg_enabled - eol_avg_enabled)
+                
+                passed_disabled = difference_disabled <= tolerance_mv
+                passed_enabled = difference_enabled <= tolerance_mv
+                passed = passed_disabled and passed_enabled
+                
+                # Build info string
+                info = f"Disabled Phase:\n"
+                info += f"  Feedback Avg: {feedback_avg_disabled:.2f} mV, EOL Avg: {eol_avg_disabled:.2f} mV\n"
+                info += f"  Difference: {difference_disabled:.2f} mV, Tolerance: {tolerance_mv:.2f} mV - {'PASS' if passed_disabled else 'FAIL'}\n"
+                info += f"  Samples: EOL={len(eol_values_disabled)}, Feedback={len(feedback_values_disabled)}\n\n"
+                info += f"Enabled Phase:\n"
+                info += f"  Feedback Avg: {feedback_avg_enabled:.2f} mV, EOL Avg: {eol_avg_enabled:.2f} mV\n"
+                info += f"  Difference: {difference_enabled:.2f} mV, Tolerance: {tolerance_mv:.2f} mV - {'PASS' if passed_enabled else 'FAIL'}\n"
+                info += f"  Samples: EOL={len(eol_values_enabled)}, Feedback={len(feedback_values_enabled)}\n\n"
+                
+                if not passed:
+                    if not passed_disabled:
+                        info += f"FAIL: Disabled phase difference {difference_disabled:.2f} mV exceeds tolerance {tolerance_mv:.2f} mV\n"
+                    if not passed_enabled:
+                        info += f"FAIL: Enabled phase difference {difference_enabled:.2f} mV exceeds tolerance {tolerance_mv:.2f} mV\n"
+                else:
+                    info += f"PASS: Both phases within tolerance"
+                
+                # Store results for display
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'disabled': {
+                        'feedback_avg': feedback_avg_disabled,
+                        'eol_avg': eol_avg_disabled,
+                        'difference': difference_disabled,
+                        'feedback_samples': len(feedback_values_disabled),
+                        'eol_samples': len(eol_values_disabled),
+                        'feedback_values': feedback_values_disabled,
+                        'eol_values': eol_values_disabled,
+                        'phase': 'disabled'
+                    },
+                    'enabled': {
+                        'feedback_avg': feedback_avg_enabled,
+                        'eol_avg': eol_avg_enabled,
+                        'difference': difference_enabled,
+                        'feedback_samples': len(feedback_values_enabled),
+                        'eol_samples': len(eol_values_enabled),
+                        'feedback_values': feedback_values_enabled,
+                        'eol_values': eol_values_enabled,
+                        'phase': 'enabled'
+                    },
+                    'tolerance': tolerance_mv,
+                    'passed': passed
+                }
+                
+                # Store in temporary storage for retrieval by _on_test_finished
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"External 5V Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             
             elif act.get('type') == 'Fan Control Test':
                 # Fan Control Test execution:

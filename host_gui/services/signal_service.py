@@ -12,6 +12,14 @@ from backend.adapters.interface import Frame
 from host_gui.services.dbc_service import DbcService
 from host_gui.models.signal_value import SignalValue
 
+# Import signal processing constants
+try:
+    from host_gui.constants import ADC_A3_GAIN_FACTOR
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Failed to import ADC_A3_GAIN_FACTOR from constants, using default value 1.0")
+    ADC_A3_GAIN_FACTOR = 1.0
+
 try:
     from host_gui.exceptions import SignalDecodeError
 except ImportError:
@@ -139,10 +147,13 @@ class SignalService:
             # Try to get numeric value (prefer numeric for test comparisons)
             numeric_value = self._extract_numeric_value(message, raw_data, signal_name, value)
             
-            # Create SignalValue
+            # Apply signal-specific processing (e.g., gain factors)
+            processed_value = self._apply_signal_processing(signal_name, numeric_value if numeric_value is not None else value)
+            
+            # Create SignalValue with processed value
             signal_value = SignalValue(
                 signal_name=signal_name,
-                value=numeric_value if numeric_value is not None else value,
+                value=processed_value,
                 message_id=can_id,
                 message_name=message_name,
                 timestamp=timestamp,
@@ -151,7 +162,7 @@ class SignalService:
             
             signal_values.append(signal_value)
             
-            # Update cache
+            # Update cache with processed value
             key = signal_value.key
             self._signal_values[key] = (timestamp, signal_value.value)
             logger.debug(f"SignalService: Cached signal {key} = {signal_value.value}")
@@ -167,6 +178,7 @@ class SignalService:
             
         Returns:
             Tuple of (timestamp, value) or (None, None) if not found
+            Note: Signal-specific processing (e.g., gain factors) is already applied to cached values
         """
         if message_id is None or signal_name is None:
             return (None, None)
@@ -207,6 +219,29 @@ class SignalService:
         for key in keys_to_remove:
             del self._signal_values[key]
         logger.debug(f"Cleared cache for message 0x{message_id:X}")
+    
+    def _apply_signal_processing(self, signal_name: str, value: Any) -> Any:
+        """Apply signal-specific processing (e.g., gain factors) to signal values.
+        
+        Args:
+            signal_name: Name of the signal
+            value: Signal value to process
+            
+        Returns:
+            Processed signal value
+        """
+        # Apply ADC_A3_mV gain factor
+        if signal_name == 'ADC_A3_mV' and value is not None:
+            try:
+                processed = float(value) * ADC_A3_GAIN_FACTOR
+                logger.debug(f"SignalService: Applied gain factor {ADC_A3_GAIN_FACTOR} to {signal_name}: {value} -> {processed}")
+                return processed
+            except (ValueError, TypeError):
+                # If conversion fails, return original value
+                logger.debug(f"SignalService: Could not apply gain factor to {signal_name} (value: {value})")
+                return value
+        
+        return value
     
     def _extract_numeric_value(self, message: Any, raw_data: bytes, signal_name: str, decoded_value: Any) -> Optional[Any]:
         """Extract numeric value from decoded signal, preferring raw numeric over enum labels.

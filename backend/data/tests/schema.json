@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
@@ -55,6 +55,52 @@
                   "fan_fault_feedback_signal",
                   "dwell_time_ms",
                   "test_timeout_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Analog Static Test"},
+                  "feedback_signal_source": {"type":"integer"},
+                  "feedback_signal": {"type":"string"},
+                  "eol_signal_source": {"type":"integer"},
+                  "eol_signal": {"type":"string"},
+                  "tolerance_mv": {"type":"number", "minimum":0},
+                  "pre_dwell_time_ms": {"type":"integer", "minimum":0},
+                  "dwell_time_ms": {"type":"integer", "minimum":1}
+                },
+                "required": [
+                  "feedback_signal_source",
+                  "feedback_signal",
+                  "eol_signal_source",
+                  "eol_signal",
+                  "tolerance_mv",
+                  "pre_dwell_time_ms",
+                  "dwell_time_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"External 5V Test"},
+                  "ext_5v_test_trigger_source": {"type":"integer"},
+                  "ext_5v_test_trigger_signal": {"type":"string"},
+                  "eol_ext_5v_measurement_source": {"type":"integer"},
+                  "eol_ext_5v_measurement_signal": {"type":"string"},
+                  "feedback_signal_source": {"type":"integer"},
+                  "feedback_signal": {"type":"string"},
+                  "tolerance_mv": {"type":"number", "minimum":0},
+                  "pre_dwell_time_ms": {"type":"integer", "minimum":0},
+                  "dwell_time_ms": {"type":"integer", "minimum":1}
+                },
+                "required": [
+                  "ext_5v_test_trigger_source",
+                  "ext_5v_test_trigger_signal",
+                  "eol_ext_5v_measurement_source",
+                  "eol_ext_5v_measurement_signal",
+                  "feedback_signal_source",
+                  "feedback_signal",
+                  "tolerance_mv",
+                  "pre_dwell_time_ms",
+                  "dwell_time_ms"
                 ]
               },
               {
