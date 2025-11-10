@@ -1223,6 +1223,23 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Tolerance: {act['tolerance_c']:.2f} °C")
             if act.get('dwell_time_ms') is not None:
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
+        elif test_type == 'Fan Control Test':
+            if act.get('fan_test_trigger_source'):
+                params.append(f"Trigger Source: 0x{act['fan_test_trigger_source']:X}")
+            if act.get('fan_test_trigger_signal'):
+                params.append(f"Trigger Signal: {act['fan_test_trigger_signal']}")
+            if act.get('fan_control_feedback_source'):
+                params.append(f"Feedback Source: 0x{act['fan_control_feedback_source']:X}")
+            if act.get('fan_enabled_signal'):
+                params.append(f"Enabled Signal: {act['fan_enabled_signal']}")
+            if act.get('fan_tach_feedback_signal'):
+                params.append(f"Tach Signal: {act['fan_tach_feedback_signal']}")
+            if act.get('fan_fault_feedback_signal'):
+                params.append(f"Fault Signal: {act['fan_fault_feedback_signal']}")
+            if act.get('dwell_time_ms') is not None:
+                params.append(f"Dwell: {act['dwell_time_ms']} ms")
+            if act.get('test_timeout_ms') is not None:
+                params.append(f"Timeout: {act['test_timeout_ms']} ms")
         
         return ', '.join(params) if params else 'None'
     
@@ -2040,7 +2057,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -2146,6 +2163,8 @@ Data Points Used: {data_points}"""
                     continue
                 elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                     continue
+                elif type_filter == 'Fan Control Test' and test_type != 'Fan Control Test':
+                    continue
             
             test_items.append((test_name, test_config, exec_data))
         
@@ -2170,6 +2189,8 @@ Data Points Used: {data_points}"""
                         elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
                             continue
                         elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
+                            continue
+                        elif type_filter == 'Fan Control Test' and test_type != 'Fan Control Test':
                             continue
                     
                     test_items.append((test_name, test, {'status': 'Not Run', 'test_type': test_type}))
@@ -5322,7 +5343,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -5337,9 +5358,12 @@ Data Points Used: {data_points}"""
         analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
         temperature_validation_widget = QtWidgets.QWidget()
         temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
+        fan_control_widget = QtWidgets.QWidget()
+        fan_control_layout = QtWidgets.QFormLayout(fan_control_widget)
         
         # Initialize analog_static variables to None (will be set in if/else blocks)
         # Initialize temperature_validation variables to None (will be set in if/else blocks)
+        # Initialize fan_control variables to None (will be set in if/else blocks)
         temp_val_fb_msg_combo = None
         temp_val_fb_signal_combo = None
         temp_val_reference_edit = None
@@ -5350,6 +5374,22 @@ Data Points Used: {data_points}"""
         temp_val_reference_edit_fallback = None
         temp_val_tolerance_edit_fallback = None
         temp_val_dwell_time_edit_fallback = None
+        fan_control_trigger_msg_combo = None
+        fan_control_trigger_signal_combo = None
+        fan_control_feedback_msg_combo = None
+        fan_control_enabled_signal_combo = None
+        fan_control_tach_signal_combo = None
+        fan_control_fault_signal_combo = None
+        fan_control_dwell_time_edit = None
+        fan_control_timeout_edit = None
+        fan_control_trigger_msg_edit = None
+        fan_control_trigger_signal_edit = None
+        fan_control_feedback_msg_edit = None
+        fan_control_enabled_signal_edit = None
+        fan_control_tach_signal_edit = None
+        fan_control_fault_signal_edit = None
+        fan_control_dwell_time_edit_fallback = None
+        fan_control_timeout_edit_fallback = None
         analog_static_fb_msg_combo = None
         analog_static_fb_signal_combo = None
         analog_static_eol_msg_combo = None
@@ -5727,6 +5767,83 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit)
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit)
+            
+            # Fan Control Test fields (DBC mode)
+            # Fan Test Trigger Source: dropdown of CAN Messages
+            fan_control_trigger_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                fan_control_trigger_msg_combo.addItem(label, fid)
+            
+            # Fan Test Trigger Signal: dropdown based on selected message
+            fan_control_trigger_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_fan_control_trigger_signals(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                fan_control_trigger_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    fan_control_trigger_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_fan_control_trigger_signals(0)
+            fan_control_trigger_msg_combo.currentIndexChanged.connect(_update_fan_control_trigger_signals)
+            
+            # Fan Control Feedback Source: dropdown of CAN Messages
+            fan_control_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                fan_control_feedback_msg_combo.addItem(label, fid)
+            
+            # Fan Enabled Signal: dropdown based on selected message
+            fan_control_enabled_signal_combo = QtWidgets.QComboBox()
+            # Fan Tach Feedback Signal: dropdown based on selected message
+            fan_control_tach_signal_combo = QtWidgets.QComboBox()
+            # Fan Fault Feedback Signal: dropdown based on selected message
+            fan_control_fault_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_fan_control_feedback_signals(idx=0):
+                """Update all feedback signal dropdowns based on selected message."""
+                fan_control_enabled_signal_combo.clear()
+                fan_control_tach_signal_combo.clear()
+                fan_control_fault_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    fan_control_enabled_signal_combo.addItems(sigs)
+                    fan_control_tach_signal_combo.addItems(sigs)
+                    fan_control_fault_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_fan_control_feedback_signals(0)
+            fan_control_feedback_msg_combo.currentIndexChanged.connect(_update_fan_control_feedback_signals)
+            
+            # Dwell time input (int, in ms)
+            fan_dwell_time_validator = QtGui.QIntValidator(1, 60000, self)
+            fan_control_dwell_time_edit = QtWidgets.QLineEdit()
+            fan_control_dwell_time_edit.setValidator(fan_dwell_time_validator)
+            fan_control_dwell_time_edit.setPlaceholderText('e.g., 1000')
+            
+            # Test timeout input (int, in ms)
+            fan_timeout_validator = QtGui.QIntValidator(1, 60000, self)
+            fan_control_timeout_edit = QtWidgets.QLineEdit()
+            fan_control_timeout_edit.setValidator(fan_timeout_validator)
+            fan_control_timeout_edit.setPlaceholderText('e.g., 5000')
+            
+            # Populate fan control sub-widget
+            fan_control_layout.addRow('Fan Test Trigger Source:', fan_control_trigger_msg_combo)
+            fan_control_layout.addRow('Fan Test Trigger Signal:', fan_control_trigger_signal_combo)
+            fan_control_layout.addRow('Fan Control Feedback Source:', fan_control_feedback_msg_combo)
+            fan_control_layout.addRow('Fan Enabled Signal:', fan_control_enabled_signal_combo)
+            fan_control_layout.addRow('Fan Tach Feedback Signal:', fan_control_tach_signal_combo)
+            fan_control_layout.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_combo)
+            fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit)
+            fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -5889,6 +6006,36 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback)
             
+            # Fan Control Test fields (fallback when no DBC)
+            fan_control_trigger_msg_edit = QtWidgets.QLineEdit()
+            fan_control_trigger_signal_edit = QtWidgets.QLineEdit()
+            fan_control_feedback_msg_edit = QtWidgets.QLineEdit()
+            fan_control_enabled_signal_edit = QtWidgets.QLineEdit()
+            fan_control_tach_signal_edit = QtWidgets.QLineEdit()
+            fan_control_fault_signal_edit = QtWidgets.QLineEdit()
+            
+            # Dwell time input (int, in ms)
+            fan_dwell_time_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            fan_control_dwell_time_edit_fallback = QtWidgets.QLineEdit()
+            fan_control_dwell_time_edit_fallback.setValidator(fan_dwell_time_validator_fallback)
+            fan_control_dwell_time_edit_fallback.setPlaceholderText('e.g., 1000')
+            
+            # Test timeout input (int, in ms)
+            fan_timeout_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            fan_control_timeout_edit_fallback = QtWidgets.QLineEdit()
+            fan_control_timeout_edit_fallback.setValidator(fan_timeout_validator_fallback)
+            fan_control_timeout_edit_fallback.setPlaceholderText('e.g., 5000')
+            
+            # Populate fan control sub-widget (fallback)
+            fan_control_layout.addRow('Fan Test Trigger Source (CAN ID):', fan_control_trigger_msg_edit)
+            fan_control_layout.addRow('Fan Test Trigger Signal:', fan_control_trigger_signal_edit)
+            fan_control_layout.addRow('Fan Control Feedback Source (CAN ID):', fan_control_feedback_msg_edit)
+            fan_control_layout.addRow('Fan Enabled Signal:', fan_control_enabled_signal_edit)
+            fan_control_layout.addRow('Fan Tach Feedback Signal:', fan_control_tach_signal_edit)
+            fan_control_layout.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_edit)
+            fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit_fallback)
+            fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit_fallback)
+            
             phase_current_layout.addRow('Command Message (CAN ID):', phase_current_cmd_msg_edit)
             phase_current_layout.addRow('Trigger Test Signal:', phase_current_trigger_signal_edit)
             phase_current_layout.addRow('Iq_ref Signal:', phase_current_iq_ref_signal_edit)
@@ -5953,6 +6100,7 @@ Data Points Used: {data_points}"""
         test_type_to_index['Phase Current Test'] = act_stacked.addWidget(phase_current_widget)
         test_type_to_index['Analog Static Test'] = act_stacked.addWidget(analog_static_widget)
         test_type_to_index['Temperature Validation Test'] = act_stacked.addWidget(temperature_validation_widget)
+        test_type_to_index['Fan Control Test'] = act_stacked.addWidget(fan_control_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -5974,7 +6122,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -6245,6 +6393,53 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Fan Control Test':
+                    # Fan Control Test: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = fan_control_trigger_msg_combo.currentData()
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = fan_control_trigger_signal_combo.currentText().strip() if fan_control_trigger_signal_combo.count() else ''
+                    
+                    try:
+                        feedback_msg_id = fan_control_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    fan_enabled_signal = fan_control_enabled_signal_combo.currentText().strip() if fan_control_enabled_signal_combo.count() else ''
+                    fan_tach_signal = fan_control_tach_signal_combo.currentText().strip() if fan_control_tach_signal_combo.count() else ''
+                    fan_fault_signal = fan_control_fault_signal_combo.currentText().strip() if fan_control_fault_signal_combo.count() else ''
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_fan_dwell(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_fan_dwell(fan_control_dwell_time_edit)
+                    
+                    # Test timeout (int)
+                    def _to_int_or_none_fan_timeout(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    timeout_val = _to_int_or_none_fan_timeout(fan_control_timeout_edit)
+                    
+                    act = {
+                        'type': 'Fan Control Test',
+                        'fan_test_trigger_source': trigger_msg_id,
+                        'fan_test_trigger_signal': trigger_signal,
+                        'fan_control_feedback_source': feedback_msg_id,
+                        'fan_enabled_signal': fan_enabled_signal,
+                        'fan_tach_feedback_signal': fan_tach_signal,
+                        'fan_fault_feedback_signal': fan_fault_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'test_timeout_ms': timeout_val,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -6473,6 +6668,53 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Fan Control Test':
+                    # Fan Control Test (no DBC): read from text fields
+                    try:
+                        trigger_msg_id = int(fan_control_trigger_msg_edit.text().strip(), 0) if fan_control_trigger_msg_edit.text().strip() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = fan_control_trigger_signal_edit.text().strip()
+                    
+                    try:
+                        feedback_msg_id = int(fan_control_feedback_msg_edit.text().strip(), 0) if fan_control_feedback_msg_edit.text().strip() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    fan_enabled_signal = fan_control_enabled_signal_edit.text().strip()
+                    fan_tach_signal = fan_control_tach_signal_edit.text().strip()
+                    fan_fault_signal = fan_control_fault_signal_edit.text().strip()
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_fan_dwell_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_fan_dwell_fallback(fan_control_dwell_time_edit_fallback)
+                    
+                    # Test timeout (int)
+                    def _to_int_or_none_fan_timeout_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    timeout_val = _to_int_or_none_fan_timeout_fallback(fan_control_timeout_edit_fallback)
+                    
+                    act = {
+                        'type': 'Fan Control Test',
+                        'fan_test_trigger_source': trigger_msg_id,
+                        'fan_test_trigger_signal': trigger_signal,
+                        'fan_control_feedback_source': feedback_msg_id,
+                        'fan_enabled_signal': fan_enabled_signal,
+                        'fan_tach_feedback_signal': fan_tach_signal,
+                        'fan_fault_feedback_signal': fan_fault_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'test_timeout_ms': timeout_val,
+                    }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -6538,6 +6780,26 @@ Data Points Used: {data_points}"""
                 return False
         return True
     
+    def _is_test_name_unique(self, name: str, exclude_index: int = None) -> bool:
+        """Check if test name is unique, optionally excluding a specific index (for edit).
+        
+        Args:
+            name: Test name to check
+            exclude_index: Index to exclude from check (current test being edited)
+            
+        Returns:
+            True if name is unique, False otherwise
+        """
+        if not name or not name.strip():
+            return False
+        name = name.strip()
+        for i, test in enumerate(self._tests):
+            if i == exclude_index:
+                continue
+            if test.get('name', '').strip() == name:
+                return False
+        return True
+    
     def _validate_test(self, test_data: dict) -> tuple[bool, str]:
         """Validate test data.
         
@@ -6554,8 +6816,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', or 'Temperature Validation Test'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', or 'Fan Control Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -6627,6 +6889,28 @@ Data Points Used: {data_points}"""
                 return False, "Temperature Validation test requires dwell time (ms)"
             if actuation.get('dwell_time_ms', 0) <= 0:
                 return False, "Dwell time must be positive"
+        elif test_type == 'Fan Control Test':
+            # Validate required fields
+            if actuation.get('fan_test_trigger_source') is None:
+                return False, "Fan Control test requires fan test trigger source (CAN ID)"
+            if not actuation.get('fan_test_trigger_signal'):
+                return False, "Fan Control test requires fan test trigger signal name"
+            if actuation.get('fan_control_feedback_source') is None:
+                return False, "Fan Control test requires fan control feedback source (CAN ID)"
+            if not actuation.get('fan_enabled_signal'):
+                return False, "Fan Control test requires fan enabled signal name"
+            if not actuation.get('fan_tach_feedback_signal'):
+                return False, "Fan Control test requires fan tach feedback signal name"
+            if not actuation.get('fan_fault_feedback_signal'):
+                return False, "Fan Control test requires fan fault feedback signal name"
+            if actuation.get('dwell_time_ms') is None:
+                return False, "Fan Control test requires dwell time (ms)"
+            if actuation.get('dwell_time_ms', 0) <= 0:
+                return False, "Dwell time must be positive"
+            if actuation.get('test_timeout_ms') is None:
+                return False, "Fan Control test requires test timeout (ms)"
+            if actuation.get('test_timeout_ms', 0) <= 0:
+                return False, "Test timeout must be positive"
         
         return True, ""
     
@@ -7022,7 +7306,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -7537,6 +7821,117 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit_edit)
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_edit)
+            
+            # Fan Control Test fields (DBC mode) - for edit dialog
+            fan_control_trigger_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                fan_control_trigger_msg_combo_edit.addItem(label, fid)
+            
+            fan_control_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_fan_control_trigger_signals_edit(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                fan_control_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    fan_control_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_fan_control_trigger_signals_edit(0)
+            fan_control_trigger_msg_combo_edit.currentIndexChanged.connect(_update_fan_control_trigger_signals_edit)
+            
+            fan_control_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                fan_control_feedback_msg_combo_edit.addItem(label, fid)
+            
+            fan_control_enabled_signal_combo_edit = QtWidgets.QComboBox()
+            fan_control_tach_signal_combo_edit = QtWidgets.QComboBox()
+            fan_control_fault_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_fan_control_feedback_signals_edit(idx=0):
+                """Update all feedback signal dropdowns based on selected message."""
+                fan_control_enabled_signal_combo_edit.clear()
+                fan_control_tach_signal_combo_edit.clear()
+                fan_control_fault_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    fan_control_enabled_signal_combo_edit.addItems(sigs)
+                    fan_control_tach_signal_combo_edit.addItems(sigs)
+                    fan_control_fault_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_fan_control_feedback_signals_edit(0)
+            fan_control_feedback_msg_combo_edit.currentIndexChanged.connect(_update_fan_control_feedback_signals_edit)
+            
+            # Dwell time input (int, in ms)
+            fan_dwell_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            fan_control_dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            fan_control_dwell_time_edit_edit.setValidator(fan_dwell_time_validator_edit)
+            fan_control_dwell_time_edit_edit.setPlaceholderText('e.g., 1000')
+            
+            # Test timeout input (int, in ms)
+            fan_timeout_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            fan_control_timeout_edit_edit = QtWidgets.QLineEdit(str(act.get('test_timeout_ms', '')))
+            fan_control_timeout_edit_edit.setValidator(fan_timeout_validator_edit)
+            fan_control_timeout_edit_edit.setPlaceholderText('e.g., 5000')
+            
+            # Populate fan control fields from stored data
+            try:
+                trigger_msg_id = act.get('fan_test_trigger_source')
+                if trigger_msg_id is not None:
+                    for i in range(fan_control_trigger_msg_combo_edit.count()):
+                        if fan_control_trigger_msg_combo_edit.itemData(i) == trigger_msg_id:
+                            fan_control_trigger_msg_combo_edit.setCurrentIndex(i)
+                            _update_fan_control_trigger_signals_edit(i)
+                            break
+                if act.get('fan_test_trigger_signal') and fan_control_trigger_signal_combo_edit.count():
+                    try:
+                        fan_control_trigger_signal_combo_edit.setCurrentText(str(act.get('fan_test_trigger_signal')))
+                    except Exception:
+                        pass
+                
+                feedback_msg_id = act.get('fan_control_feedback_source')
+                if feedback_msg_id is not None:
+                    for i in range(fan_control_feedback_msg_combo_edit.count()):
+                        if fan_control_feedback_msg_combo_edit.itemData(i) == feedback_msg_id:
+                            fan_control_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_fan_control_feedback_signals_edit(i)
+                            break
+                if act.get('fan_enabled_signal') and fan_control_enabled_signal_combo_edit.count():
+                    try:
+                        fan_control_enabled_signal_combo_edit.setCurrentText(str(act.get('fan_enabled_signal')))
+                    except Exception:
+                        pass
+                if act.get('fan_tach_feedback_signal') and fan_control_tach_signal_combo_edit.count():
+                    try:
+                        fan_control_tach_signal_combo_edit.setCurrentText(str(act.get('fan_tach_feedback_signal')))
+                    except Exception:
+                        pass
+                if act.get('fan_fault_feedback_signal') and fan_control_fault_signal_combo_edit.count():
+                    try:
+                        fan_control_fault_signal_combo_edit.setCurrentText(str(act.get('fan_fault_feedback_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate fan control sub-widget
+            fan_control_layout.addRow('Fan Test Trigger Source:', fan_control_trigger_msg_combo_edit)
+            fan_control_layout.addRow('Fan Test Trigger Signal:', fan_control_trigger_signal_combo_edit)
+            fan_control_layout.addRow('Fan Control Feedback Source:', fan_control_feedback_msg_combo_edit)
+            fan_control_layout.addRow('Fan Enabled Signal:', fan_control_enabled_signal_combo_edit)
+            fan_control_layout.addRow('Fan Tach Feedback Signal:', fan_control_tach_signal_combo_edit)
+            fan_control_layout.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_combo_edit)
+            fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit_edit)
+            fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -7710,6 +8105,36 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit_fallback_edit)
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback_edit)
+            
+            # Fan Control Test fields (fallback when no DBC) - for edit dialog
+            fan_control_trigger_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_test_trigger_source', '')))
+            fan_control_trigger_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_test_trigger_signal', '')))
+            fan_control_feedback_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_control_feedback_source', '')))
+            fan_control_enabled_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_enabled_signal', '')))
+            fan_control_tach_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_tach_feedback_signal', '')))
+            fan_control_fault_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_fault_feedback_signal', '')))
+            
+            # Dwell time input (int, in ms)
+            fan_dwell_time_validator_fallback_edit = QtGui.QIntValidator(1, 60000, self)
+            fan_control_dwell_time_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            fan_control_dwell_time_edit_fallback_edit.setValidator(fan_dwell_time_validator_fallback_edit)
+            fan_control_dwell_time_edit_fallback_edit.setPlaceholderText('e.g., 1000')
+            
+            # Test timeout input (int, in ms)
+            fan_timeout_validator_fallback_edit = QtGui.QIntValidator(1, 60000, self)
+            fan_control_timeout_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('test_timeout_ms', '')))
+            fan_control_timeout_edit_fallback_edit.setValidator(fan_timeout_validator_fallback_edit)
+            fan_control_timeout_edit_fallback_edit.setPlaceholderText('e.g., 5000')
+            
+            # Populate fan control sub-widget (fallback)
+            fan_control_layout.addRow('Fan Test Trigger Source (CAN ID):', fan_control_trigger_msg_edit_edit)
+            fan_control_layout.addRow('Fan Test Trigger Signal:', fan_control_trigger_signal_edit_edit)
+            fan_control_layout.addRow('Fan Control Feedback Source (CAN ID):', fan_control_feedback_msg_edit_edit)
+            fan_control_layout.addRow('Fan Enabled Signal:', fan_control_enabled_signal_edit_edit)
+            fan_control_layout.addRow('Fan Tach Feedback Signal:', fan_control_tach_signal_edit_edit)
+            fan_control_layout.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_edit_edit)
+            fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit_fallback_edit)
+            fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit_fallback_edit)
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
@@ -7757,7 +8182,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -8026,6 +8451,53 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif data['type'] == 'Fan Control Test':
+                    # Fan Control Test: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = fan_control_trigger_msg_combo_edit.currentData() if 'fan_control_trigger_msg_combo_edit' in locals() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = fan_control_trigger_signal_combo_edit.currentText().strip() if 'fan_control_trigger_signal_combo_edit' in locals() and fan_control_trigger_signal_combo_edit.count() else ''
+                    
+                    try:
+                        feedback_msg_id = fan_control_feedback_msg_combo_edit.currentData() if 'fan_control_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    fan_enabled_signal = fan_control_enabled_signal_combo_edit.currentText().strip() if 'fan_control_enabled_signal_combo_edit' in locals() and fan_control_enabled_signal_combo_edit.count() else ''
+                    fan_tach_signal = fan_control_tach_signal_combo_edit.currentText().strip() if 'fan_control_tach_signal_combo_edit' in locals() and fan_control_tach_signal_combo_edit.count() else ''
+                    fan_fault_signal = fan_control_fault_signal_combo_edit.currentText().strip() if 'fan_control_fault_signal_combo_edit' in locals() and fan_control_fault_signal_combo_edit.count() else ''
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_fan_dwell_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_fan_dwell_edit(fan_control_dwell_time_edit_edit) if 'fan_control_dwell_time_edit_edit' in locals() else None
+                    
+                    # Test timeout (int)
+                    def _to_int_or_none_fan_timeout_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    timeout_val = _to_int_or_none_fan_timeout_edit(fan_control_timeout_edit_edit) if 'fan_control_timeout_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Fan Control Test',
+                        'fan_test_trigger_source': trigger_msg_id,
+                        'fan_test_trigger_signal': trigger_signal,
+                        'fan_control_feedback_source': feedback_msg_id,
+                        'fan_enabled_signal': fan_enabled_signal,
+                        'fan_tach_feedback_signal': fan_tach_signal,
+                        'fan_fault_feedback_signal': fan_fault_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'test_timeout_ms': timeout_val,
+                    }
             else:
                 if data['type'] == 'Digital Logic Test':
                     try:
@@ -8240,6 +8712,53 @@ Data Points Used: {data_points}"""
                         'reference_temperature_c': reference_temp_val,
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
+                    }
+                elif data['type'] == 'Fan Control Test':
+                    # Fan Control Test (no DBC): read from text fields
+                    try:
+                        trigger_msg_id = int(fan_control_trigger_msg_edit_edit.text().strip(), 0) if 'fan_control_trigger_msg_edit_edit' in locals() and fan_control_trigger_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = fan_control_trigger_signal_edit_edit.text().strip() if 'fan_control_trigger_signal_edit_edit' in locals() else ''
+                    
+                    try:
+                        feedback_msg_id = int(fan_control_feedback_msg_edit_edit.text().strip(), 0) if 'fan_control_feedback_msg_edit_edit' in locals() and fan_control_feedback_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    fan_enabled_signal = fan_control_enabled_signal_edit_edit.text().strip() if 'fan_control_enabled_signal_edit_edit' in locals() else ''
+                    fan_tach_signal = fan_control_tach_signal_edit_edit.text().strip() if 'fan_control_tach_signal_edit_edit' in locals() else ''
+                    fan_fault_signal = fan_control_fault_signal_edit_edit.text().strip() if 'fan_control_fault_signal_edit_edit' in locals() else ''
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_fan_dwell_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_fan_dwell_fallback_edit(fan_control_dwell_time_edit_fallback_edit) if 'fan_control_dwell_time_edit_fallback_edit' in locals() else None
+                    
+                    # Test timeout (int)
+                    def _to_int_or_none_fan_timeout_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    timeout_val = _to_int_or_none_fan_timeout_fallback_edit(fan_control_timeout_edit_fallback_edit) if 'fan_control_timeout_edit_fallback_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Fan Control Test',
+                        'fan_test_trigger_source': trigger_msg_id,
+                        'fan_test_trigger_signal': trigger_signal,
+                        'fan_control_feedback_source': feedback_msg_id,
+                        'fan_enabled_signal': fan_enabled_signal,
+                        'fan_tach_feedback_signal': fan_tach_signal,
+                        'fan_fault_feedback_signal': fan_fault_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'test_timeout_ms': timeout_val,
                     }
 
             # Validate test before saving
@@ -8684,6 +9203,30 @@ Data Points Used: {data_points}"""
                             'temperature_values': result_data.get('temperature_values', [])
                         }
                         logger.debug(f"Retrieved stored result data for {test_name} (temperature validation test)")
+                    else:
+                        plot_data = None
+                elif test_type == 'Fan Control Test':
+                    # Retrieve result data for fan control tests
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'fan_tach_latest': result_data.get('fan_tach_latest'),
+                            'fan_fault_latest': result_data.get('fan_fault_latest'),
+                            'fan_tach_samples': result_data.get('fan_tach_samples'),
+                            'fan_fault_samples': result_data.get('fan_fault_samples'),
+                            'passed': result_data.get('passed', False)
+                        }
+                        # Store raw data for potential plotting
+                        plot_data = {
+                            'fan_tach_values': result_data.get('fan_tach_values', []),
+                            'fan_fault_values': result_data.get('fan_fault_values', [])
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (fan control test)")
                     else:
                         plot_data = None
                 

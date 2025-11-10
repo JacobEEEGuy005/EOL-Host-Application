@@ -7,10 +7,10 @@ from typing import Optional, Dict, Any, List
 
 @dataclass
 class ActuationConfig:
-    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, or Temperature Validation Test).
+    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, Temperature Validation Test, or Fan Control Test).
     
     Attributes:
-        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', or 'Temperature Validation Test')
+        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', or 'Fan Control Test')
         can_id: CAN message ID for actuation commands (digital tests)
         signal: Signal name for actuation (optional)
         value_low: Low value for digital tests
@@ -55,8 +55,18 @@ class ActuationConfig:
         reference_temperature_c: Reference temperature in degrees Celsius
         tolerance_c: Tolerance in degrees Celsius for pass/fail determination
         dwell_time_ms: Dwell time in milliseconds (data collection period)
+        
+        For Fan Control Test:
+        fan_test_trigger_source: CAN message ID for fan test trigger command
+        fan_test_trigger_signal: Signal name for fan test trigger
+        fan_control_feedback_source: CAN message ID containing fan feedback signals
+        fan_enabled_signal: Signal name for fan enabled status
+        fan_tach_feedback_signal: Signal name for fan tach feedback
+        fan_fault_feedback_signal: Signal name for fan fault feedback
+        dwell_time_ms: Dwell time in milliseconds (data collection period)
+        test_timeout_ms: Test timeout in milliseconds (for fan enabled verification)
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', or 'Temperature Validation Test'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', or 'Fan Control Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -100,6 +110,15 @@ class ActuationConfig:
     # Temperature Validation Test fields
     reference_temperature_c: Optional[float] = None  # Reference temperature in degrees Celsius
     tolerance_c: Optional[float] = None  # Tolerance in degrees Celsius
+    
+    # Fan Control Test fields
+    fan_test_trigger_source: Optional[int] = None  # CAN message ID for fan test trigger
+    fan_test_trigger_signal: Optional[str] = None  # Signal name for fan test trigger
+    fan_control_feedback_source: Optional[int] = None  # CAN message ID containing fan feedback signals
+    fan_enabled_signal: Optional[str] = None  # Signal name for fan enabled status
+    fan_tach_feedback_signal: Optional[str] = None  # Signal name for fan tach feedback
+    fan_fault_feedback_signal: Optional[str] = None  # Signal name for fan fault feedback
+    test_timeout_ms: Optional[int] = None  # Test timeout in milliseconds
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -183,6 +202,23 @@ class ActuationConfig:
                 result['tolerance_c'] = self.tolerance_c
             if self.dwell_time_ms is not None:
                 result['dwell_time_ms'] = self.dwell_time_ms
+        elif self.type == 'Fan Control Test':
+            if self.fan_test_trigger_source is not None:
+                result['fan_test_trigger_source'] = self.fan_test_trigger_source
+            if self.fan_test_trigger_signal:
+                result['fan_test_trigger_signal'] = self.fan_test_trigger_signal
+            if self.fan_control_feedback_source is not None:
+                result['fan_control_feedback_source'] = self.fan_control_feedback_source
+            if self.fan_enabled_signal:
+                result['fan_enabled_signal'] = self.fan_enabled_signal
+            if self.fan_tach_feedback_signal:
+                result['fan_tach_feedback_signal'] = self.fan_tach_feedback_signal
+            if self.fan_fault_feedback_signal:
+                result['fan_fault_feedback_signal'] = self.fan_fault_feedback_signal
+            if self.dwell_time_ms is not None:
+                result['dwell_time_ms'] = self.dwell_time_ms
+            if self.test_timeout_ms is not None:
+                result['test_timeout_ms'] = self.test_timeout_ms
         return result
     
     @classmethod

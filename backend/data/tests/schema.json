@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
@@ -32,6 +32,29 @@
                   "reference_temperature_c",
                   "tolerance_c",
                   "dwell_time_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Fan Control Test"},
+                  "fan_test_trigger_source": {"type":"integer"},
+                  "fan_test_trigger_signal": {"type":"string"},
+                  "fan_control_feedback_source": {"type":"integer"},
+                  "fan_enabled_signal": {"type":"string"},
+                  "fan_tach_feedback_signal": {"type":"string"},
+                  "fan_fault_feedback_signal": {"type":"string"},
+                  "dwell_time_ms": {"type":"integer", "minimum":1},
+                  "test_timeout_ms": {"type":"integer", "minimum":1}
+                },
+                "required": [
+                  "fan_test_trigger_source",
+                  "fan_test_trigger_signal",
+                  "fan_control_feedback_source",
+                  "fan_enabled_signal",
+                  "fan_tach_feedback_signal",
+                  "fan_fault_feedback_signal",
+                  "dwell_time_ms",
+                  "test_timeout_ms"
                 ]
               },
               {

@@ -1317,6 +1317,343 @@ class TestRunner:
                 
                 logger.info(f"Temperature Validation Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            
+            elif act.get('type') == 'Fan Control Test':
+                # Fan Control Test execution:
+                # 1) Send Fan Test Trigger Signal = 1 to enable fan
+                # 2) Wait up to Test Timeout for Fan Enabled Signal to become 1
+                # 3) If Fan Enabled Signal ≠ 1 within Test Timeout → FAIL
+                # 4) After Fan Enabled Signal = 1 verified, start dwell time
+                # 5) During dwell time: Collect Fan Tach Feedback Signal and Fan Fault Feedback Signal continuously
+                # 6) Display Fan Tach Signal Value in Real-Time Monitoring (Feedback Signal Value) continuously
+                # 7) After dwell time: Check latest values
+                # 8) Pass if: Fan Tach Feedback Signal = 1 AND Fan Fault Feedback Signal = 0
+                
+                # Extract parameters
+                trigger_msg_id = act.get('fan_test_trigger_source')
+                trigger_signal = act.get('fan_test_trigger_signal')
+                feedback_msg_id = act.get('fan_control_feedback_source')
+                fan_enabled_signal = act.get('fan_enabled_signal')
+                fan_tach_signal = act.get('fan_tach_feedback_signal')
+                fan_fault_signal = act.get('fan_fault_feedback_signal')
+                dwell_ms = int(act.get('dwell_time_ms', 0))
+                timeout_ms = int(act.get('test_timeout_ms', 0))
+                
+                # Validate parameters
+                if not all([trigger_msg_id, trigger_signal, feedback_msg_id, fan_enabled_signal, 
+                           fan_tach_signal, fan_fault_signal]):
+                    return False, "Missing required Fan Control Test parameters"
+                
+                if dwell_ms <= 0:
+                    return False, "Dwell time must be positive"
+                
+                if timeout_ms <= 0:
+                    return False, "Test timeout must be positive"
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events.
+
+                    Args:
+                        sec: Sleep duration in seconds
+                    """
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Helper function to encode and send CAN message
+                def _encode_and_send_fan(signals: dict, msg_id: int) -> bytes:
+                    """Encode signals to CAN message bytes."""
+                    encode_data = {'DeviceID': 0}  # always include DeviceID
+                    mux_value = None
+                    data_bytes = b''
+                    
+                    # Use DbcService if available
+                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
+                    if dbc_available:
+                        target_msg = self.dbc_service.find_message_by_id(msg_id)
+                    else:
+                        target_msg = None
+                    
+                    if target_msg is None:
+                        logger.warning(f"Could not find message for CAN ID 0x{msg_id:X} - DBC may not be loaded or message missing")
+                    
+                    if target_msg is not None:
+                        for sig_name in signals:
+                            encode_data[sig_name] = signals[sig_name]
+                            # check if this signal is muxed
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                    mux_value = sig.multiplexer_ids[0]
+                                    break
+                        if mux_value is not None:
+                            encode_data['MessageType'] = mux_value
+                        try:
+                            if self.dbc_service is not None:
+                                data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
+                            else:
+                                data_bytes = target_msg.encode(encode_data)
+                        except Exception:
+                            # fallback to single byte
+                            try:
+                                if len(signals) == 1:
+                                    v = list(signals.values())[0]
+                                    data_bytes = bytes([int(v) & 0xFF])
+                            except Exception:
+                                data_bytes = b''
+                    else:
+                        try:
+                            if len(signals) == 1:
+                                v = list(signals.values())[0]
+                                if isinstance(v, str) and v.startswith('0x'):
+                                    data_bytes = bytes.fromhex(v[2:])
+                                else:
+                                    data_bytes = bytes([int(v) & 0xFF])
+                        except Exception:
+                            data_bytes = b''
+                    
+                    return data_bytes
+                
+                # Step 1: Send Fan Test Trigger Signal = 1 to enable fan
+                logger.info(f"Fan Control Test: Sending trigger signal to enable fan...")
+                try:
+                    signals = {trigger_signal: 1}
+                    data_bytes = _encode_and_send_fan(signals, trigger_msg_id)
+                    
+                    if not data_bytes:
+                        return False, "Failed to encode fan trigger message"
+                    
+                    # Use CanService.send_frame() with Frame object (same pattern as other tests)
+                    from backend.adapters.interface import Frame as AdapterFrame
+                    
+                    if self.can_service is not None and self.can_service.is_connected():
+                        f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
+                        logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
+                        try:
+                            success = self.can_service.send_frame(f)
+                            if not success:
+                                logger.warning(f"send_frame returned False for can_id=0x{trigger_msg_id:X}")
+                            else:
+                                logger.info(f"Sent fan trigger signal (1) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                        except Exception as e:
+                            logger.error(f"Failed to send frame via service: {e}", exc_info=True)
+                            return False, f"Failed to send fan trigger signal: {e}"
+                    elif self.gui is not None:
+                        # Fallback: use GUI's CAN service
+                        if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                            f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
+                            logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
+                            try:
+                                success = self.gui.can_service.send_frame(f)
+                                if not success:
+                                    logger.warning(f"send_frame returned False for can_id=0x{trigger_msg_id:X}")
+                                else:
+                                    logger.info(f"Sent fan trigger signal (1) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                            except Exception as e:
+                                logger.error(f"Failed to send frame via GUI service: {e}", exc_info=True)
+                                return False, f"Failed to send fan trigger signal: {e}"
+                        else:
+                            return False, "CAN service not available. Cannot send fan trigger signal."
+                    else:
+                        return False, "CAN service not available. Cannot send fan trigger signal."
+                except Exception as e:
+                    logger.error(f"Failed to send fan trigger signal: {e}")
+                    return False, f"Failed to send fan trigger signal: {e}"
+                
+                # Step 2: Wait up to Test Timeout for Fan Enabled Signal to become 1
+                logger.info(f"Fan Control Test: Waiting for fan enabled signal (timeout: {timeout_ms}ms)...")
+                fan_enabled_verified = False
+                timeout_start = time.time()
+                timeout_end = timeout_start + (timeout_ms / 1000.0)
+                
+                while time.time() < timeout_end:
+                    try:
+                        # Read Fan Enabled Signal
+                        if self.signal_service is not None:
+                            ts, enabled_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_enabled_signal)
+                        elif self.gui is not None:
+                            ts, enabled_val = self.gui.get_latest_signal(feedback_msg_id, fan_enabled_signal)
+                        else:
+                            ts, enabled_val = (None, None)
+                        
+                        if enabled_val is not None:
+                            try:
+                                enabled_int = int(float(enabled_val))
+                                if enabled_int == 1:
+                                    fan_enabled_verified = True
+                                    logger.info("Fan enabled signal verified (value = 1)")
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading fan enabled signal: {e}")
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 3: Check if fan enabled was verified
+                if not fan_enabled_verified:
+                    return False, f"Fan enabled signal did not reach 1 within timeout ({timeout_ms}ms). Check fan control configuration."
+                
+                # Step 4: After verification, start dwell time and collect data
+                logger.info(f"Fan Control Test: Collecting fan tach and fault signals for {dwell_ms}ms...")
+                fan_tach_values = []
+                fan_fault_values = []
+                start_time = time.time()
+                end_time = start_time + (dwell_ms / 1000.0)
+                
+                while time.time() < end_time:
+                    # Read Fan Tach Feedback Signal
+                    try:
+                        if self.signal_service is not None:
+                            ts_tach, tach_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_tach_signal)
+                        elif self.gui is not None:
+                            ts_tach, tach_val = self.gui.get_latest_signal(feedback_msg_id, fan_tach_signal)
+                        else:
+                            ts_tach, tach_val = (None, None)
+                        
+                        if tach_val is not None:
+                            try:
+                                tach_float = float(tach_val)
+                                fan_tach_values.append(tach_float)
+                                
+                                # Update real-time display with latest value (feedback signal, not current signal)
+                                if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
+                                    try:
+                                        self.gui.feedback_signal_label.setText(f"{tach_float:.2f}")
+                                    except Exception as e:
+                                        logger.debug(f"Failed to update feedback signal label: {e}")
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading fan tach signal: {e}")
+                    
+                    # Read Fan Fault Feedback Signal
+                    try:
+                        if self.signal_service is not None:
+                            ts_fault, fault_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_fault_signal)
+                        elif self.gui is not None:
+                            ts_fault, fault_val = self.gui.get_latest_signal(feedback_msg_id, fan_fault_signal)
+                        else:
+                            ts_fault, fault_val = (None, None)
+                        
+                        if fault_val is not None:
+                            try:
+                                fault_float = float(fault_val)
+                                fan_fault_values.append(fault_float)
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading fan fault signal: {e}")
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 5: Disable fan by sending trigger signal = 0
+                logger.info(f"Fan Control Test: Disabling fan (sending trigger signal = 0)...")
+                try:
+                    signals = {trigger_signal: 0}
+                    data_bytes = _encode_and_send_fan(signals, trigger_msg_id)
+                    
+                    if not data_bytes:
+                        logger.warning("Failed to encode fan disable message, but continuing with test evaluation")
+                    else:
+                        # Use CanService.send_frame() with Frame object
+                        from backend.adapters.interface import Frame as AdapterFrame
+                        
+                        if self.can_service is not None and self.can_service.is_connected():
+                            f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
+                            logger.debug(f"Sending fan disable frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
+                            try:
+                                success = self.can_service.send_frame(f)
+                                if not success:
+                                    logger.warning(f"send_frame returned False for fan disable (can_id=0x{trigger_msg_id:X})")
+                                else:
+                                    logger.info(f"Sent fan disable signal (0) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                            except Exception as e:
+                                logger.warning(f"Failed to send fan disable frame via service: {e}")
+                        elif self.gui is not None:
+                            # Fallback: use GUI's CAN service
+                            if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
+                                logger.debug(f"Sending fan disable frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
+                                try:
+                                    success = self.gui.can_service.send_frame(f)
+                                    if not success:
+                                        logger.warning(f"send_frame returned False for fan disable (can_id=0x{trigger_msg_id:X})")
+                                    else:
+                                        logger.info(f"Sent fan disable signal (0) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to send fan disable frame via GUI service: {e}")
+                        else:
+                            logger.warning("CAN service not available. Cannot send fan disable signal.")
+                except Exception as e:
+                    logger.warning(f"Failed to send fan disable signal: {e} (continuing with test evaluation)")
+                
+                # Step 6: Check if any data was collected
+                if not fan_tach_values:
+                    return False, f"No fan tach data received during dwell time ({dwell_ms}ms). Check CAN connection and signal configuration."
+                
+                if not fan_fault_values:
+                    return False, f"No fan fault data received during dwell time ({dwell_ms}ms). Check CAN connection and signal configuration."
+                
+                # Step 7: Use latest values for pass/fail determination
+                latest_tach = fan_tach_values[-1]
+                latest_fault = fan_fault_values[-1]
+                
+                # Step 8: Determine pass/fail
+                # Pass if: Fan Tach Feedback Signal = 1 AND Fan Fault Feedback Signal = 0
+                tach_ok = (int(float(latest_tach)) == 1)
+                fault_ok = (int(float(latest_fault)) == 0)
+                passed = tach_ok and fault_ok
+                
+                # Build info string
+                info = f"Fan Tach Signal (latest): {latest_tach:.2f} (expected: 1), "
+                info += f"Fan Fault Signal (latest): {latest_fault:.2f} (expected: 0)"
+                info += f"\nTach samples collected: {len(fan_tach_values)}, Fault samples collected: {len(fan_fault_values)}"
+                
+                if not passed:
+                    if not tach_ok:
+                        info += f"\nFAIL: Fan Tach Signal is {latest_tach:.2f} (expected 1)"
+                    if not fault_ok:
+                        info += f"\nFAIL: Fan Fault Signal is {latest_fault:.2f} (expected 0)"
+                else:
+                    info += f"\nPASS: Fan Tach Signal = 1 and Fan Fault Signal = 0"
+                
+                # Store results for display
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'fan_tach_latest': latest_tach,
+                    'fan_fault_latest': latest_fault,
+                    'fan_tach_samples': len(fan_tach_values),
+                    'fan_fault_samples': len(fan_fault_values),
+                    'fan_tach_values': fan_tach_values,
+                    'fan_fault_values': fan_fault_values,
+                    'passed': passed
+                }
+                
+                # Store in temporary storage for retrieval by _on_test_finished
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"Fan Control Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             else:
                 pass
         except Exception as e:
