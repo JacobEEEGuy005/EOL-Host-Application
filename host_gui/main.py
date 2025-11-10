@@ -1153,14 +1153,18 @@ class TestRunner:
                 if dwell_ms <= 0:
                     return False, "Dwell time must be positive"
                 
-                def _nb_sleep(sec: float):
-                    """Non-blocking sleep that processes Qt events."""
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events.
+                    
+                    Args:
+                        sec: Sleep duration in seconds
+                    """
                     end = time.time() + float(sec)
                     while time.time() < end:
                         try:
                             QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
