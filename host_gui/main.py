@@ -24,9 +24,7 @@ Dependencies:
 - python-can: CAN bus abstraction layer (via backend adapters)
 """
 import sys
-import threading
 import json
-import queue
 import time
 import os
 import shutil
@@ -36,7 +34,6 @@ import re
 import struct
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List, Union
-from concurrent.futures import ThreadPoolExecutor
 from html import escape
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -1218,7 +1215,7 @@ class PhaseCurrentTestStateMachine:
             
             # Query trace status
             time.sleep(0.2)
-            print(ch_num)
+            logger.debug(f"Checking trace status for channel {ch_num}")
             tra_response = self.oscilloscope_service.send_command(f"C{ch_num}:TRA?")
             if tra_response is None:
                 errors.append(f"Channel {ch_num}: Failed to query trace status")
@@ -1227,14 +1224,14 @@ class PhaseCurrentTestStateMachine:
             # Parse response
             tra_str = tra_response.strip().upper()
             actual_enabled = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
-            print("Trace ENable Actual enabled: ", actual_enabled)
+            logger.debug(f"Trace enable actual enabled: {actual_enabled}")
             if not actual_enabled:
                 errors.append(f"Channel {ch_num}: Expected enabled but trace is OFF")
             
             # Check probe attenuation
             time.sleep(0.2)
             attn_response = self.oscilloscope_service.send_command(f"C{ch_num}:ATTN?")
-            print("Attenuation response: ", attn_response)
+            logger.debug(f"Attenuation response: {attn_response}")
             if attn_response is None:
                 errors.append(f"Channel {ch_num}: Failed to query probe attenuation")
                 continue
@@ -1254,16 +1251,16 @@ class PhaseCurrentTestStateMachine:
         # Check timebase
         time.sleep(0.2)
         tdiv_response = self.oscilloscope_service.send_command("TDIV?")
-        print("Timebase response: ", tdiv_response)
+        logger.debug(f"Timebase response: {tdiv_response}")
         if tdiv_response is None:
             errors.append("Failed to query timebase")
         else:
             expected_timebase_ms = config.get('acquisition', {}).get('timebase_ms', 1.0)
             tdiv_match = REGEX_TDIV.search(tdiv_response)
-            print("Timebase match: ", tdiv_match)
+            logger.debug(f"Timebase match: {tdiv_match}")
             if tdiv_match:
                 actual_tdiv = float(tdiv_match.group(1))
-                print("Actual timebase: ", actual_tdiv)
+                logger.debug(f"Actual timebase: {actual_tdiv}")
                 # Convert TDIV (seconds per division) to milliseconds
                 actual_timebase_ms = actual_tdiv * 1000.0
                 if abs(actual_timebase_ms - expected_timebase_ms) > 0.01:
@@ -2084,59 +2081,6 @@ class TestRunner:
                         except Exception:
                             pass
 
-                def _wait_for_feedback(timeout_sec: float):
-                    # reuse existing feedback scanning logic to look for feedback signal
-                    waited = 0.0
-                    poll_interval = POLL_INTERVAL_MS / 1000.0  # Convert ms to seconds
-                    fb = test.get('feedback_signal')
-                    observed_info = 'no feedback'
-                    while waited < timeout_sec:
-                        QtCore.QCoreApplication.processEvents()
-                        time.sleep(poll_interval)
-                        waited += poll_interval
-                        try:
-                            rows = gui.frame_table.rowCount()
-                            for r in range(max(0, rows-10), rows):
-                                try:
-                                    can_id_item = gui.frame_table.item(r,1)
-                                    data_item = gui.frame_table.item(r,3)
-                                    if can_id_item is None or data_item is None:
-                                        continue
-                                    try:
-                                        row_can = int(can_id_item.text())
-                                    except Exception:
-                                        try:
-                                            row_can = int(can_id_item.text(), 0)
-                                        except Exception:
-                                            continue
-                                    raw_hex = data_item.text()
-                                    raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                                    # Phase 1: Use services if available
-                                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded()) or getattr(gui, '_dbc_db', None) is not None
-                                    if dbc_available and fb:
-                                        if self.dbc_service is not None:
-                                            target_msg, target_sig = self.dbc_service.find_message_and_signal(row_can, fb)
-                                        else:
-                                            target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
-                                        if target_msg is not None:
-                                            try:
-                                                if self.dbc_service is not None:
-                                                    decoded = self.dbc_service.decode_message(target_msg, raw)
-                                                else:
-                                                    decoded = target_msg.decode(raw)
-                                                observed_info = f"{fb}={decoded.get(fb)} (msg 0x{row_can:X})"
-                                                return True, observed_info
-                                            except Exception:
-                                                pass
-                                    else:
-                                        observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
-                                        return True, observed_info
-                                except Exception:
-                                    continue
-                        except Exception:
-                            pass
-                    return False, observed_info
-
                 ok = False
                 info = ''
                 def _nb_sleep(sec: float):
@@ -2160,75 +2104,6 @@ class TestRunner:
                         return int(v)
                     except Exception:
                         return v
-
-                def _check_frame_for_feedback():
-                    fb = test.get('feedback_signal')
-                    fb_mid = test.get('feedback_message_id')
-                    try:
-                        if fb:
-                            if fb_mid is not None:
-                                key = f"{fb_mid}:{fb}"
-                                entry = gui._signal_values.get(key)
-                                if entry is not None:
-                                    ts, v = entry
-                                    return v, f"{fb}={v} (msg 0x{fb_mid:X})"
-                            else:
-                                candidates = []
-                                for k, (ts, v) in gui._signal_values.items():
-                                    try:
-                                        _can, sname = k.split(':', 1)
-                                    except Exception:
-                                        continue
-                                    if sname == fb:
-                                        candidates.append((ts, k, v))
-                                if candidates:
-                                    candidates.sort(key=lambda x: x[0], reverse=True)
-                                    ts, k, v = candidates[0]
-                                    canid = k.split(':', 1)[0]
-                                    try:
-                                        cid = int(canid)
-                                        return v, f"{fb}={v} (msg 0x{cid:X})"
-                                    except Exception:
-                                        return v, f"{fb}={v} (msg {canid})"
-                    except Exception:
-                        pass
-
-                    try:
-                        rows = gui.frame_table.rowCount()
-                    except Exception:
-                        rows = 0
-                    for r in range(max(0, rows - 50), rows):
-                        try:
-                            can_id_item = gui.frame_table.item(r, 1)
-                            data_item = gui.frame_table.item(r, 3)
-                            if can_id_item is None or data_item is None:
-                                continue
-                            try:
-                                row_can = int(can_id_item.text())
-                            except Exception:
-                                try:
-                                    row_can = int(can_id_item.text(), 0)
-                                except Exception:
-                                    continue
-                            raw_hex = data_item.text()
-                            raw = bytes.fromhex(raw_hex) if raw_hex else b''
-                            if gui._dbc_db is not None and fb:
-                                target_msg, target_sig = gui._find_message_and_signal(row_can, fb)
-                                if target_msg is not None:
-                                    try:
-                                        try:
-                                            decoded = target_msg.decode(raw, decode_choices=False)
-                                        except TypeError:
-                                            decoded = target_msg.decode(raw)
-                                        val = decoded.get(fb)
-                                        return val, f"{fb}={val} (msg 0x{row_can:X})"
-                                    except Exception:
-                                        pass
-                            else:
-                                return raw.hex(), f"raw={raw.hex()} (msg 0x{row_can:X})"
-                        except Exception:
-                            continue
-                    return None, None
 
                 def _wait_for_value(expected, duration_ms: int):
                     # Require the observed value to remain equal to `expected` for the
@@ -11844,50 +11719,6 @@ Data Points Used: {data_points}"""
                 logger.error(f"Failed to send frame via service: {e}", exc_info=True)
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to send: {e}')
                 return
-        
-        # Legacy implementation (fallback)
-        if self.sim is None:
-            QtWidgets.QMessageBox.warning(self, 'Not running', 'Start adapter before sending frames')
-            return
-        try:
-            can_id_text = self.send_id.text()
-            can_id = self._parse_can_id(can_id_text)
-            if can_id is None:
-                raise ValueError("CAN ID is required and must be a valid number")
-            
-            # Validate CAN ID range
-            if not (CAN_ID_MIN <= can_id <= CAN_ID_MAX):
-                raise ValueError(f"CAN ID {can_id} out of range ({CAN_ID_MIN}-{CAN_ID_MAX:#X})")
-            
-            data_text = self.send_data.text()
-            data = self._parse_hex_data(data_text)
-            
-            # Validate data length
-            if len(data) > CAN_FRAME_MAX_LENGTH:
-                raise ValueError(f"Data length {len(data)} exceeds CAN frame max ({CAN_FRAME_MAX_LENGTH} bytes)")
-            if AdapterFrame is not None:
-                f = AdapterFrame(can_id=can_id, data=data)
-            else:
-                class F: pass
-                f = F(); f.can_id = can_id; f.data = data; f.timestamp = time.time()
-            self.sim.send(f)
-            logger.debug(f"Sent frame: can_id=0x{can_id:X}, data={data.hex()}")
-            if hasattr(self.sim, 'loopback'):
-                try:
-                    self.sim.loopback(f)
-                except Exception as e:
-                    logger.debug(f"Loopback failed (non-fatal): {e}")
-            try:
-                self._append_msg_log('TX', f)
-            except Exception as e:
-                logger.debug(f"Error appending TX to message log: {e}")
-            QtWidgets.QMessageBox.information(self, 'Sent', 'Frame sent')
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid frame data: {e}")
-            QtWidgets.QMessageBox.critical(self, 'Error', f'Invalid input: {e}')
-        except Exception as e:
-            logger.error(f"Failed to send frame: {e}", exc_info=True)
-            QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to send: {e}')
 
 
 def main():
