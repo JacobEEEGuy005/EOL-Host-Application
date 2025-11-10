@@ -1045,11 +1045,11 @@ class TestRunner:
                                             _, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
                                             if measured_val is not None:
                                                 measured_dac = float(measured_val)
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.debug(f"Failed to get signal value during analog test: {e}")
                                     gui._update_plot(measured_dac, fb_val, test_name)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Error updating plot during analog test: {e}", exc_info=True)
                     
                     # 6) Ramp DAC up by step, holding for dwell each step
                     # During each step: continuously send DAC command (50ms period) and collect multiple data points
@@ -1075,11 +1075,11 @@ class TestRunner:
                                                 _, measured_val = gui.get_latest_signal(eol_msg_id, eol_signal_name)
                                                 if measured_val is not None:
                                                     measured_dac = float(measured_val)
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                logger.debug(f"Failed to get signal value during analog test ramp: {e}")
                                         gui._update_plot(measured_dac, fb_val, test_name)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Error updating plot during analog test ramp: {e}", exc_info=True)
                     success = True
                     info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
                 except Exception as e:
@@ -1091,8 +1091,8 @@ class TestRunner:
                         if dac_cmd_sig:
                             _encode_and_send({dac_cmd_sig: 0})
                             _nb_sleep(SLEEP_INTERVAL_SHORT)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to clear signal cache: {e}")
                     try:
                         if mux_enable_sig:
                             # send disable; include channel if available to be explicit
@@ -1101,8 +1101,8 @@ class TestRunner:
                             else:
                                 _encode_and_send({mux_enable_sig: 0})
                             _nb_sleep(SLEEP_INTERVAL_SHORT)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to disable multiplexor signal: {e}")
                 # Capture and store plot data immediately for analog tests before returning
                 # This prevents plot data from being lost when the next test clears the plot arrays
                 if test.get('type') == 'analog':
@@ -1297,10 +1297,11 @@ class TestRunner:
                         else:
                             observed_info = f'observed frame id=0x{row_can:X} data={raw.hex()}'
                             return True, observed_info
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Failed to process frame from manual send: {e}", exc_info=True)
                         continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Error processing manual CAN frame send: {e}", exc_info=True)
 
         return False, observed_info
 
@@ -3017,8 +3018,8 @@ Data Points Used: {data_points}"""
             self.plot_axes.relim()
             self.plot_axes.autoscale()
             self.plot_canvas.draw_idle()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
 
     def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
         """Update the plot with a new data point (DAC voltage, feedback value).
@@ -4532,8 +4533,8 @@ Data Points Used: {data_points}"""
                     if self.can_bitrate_combo.itemText(i).startswith(kb):
                         self.can_bitrate_combo.setCurrentIndex(i)
                         break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to load CAN settings: {e}")
         cs_layout.addRow('Bitrate (kbps):', self.can_bitrate_combo)
         apply_btn = QtWidgets.QPushButton('Apply')
         def _apply_settings():
@@ -4543,8 +4544,8 @@ Data Points Used: {data_points}"""
                 txt = self.can_bitrate_combo.currentText().strip()
                 if txt:
                     self._can_bitrate = int(txt.split()[0])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to save CAN settings: {e}", exc_info=True)
             QtWidgets.QMessageBox.information(self, 'Settings', 'CAN settings applied')
         apply_btn.clicked.connect(_apply_settings)
         cs_layout.addRow(apply_btn)
