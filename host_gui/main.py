@@ -2965,8 +2965,7 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         # internal tests storage
         self._tests = []
-        # DBC database once loaded
-        self._dbc_db = None
+        # DBC database access via dbc_service (legacy _dbc_db removed)
         
         # EOL Hardware Configuration (initialized in _build_eol_hw_configurator if that tab exists)
         # Pre-initialize here in case tab isn't built yet
@@ -5838,8 +5837,7 @@ Data Points Used: {data_points}"""
         inner.addTab(self.signal_widget, 'Signal View')
         # mapping of signal key -> row index in signal_table for fast updates
         self._signal_rows = {}
-        # storage for latest signal values: key -> (timestamp, value)
-        self._signal_values = {}
+        # Signal values accessed via signal_service (legacy _signal_values removed)
         # currently monitored feedback signal during test run: (msg_id, signal_name) or None
         self._current_feedback = None
         inner.addTab(self.send_widget, 'Send Data')
@@ -6312,11 +6310,13 @@ Data Points Used: {data_points}"""
         messages = []
         if self.dbc_service and self.dbc_service.is_loaded():
             messages = self.dbc_service.get_all_messages()
-        elif self._dbc_db:
-            try:
-                messages = getattr(self._dbc_db, 'messages', [])
-            except Exception:
-                pass
+        else:
+            # Try to get from database if service has it
+            if self.dbc_service and hasattr(self.dbc_service, 'database') and self.dbc_service.database:
+                try:
+                    messages = getattr(self.dbc_service.database, 'messages', [])
+                except Exception:
+                    pass
         
         if not messages:
             QtWidgets.QMessageBox.warning(self, 'No DBC Loaded', 
@@ -6478,11 +6478,13 @@ Data Points Used: {data_points}"""
         messages = []
         if self.dbc_service and self.dbc_service.is_loaded():
             messages = self.dbc_service.get_all_messages()
-        elif self._dbc_db:
-            try:
-                messages = getattr(self._dbc_db, 'messages', [])
-            except Exception:
-                pass
+        else:
+            # Try to get from database if service has it
+            if self.dbc_service and hasattr(self.dbc_service, 'database') and self.dbc_service.database:
+                try:
+                    messages = getattr(self.dbc_service.database, 'messages', [])
+                except Exception:
+                    pass
         
         if not messages:
             QtWidgets.QMessageBox.warning(self, 'No DBC Loaded', 
@@ -7455,7 +7457,7 @@ Data Points Used: {data_points}"""
         dbc_loaded = False
         if self.dbc_service and self.dbc_service.is_loaded():
             dbc_loaded = True
-        elif self._dbc_db:
+        elif self.dbc_service and hasattr(self.dbc_service, 'database') and self.dbc_service.database:
             dbc_loaded = True
         
         if not dbc_loaded:
@@ -7487,18 +7489,15 @@ Data Points Used: {data_points}"""
                 else:
                     logger.warning(f"DbcService.load_dbc_file returned False for: {fname}")
                     QtWidgets.QMessageBox.warning(self, 'Error', f'Failed to load DBC file: {fname}')
-                    self._dbc_db = None
                     return
             except (FileNotFoundError, ValueError, RuntimeError) as e:
                 logger.error(f"Failed to load DBC via service: {e}", exc_info=True)
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to load DBC: {e}')
-                self._dbc_db = None
                 return
         
-        # Legacy implementation (fallback)
+        # Legacy implementation (fallback) - should not be reached if services are available
         if cantools is None:
             QtWidgets.QMessageBox.warning(self, 'DBC Load', 'cantools not installed in this environment. Install cantools to enable DBC parsing.')
-            self._dbc_db = None
             return
         try:
             # cantools provides database.load_file
@@ -7507,7 +7506,10 @@ Data Points Used: {data_points}"""
             except Exception:
                 # fallback to older API name
                 db = cantools.db.load_file(fname)
-            self._dbc_db = db
+            # Load via service if available, otherwise this is a fallback that shouldn't happen
+            if self.dbc_service is not None:
+                # Try to load via service with the database object
+                logger.warning("Legacy DBC loading path used - services should handle this")
             
             # If DbcService is available, try to sync the DBC into it
             if self.dbc_service is not None:
@@ -11057,8 +11059,7 @@ Data Points Used: {data_points}"""
                                 except Exception:
                                     self.signal_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(ts)))
                                 self.signal_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(val)))
-                                # Sync legacy cache
-                                self._signal_values[key] = (ts, val)
+                                # Signal values stored in signal_service (legacy cache removed)
                             else:
                                 r = self.signal_table.rowCount()
                                 self.signal_table.insertRow(r)
@@ -11123,14 +11124,8 @@ Data Points Used: {data_points}"""
                     pass  # Keep original value if conversion fails
             return (ts, val)
         
-        # Fallback to legacy cache if SignalService not available
-        if key in self._signal_values:
-            entry = self._signal_values.get(key)
-            if entry is not None:
-                ts, v = entry
-                # Note: Gain is already applied when storing in _signal_values in _decode_and_add_signals
-                return (ts, v)
-        
+        # No fallback - signal_service should always be available
+        # If signal_service is None, it means services weren't initialized properly
         return (None, None)
 
     def _send_frame(self):
