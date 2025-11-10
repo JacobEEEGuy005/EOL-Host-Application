@@ -79,12 +79,15 @@ logger = logging.getLogger(__name__)
 
 # Note: Log level will be updated by ConfigManager after it's initialized
 
-# Import constants
-# Try multiple import strategies to handle different execution contexts
-constants_imported = False
+# Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+# Import constants - simplified import strategy
+# Try relative import first (works when host_gui is a package), then absolute import
 try:
-    # Strategy 1: Import as module (works when run as python -m host_gui.main or from package)
-    from host_gui.constants import (
+    from .constants import (
         CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
         CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
         POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
@@ -97,12 +100,10 @@ try:
         LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
         PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
     )
-    constants_imported = True
-    logger.debug("Successfully imported constants from host_gui.constants")
 except ImportError:
+    # Fallback to absolute import (works when run as script or module)
     try:
-        # Strategy 2: Try relative import (works when host_gui is a package)
-        from .constants import (
+        from host_gui.constants import (
             CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
             CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
             POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
@@ -110,94 +111,43 @@ except ImportError:
             MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
             CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
             WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
-        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
-        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
-        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
+            SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
+            MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
+            LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
+            PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
         )
-        constants_imported = True
-        logger.debug("Successfully imported constants using relative import")
     except ImportError:
-        try:
-            # Strategy 3: Add parent directory to path and try again (works when run as script)
-            from pathlib import Path
-            parent_dir = Path(__file__).parent.parent
-            if str(parent_dir) not in sys.path:
-                sys.path.insert(0, str(parent_dir))
-            from host_gui.constants import (
-                CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
-                CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
-                POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
-                MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
-                MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
-                CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
-                WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
-        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
-        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
-        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
-            )
-            constants_imported = True
-            logger.debug("Successfully imported constants after adding parent directory to sys.path")
-        except ImportError:
-            try:
-                # Strategy 4: Direct import when running from host_gui directory
-                from constants import (
-                    CAN_ID_MIN, CAN_ID_MAX, DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX,
-                    CAN_FRAME_MAX_LENGTH, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
-                    POLL_INTERVAL_MS, FRAME_POLL_INTERVAL_MS, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
-                    MAX_MESSAGES_DEFAULT, MAX_FRAMES_DEFAULT,
-                    MSG_TYPE_SET_RELAY, MSG_TYPE_SET_DAC, MSG_TYPE_SET_MUX,
-                    CAN_BITRATE_DEFAULT, CAN_CHANNEL_DEFAULT,
-                    WINDOW_WIDTH_DEFAULT, WINDOW_HEIGHT_DEFAULT,
-        SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM,
-        MUX_CHANNEL_MAX, DWELL_TIME_MAX_MS,
-        LEFT_PANEL_MIN_WIDTH, LOGO_WIDTH, LOGO_HEIGHT,
-        PLOT_GRID_ALPHA, ADC_A3_GAIN_FACTOR
-                )
-                constants_imported = True
-                logger.debug("Successfully imported constants using direct import")
-            except ImportError:
-                pass
-
-if not constants_imported:
-    # Fallback constants if all import strategies fail
-    logger.warning("Could not import constants, using fallback values")
-    CAN_ID_MIN = 0
-    CAN_ID_MAX = 0x1FFFFFFF
-    DAC_VOLTAGE_MIN = 0
-    DAC_VOLTAGE_MAX = 5000
-    CAN_FRAME_MAX_LENGTH = 8
-    DWELL_TIME_DEFAULT = 100
-    DWELL_TIME_MIN = 100
-    POLL_INTERVAL_MS = 50
-    FRAME_POLL_INTERVAL_MS = 150
-    DAC_SETTLING_TIME_MS = 20
-    DATA_COLLECTION_PERIOD_MS = 50
-    MAX_MESSAGES_DEFAULT = 50
-    MAX_FRAMES_DEFAULT = 50
-    MSG_TYPE_SET_RELAY = 16
-    MSG_TYPE_SET_DAC = 18
-    MSG_TYPE_SET_MUX = 17
-    CAN_BITRATE_DEFAULT = 500
-    CAN_CHANNEL_DEFAULT = '0'
-    WINDOW_WIDTH_DEFAULT = 1100
-    WINDOW_HEIGHT_DEFAULT = 700
-    LEFT_PANEL_MIN_WIDTH = 300
-    LOGO_WIDTH = 280
-    LOGO_HEIGHT = 80
-    SLEEP_INTERVAL_SHORT = 0.02
-    SLEEP_INTERVAL_MEDIUM = 0.05
-    MUX_CHANNEL_MAX = 65535
-    DWELL_TIME_MAX_MS = 60000
-    PLOT_GRID_ALPHA = 0.3
-    ADC_A3_GAIN_FACTOR = 1.998
-    logger.warning("Could not import constants, using fallback values")
-
-# Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
+        # Final fallback: define constants inline (should not happen in normal operation)
+        logger.error("Failed to import constants module - using fallback values")
+        CAN_ID_MIN = 0
+        CAN_ID_MAX = 0x1FFFFFFF
+        DAC_VOLTAGE_MIN = 0
+        DAC_VOLTAGE_MAX = 5000
+        CAN_FRAME_MAX_LENGTH = 8
+        DWELL_TIME_DEFAULT = 100
+        DWELL_TIME_MIN = 100
+        POLL_INTERVAL_MS = 50
+        FRAME_POLL_INTERVAL_MS = 150
+        DAC_SETTLING_TIME_MS = 20
+        DATA_COLLECTION_PERIOD_MS = 50
+        MAX_MESSAGES_DEFAULT = 50
+        MAX_FRAMES_DEFAULT = 50
+        MSG_TYPE_SET_RELAY = 16
+        MSG_TYPE_SET_DAC = 18
+        MSG_TYPE_SET_MUX = 17
+        CAN_BITRATE_DEFAULT = 500
+        CAN_CHANNEL_DEFAULT = '0'
+        WINDOW_WIDTH_DEFAULT = 1100
+        WINDOW_HEIGHT_DEFAULT = 700
+        LEFT_PANEL_MIN_WIDTH = 300
+        LOGO_WIDTH = 280
+        LOGO_HEIGHT = 80
+        SLEEP_INTERVAL_SHORT = 0.02
+        SLEEP_INTERVAL_MEDIUM = 0.05
+        MUX_CHANNEL_MAX = 65535
+        DWELL_TIME_MAX_MS = 60000
+        PLOT_GRID_ALPHA = 0.3
+        ADC_A3_GAIN_FACTOR = 1.998
 
 try:
     from backend.adapters.sim import SimAdapter
@@ -239,6 +189,21 @@ except ImportError:
     DbcError = ValueError
     CanAdapterError = RuntimeError
 
+# Import utility functions
+try:
+    from host_gui.utils import (
+        analyze_steady_state_can,
+        apply_lowpass_filter,
+        apply_moving_average_filter,
+        WaveformDecoder
+    )
+except ImportError:
+    # Fallback if utils not available (should not happen)
+    logger.error("Failed to import utility modules")
+    analyze_steady_state_can = None
+    apply_lowpass_filter = None
+    apply_moving_average_filter = None
+    WaveformDecoder = None
 
 # AdapterWorker class moved to host_gui/services/can_service.py
 # Import from services if needed:
@@ -269,508 +234,10 @@ except ImportError:
     scipy_available = False
 
 
-def _analyze_steady_state_can(
-    timestamps: List[float],
-    values: List[float],
-    window_size: Optional[int] = None,
-    variance_threshold_percent: float = 5.0,
-    skip_initial_percent: float = 30.0
-) -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float]]:
-    """Analyze CAN signal data to find steady state region and compute average.
-    
-    Args:
-        timestamps: List of timestamps in seconds
-        values: List of signal values
-        window_size: Size of rolling window for variance calculation. If None, uses 1% of data points.
-        variance_threshold_percent: Maximum coefficient of variation (std/mean * 100) for steady state
-        skip_initial_percent: Percentage of initial data to skip when looking for steady state
-        
-    Returns:
-        Tuple of (start_index, end_index, average_value, std_deviation) or (None, None, None, None) if insufficient data
-    """
-    if not values or len(values) < 10:
-        logger.warning("Insufficient data points for steady state analysis")
-        return (None, None, None, None)
-    
-    num_points = len(values)
-    
-    # Determine window size (1% of data points, minimum 10, maximum 2000)
-    if window_size is None:
-        window_size = max(10, min(2000, num_points // 100))
-    
-    # Skip initial transient period
-    skip_points = int(num_points * skip_initial_percent / 100.0)
-    search_start = max(skip_points, window_size)
-    search_end = num_points - window_size
-    
-    if search_start >= search_end:
-        search_start = window_size
-        search_end = num_points - window_size
-    
-    if search_start >= search_end:
-        search_start = 0
-        search_end = num_points
-    
-    # Find region with lowest variance
-    best_start = search_start
-    best_variance = float('inf')
-    best_mean = 0.0
-    
-    if numpy_available:
-        values_array = np.array(values, dtype=np.float64)
-        for start_idx in range(search_start, search_end):
-            window_data = values_array[start_idx:start_idx + window_size]
-            window_mean = float(np.mean(window_data))
-            window_std = float(np.std(window_data))
-            
-            # Use coefficient of variation (CV) = std/mean * 100
-            if abs(window_mean) > 1e-10:
-                cv = abs(window_std / window_mean) * 100
-            else:
-                cv = window_std * 100
-            
-            if cv < variance_threshold_percent and window_std < best_variance:
-                best_variance = window_std
-                best_start = start_idx
-                best_mean = window_mean
-    else:
-        # Manual calculation without numpy
-        for start_idx in range(search_start, search_end):
-            window_data = values[start_idx:start_idx + window_size]
-            window_mean = sum(window_data) / len(window_data)
-            window_variance = sum((x - window_mean) ** 2 for x in window_data) / len(window_data)
-            window_std = window_variance ** 0.5
-            
-            if abs(window_mean) > 1e-10:
-                cv = abs(window_std / window_mean) * 100
-            else:
-                cv = window_std * 100
-            
-            if cv < variance_threshold_percent and window_std < best_variance:
-                best_variance = window_std
-                best_start = start_idx
-                best_mean = window_mean
-    
-    # If no region met the threshold, use the region with lowest variance
-    if best_variance == float('inf'):
-        if numpy_available:
-            values_array = np.array(values, dtype=np.float64)
-            for start_idx in range(search_start, search_end):
-                window_data = values_array[start_idx:start_idx + window_size]
-                window_std = float(np.std(window_data))
-                if window_std < best_variance:
-                    best_variance = window_std
-                    best_start = start_idx
-                    best_mean = float(np.mean(window_data))
-        else:
-            for start_idx in range(search_start, search_end):
-                window_data = values[start_idx:start_idx + window_size]
-                window_mean = sum(window_data) / len(window_data)
-                window_variance = sum((x - window_mean) ** 2 for x in window_data) / len(window_data)
-                window_std = window_variance ** 0.5
-                if window_std < best_variance:
-                    best_variance = window_std
-                    best_start = start_idx
-                    best_mean = window_mean
-    
-    # Extend steady state region forward and backward
-    steady_start = best_start
-    steady_end = best_start + window_size
-    
-    # Extend backward
-    if numpy_available:
-        values_array = np.array(values, dtype=np.float64)
-        for i in range(best_start - 1, max(0, best_start - window_size), -1):
-            test_window = values_array[i:steady_end]
-            test_mean = float(np.mean(test_window))
-            test_std = float(np.std(test_window))
-            if abs(best_mean) > 1e-10:
-                cv = abs(test_std / test_mean) * 100
-            else:
-                cv = test_std * 100
-            if cv < variance_threshold_percent * 1.5:  # Slightly relaxed for extension
-                steady_start = i
-            else:
-                break
-    else:
-        for i in range(best_start - 1, max(0, best_start - window_size), -1):
-            test_window = values[i:steady_end]
-            test_mean = sum(test_window) / len(test_window)
-            test_variance = sum((x - test_mean) ** 2 for x in test_window) / len(test_window)
-            test_std = test_variance ** 0.5
-            if abs(best_mean) > 1e-10:
-                cv = abs(test_std / test_mean) * 100
-            else:
-                cv = test_std * 100
-            if cv < variance_threshold_percent * 1.5:
-                steady_start = i
-            else:
-                break
-    
-    # Extend forward
-    if numpy_available:
-        for i in range(steady_end, min(num_points, steady_end + window_size)):
-            test_window = values_array[steady_start:i + 1]
-            test_mean = float(np.mean(test_window))
-            test_std = float(np.std(test_window))
-            if abs(best_mean) > 1e-10:
-                cv = abs(test_std / test_mean) * 100
-            else:
-                cv = test_std * 100
-            if cv < variance_threshold_percent * 1.5:
-                steady_end = i + 1
-            else:
-                break
-    else:
-        for i in range(steady_end, min(num_points, steady_end + window_size)):
-            test_window = values[steady_start:i + 1]
-            test_mean = sum(test_window) / len(test_window)
-            test_variance = sum((x - test_mean) ** 2 for x in test_window) / len(test_window)
-            test_std = test_variance ** 0.5
-            if abs(best_mean) > 1e-10:
-                cv = abs(test_std / test_mean) * 100
-            else:
-                cv = test_std * 100
-            if cv < variance_threshold_percent * 1.5:
-                steady_end = i + 1
-            else:
-                break
-    
-    # Calculate final average and std
-    steady_data = values[steady_start:steady_end]
-    if not steady_data:
-        return (None, None, None, None)
-    
-    if numpy_available:
-        steady_array = np.array(steady_data, dtype=np.float64)
-        avg = float(np.mean(steady_array))
-        std = float(np.std(steady_array))
-    else:
-        avg = sum(steady_data) / len(steady_data)
-        variance = sum((x - avg) ** 2 for x in steady_data) / len(steady_data)
-        std = variance ** 0.5
-    
-    return (steady_start, steady_end, avg, std)
+# Utility functions moved to host_gui/utils/ - imported at top of file
 
 
-def _apply_lowpass_filter(
-    time_values: Union[List[float], 'np.ndarray'],
-    voltage_values: Union[List[float], 'np.ndarray'],
-    cutoff_freq: float = 10000.0,
-    filter_order: int = 4
-) -> Union[List[float], 'np.ndarray']:
-    """Apply a low-pass Butterworth filter to the voltage waveform.
-    
-    This function matches the filtering used in the test script to reduce noise
-    before steady state analysis.
-    
-    Args:
-        time_values: List or numpy array of time values in seconds
-        voltage_values: List or numpy array of voltage values to filter
-        cutoff_freq: Cutoff frequency in Hz (default 10kHz, matching test script)
-        filter_order: Filter order (default 4)
-        
-    Returns:
-        Filtered voltage values (same type as input)
-    """
-    if not voltage_values or len(voltage_values) < 10:
-        logger.warning("Insufficient data points for filtering, returning original data")
-        return voltage_values
-    
-    if not numpy_available:
-        logger.warning("NumPy not available - cannot apply digital filter, returning unfiltered data")
-        return voltage_values
-    
-    if not scipy_available:
-        logger.warning("SciPy not available - using simple moving average filter as fallback")
-        # Fallback to simple moving average
-        return _apply_moving_average_filter(voltage_values, window_size=10)
-    
-    # Convert to numpy arrays if needed
-    if not isinstance(voltage_values, np.ndarray):
-        voltages = np.array(voltage_values, dtype=np.float64)
-        return_list = True
-    else:
-        voltages = voltage_values.astype(np.float64) if voltage_values.dtype != np.float64 else voltage_values
-        return_list = False
-    
-    if not isinstance(time_values, np.ndarray):
-        times = np.array(time_values, dtype=np.float64)
-    else:
-        times = time_values.astype(np.float64) if time_values.dtype != np.float64 else time_values
-    
-    # Calculate sampling frequency
-    if len(time_values) < 2:
-        logger.warning("Need at least 2 time points to calculate sampling frequency, returning unfiltered data")
-        return voltage_values
-    
-    dt = times[1] - times[0]
-    if dt <= 0:
-        # Try to calculate from average
-        dt = (times[-1] - times[0]) / (len(times) - 1)
-        if dt <= 0:
-            logger.warning("Invalid time values for filtering, returning unfiltered data")
-            return voltage_values
-    
-    sampling_freq = 1.0 / dt
-    
-    # Check if cutoff frequency is valid (must be less than Nyquist frequency)
-    nyquist_freq = sampling_freq / 2.0
-    if cutoff_freq >= nyquist_freq:
-        logger.warning(f"Cutoff frequency {cutoff_freq} Hz is >= Nyquist frequency {nyquist_freq:.2f} Hz")
-        logger.warning(f"Reducing cutoff to {nyquist_freq * 0.9:.2f} Hz")
-        cutoff_freq = nyquist_freq * 0.9
-    
-    # Normalize cutoff frequency (0 to 1, where 1 is Nyquist)
-    normalized_cutoff = cutoff_freq / nyquist_freq
-    
-    logger.info(f"Applying low-pass filter: cutoff={cutoff_freq:.2f} Hz, "
-               f"order={filter_order}, sampling_freq={sampling_freq:.2f} Hz")
-    
-    try:
-        # Design Butterworth low-pass filter
-        b, a = signal.butter(filter_order, normalized_cutoff, btype='low', analog=False)
-        
-        # Apply filter using filtfilt for zero-phase filtering
-        filtered_voltages = signal.filtfilt(b, a, voltages)
-        
-        logger.info(f"Filter applied successfully using filtfilt (zero-phase filtering), "
-                   f"filtered {len(filtered_voltages)} points")
-        
-        if return_list:
-            return filtered_voltages.tolist()
-        else:
-            return filtered_voltages
-        
-    except Exception as e:
-        logger.error(f"Error applying filter: {e}", exc_info=True)
-        logger.warning("Returning unfiltered data")
-        return voltage_values
-
-
-def _apply_moving_average_filter(voltage_values: Union[List[float], 'np.ndarray'], window_size: int = 10) -> Union[List[float], 'np.ndarray']:
-    """Apply a simple moving average filter (fallback when scipy is not available).
-    
-    Args:
-        voltage_values: List or numpy array of voltage values
-        window_size: Size of moving average window
-        
-    Returns:
-        Filtered voltage values (same type as input)
-    """
-    if len(voltage_values) < window_size:
-        return voltage_values
-    
-    return_list = not isinstance(voltage_values, np.ndarray)
-    
-    # Optimized: use NumPy convolution if available (much faster)
-    if numpy_available:
-        window = np.ones(window_size, dtype=np.float32) / window_size
-        if isinstance(voltage_values, np.ndarray):
-            filtered = np.convolve(voltage_values, window, mode='same')
-            return filtered
-        else:
-            filtered = np.convolve(voltage_values, window, mode='same')
-            return filtered.tolist()
-    
-    # Fallback to Python loop if NumPy not available
-    filtered = []
-    half_window = window_size // 2
-    
-    for i in range(len(voltage_values)):
-        start_idx = max(0, i - half_window)
-        end_idx = min(len(voltage_values), i + half_window + 1)
-        window_data = voltage_values[start_idx:end_idx]
-        filtered.append(sum(window_data) / len(window_data))
-    
-    return filtered
-
-
-class _WaveformDecoder:
-    """Simplified waveform decoder for oscilloscope data.
-    
-    This class decodes binary waveform data from oscilloscope C1:WF? ALL command.
-    It parses the WAVEDESC descriptor and data array to extract voltage/time values.
-    """
-    
-    # Key offsets in WAVEDESC block
-    DESCRIPTOR_NAME_OFFSET = 0
-    TEMPLATE_NAME_OFFSET = 16
-    WAVE_DESCRIPTOR_OFFSET = 36
-    USER_TEXT_OFFSET = 40
-    TRIGTIME_ARRAY_OFFSET = 44
-    RIS_TIME_ARRAY_OFFSET = 52
-    WAVE_ARRAY_1_OFFSET = 60
-    WAVE_ARRAY_COUNT_OFFSET = 116
-    COMM_TYPE_OFFSET = 32
-    COMM_ORDER_OFFSET = 34
-    VERTICAL_GAIN_OFFSET = 156
-    VERTICAL_OFFSET_OFFSET = 160
-    HORIZ_INTERVAL_OFFSET = 176
-    HORIZ_OFFSET_OFFSET = 180
-    
-    COMM_TYPE_BYTE = 0
-    COMM_TYPE_WORD = 1
-    
-    def __init__(self, waveform_data: bytes):
-        """Initialize decoder with waveform binary data.
-        
-        Args:
-            waveform_data: Raw binary data from C1:WF? ALL command
-        """
-        self.waveform_data = waveform_data
-        self.wavedesc_start = 0
-        
-        # Find WAVEDESC start if not at beginning
-        if not waveform_data[:8].startswith(b'WAVEDESC'):
-            pos = waveform_data.find(b'WAVEDESC')
-            if pos >= 0:
-                self.wavedesc_start = pos
-    
-    def decode(self, vertical_gain: Optional[float] = None, vertical_offset: Optional[float] = None) -> Tuple[dict, List[float], List[float]]:
-        """Decode waveform data.
-        
-        Args:
-            vertical_gain: Optional vertical gain from C1:VDIV? command
-            vertical_offset: Optional vertical offset from C1:OFST? command
-            
-        Returns:
-            Tuple of (descriptor_dict, time_values, voltage_values)
-        """
-        if len(self.waveform_data) < self.wavedesc_start + 400:
-            raise ValueError(f"Waveform data too short: {len(self.waveform_data)} bytes")
-        
-        # Parse WAVEDESC block
-        descriptor = self._parse_wavedesc()
-        
-        # Determine data format
-        comm_type = descriptor['COMM_TYPE']
-        if comm_type == self.COMM_TYPE_BYTE:
-            data_format = 'b'  # signed byte
-            data_size = 1
-        elif comm_type == self.COMM_TYPE_WORD:
-            data_format = 'h'  # signed short (16-bit)
-            data_size = 2
-        else:
-            raise ValueError(f"Unsupported COMM_TYPE: {comm_type}")
-        
-        # Calculate data array start position
-        wave_descriptor_length = descriptor['WAVE_DESCRIPTOR']
-        user_text_length = descriptor['USER_TEXT']
-        data_array_start = (self.wavedesc_start + wave_descriptor_length + user_text_length)
-        
-        # Extract data array
-        wave_array_1_length = descriptor['WAVE_ARRAY_1']
-        wave_array_count = descriptor['WAVE_ARRAY_COUNT']
-        actual_data_length = wave_array_count * data_size
-        available_data = len(self.waveform_data) - data_array_start
-        data_length_to_use = min(wave_array_1_length, actual_data_length, available_data)
-        
-        if data_array_start > len(self.waveform_data) or data_length_to_use <= 0:
-            raise ValueError(f"Invalid data array: start={data_array_start}, length={data_length_to_use}")
-        
-        if data_length_to_use < actual_data_length:
-            wave_array_count = data_length_to_use // data_size
-        
-        data_array_bytes = self.waveform_data[data_array_start:data_array_start + data_length_to_use]
-        
-        # Unpack data points
-        num_points = min(wave_array_count, len(data_array_bytes) // data_size)
-        raw_data_points = struct.unpack(f'<{num_points}{data_format}', 
-                                       data_array_bytes[:num_points * data_size])
-        
-        # Use provided values from C{channel}:VDIV? and C{channel}:OFST? if available,
-        # otherwise fall back to descriptor values
-        if vertical_gain is None:
-            vertical_gain = descriptor['VERTICAL_GAIN']
-            logger.debug(f"Using VERTICAL_GAIN from descriptor: {vertical_gain}")
-        else:
-            logger.debug(f"Using vertical gain from VDIV? query: {vertical_gain}")
-        
-        if vertical_offset is None:
-            vertical_offset = descriptor['VERTICAL_OFFSET']
-            logger.debug(f"Using VERTICAL_OFFSET from descriptor: {vertical_offset}")
-        else:
-            logger.debug(f"Using vertical offset from OFST? query: {vertical_offset}")
-        
-        # Convert raw values to physical voltage values using:
-        # voltage = (vertical_gain * raw_value) / 25.0 - vertical_offset
-        # where:
-        # - vertical_gain is from C{channel}:VDIV? (V/div) or descriptor
-        # - vertical_offset is from C{channel}:OFST? (V) or descriptor
-        # - raw_value is the signed integer from the waveform data
-        # - The /25.0 factor converts the raw value to the correct scale
-        if numpy_available:
-            raw_data_array = np.array(raw_data_points, dtype=np.float32)
-            voltage_values = ((vertical_gain * raw_data_array) / 25.0 - vertical_offset).tolist()
-        else:
-            voltage_values = [(vertical_gain * dp) / 25.0 - vertical_offset for dp in raw_data_points]
-        
-        # Calculate time values
-        horiz_interval = descriptor['HORIZ_INTERVAL']
-        horiz_offset = descriptor['HORIZ_OFFSET']
-        
-        if numpy_available:
-            time_values = (np.arange(num_points, dtype=np.float64) * horiz_interval + horiz_offset).tolist()
-        else:
-            time_values = [(i * horiz_interval) + horiz_offset for i in range(num_points)]
-        
-        return descriptor, time_values, voltage_values
-    
-    def _parse_wavedesc(self) -> dict:
-        """Parse WAVEDESC block from waveform data.
-        
-        Returns:
-            Dictionary with waveform descriptor fields
-        """
-        descriptor = {}
-        
-        # WAVE_DESCRIPTOR (long, 4 bytes at offset 36)
-        descriptor['WAVE_DESCRIPTOR'] = struct.unpack('<I',
-            self.waveform_data[self.wavedesc_start + self.WAVE_DESCRIPTOR_OFFSET:
-                              self.wavedesc_start + self.WAVE_DESCRIPTOR_OFFSET + 4])[0]
-        
-        # USER_TEXT (long, 4 bytes at offset 40)
-        descriptor['USER_TEXT'] = struct.unpack('<I',
-            self.waveform_data[self.wavedesc_start + self.USER_TEXT_OFFSET:
-                              self.wavedesc_start + self.USER_TEXT_OFFSET + 4])[0]
-        
-        # COMM_TYPE (short, 2 bytes at offset 32)
-        descriptor['COMM_TYPE'] = struct.unpack('<H',
-            self.waveform_data[self.wavedesc_start + self.COMM_TYPE_OFFSET:
-                              self.wavedesc_start + self.COMM_TYPE_OFFSET + 2])[0]
-        
-        # WAVE_ARRAY_1 (long, 4 bytes at offset 60)
-        descriptor['WAVE_ARRAY_1'] = struct.unpack('<I',
-            self.waveform_data[self.wavedesc_start + self.WAVE_ARRAY_1_OFFSET:
-                              self.wavedesc_start + self.WAVE_ARRAY_1_OFFSET + 4])[0]
-        
-        # WAVE_ARRAY_COUNT (long, 4 bytes at offset 116)
-        descriptor['WAVE_ARRAY_COUNT'] = struct.unpack('<I',
-            self.waveform_data[self.wavedesc_start + self.WAVE_ARRAY_COUNT_OFFSET:
-                              self.wavedesc_start + self.WAVE_ARRAY_COUNT_OFFSET + 4])[0]
-        
-        # VERTICAL_GAIN (float, 4 bytes at offset 156)
-        descriptor['VERTICAL_GAIN'] = struct.unpack('<f',
-            self.waveform_data[self.wavedesc_start + self.VERTICAL_GAIN_OFFSET:
-                              self.wavedesc_start + self.VERTICAL_GAIN_OFFSET + 4])[0]
-        
-        # VERTICAL_OFFSET (float, 4 bytes at offset 160)
-        descriptor['VERTICAL_OFFSET'] = struct.unpack('<f',
-            self.waveform_data[self.wavedesc_start + self.VERTICAL_OFFSET_OFFSET:
-                              self.wavedesc_start + self.VERTICAL_OFFSET_OFFSET + 4])[0]
-        
-        # HORIZ_INTERVAL (float, 4 bytes at offset 176)
-        descriptor['HORIZ_INTERVAL'] = struct.unpack('<f',
-            self.waveform_data[self.wavedesc_start + self.HORIZ_INTERVAL_OFFSET:
-                              self.wavedesc_start + self.HORIZ_INTERVAL_OFFSET + 4])[0]
-        
-        # HORIZ_OFFSET (double, 8 bytes at offset 180)
-        descriptor['HORIZ_OFFSET'] = struct.unpack('<d',
-            self.waveform_data[self.wavedesc_start + self.HORIZ_OFFSET_OFFSET:
-                              self.wavedesc_start + self.HORIZ_OFFSET_OFFSET + 8])[0]
-        
-        return descriptor
+# WaveformDecoder class moved to host_gui/utils/waveform_decoder.py - imported at top of file
 
 
 class PhaseCurrentTestStateMachine:
@@ -1721,7 +1188,7 @@ class PhaseCurrentTestStateMachine:
             
             # Decode waveform using queried vertical gain and offset
             # If query failed, decoder will fall back to descriptor values
-            decoder = _WaveformDecoder(waveform_data)
+            decoder = WaveformDecoder(waveform_data)
             descriptor, time_values, voltage_values = decoder.decode(
                 vertical_gain=vertical_gain,
                 vertical_offset=vertical_offset
@@ -1744,7 +1211,7 @@ class PhaseCurrentTestStateMachine:
             
             # Apply 10kHz low-pass filter (matching test script)
             try:
-                filtered_voltage_values = _apply_lowpass_filter(
+                filtered_voltage_values = apply_lowpass_filter(
                     time_values, voltage_values, cutoff_freq=10000.0
                 )
                 logger.info(f"CH{channel} filter applied: {len(filtered_voltage_values)} points")
@@ -1794,7 +1261,7 @@ class PhaseCurrentTestStateMachine:
                 return None
             
             # Analyze steady state using filtered and threshold-discarded data
-            start_idx, end_idx, avg, std = _analyze_steady_state_can(
+            start_idx, end_idx, avg, std = analyze_steady_state_can(
                 time_values, filtered_voltage_values,
                 variance_threshold_percent=5.0,
                 skip_initial_percent=30.0
@@ -1883,8 +1350,8 @@ class PhaseCurrentTestStateMachine:
             return None, None
         
         # Analyze steady state on filtered data
-        v_start, v_end, v_avg, v_std = _analyze_steady_state_can(timestamps_filtered, v_values_filtered)
-        w_start, w_end, w_avg, w_std = _analyze_steady_state_can(timestamps_filtered, w_values_filtered)
+        v_start, v_end, v_avg, v_std = analyze_steady_state_can(timestamps_filtered, v_values_filtered)
+        w_start, w_end, w_avg, w_std = analyze_steady_state_can(timestamps_filtered, w_values_filtered)
         
         logger.info(f"CAN analysis: V avg={v_avg}, W avg={w_avg}")
         return v_avg, w_avg
