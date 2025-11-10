@@ -101,7 +101,7 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ FanFault m105 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ InverterTemperature m106 : 16|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
  SG_ RectifierTemperature m106 : 32|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
- SG_ MotorTemperature m106 : 48|16@1+ (0.01,0) [-327.67|327.67] "degC" Vector__XXX
+ SG_ MotorTemperature m106 : 48|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
 
 BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
  SG_ NewSignal_0020 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
