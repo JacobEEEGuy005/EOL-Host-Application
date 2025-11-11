@@ -1223,6 +1223,17 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Tolerance: {act['tolerance_c']:.2f} °C")
             if act.get('dwell_time_ms') is not None:
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
+        elif test_type == 'DC Bus Sensing':
+            if act.get('oscilloscope_channel'):
+                params.append(f"Oscilloscope Channel: {act['oscilloscope_channel']}")
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_signal'):
+                params.append(f"Feedback Signal: {act['feedback_signal']}")
+            if act.get('dwell_time_ms') is not None:
+                params.append(f"Dwell: {act['dwell_time_ms']} ms")
+            if act.get('tolerance_v') is not None:
+                params.append(f"Tolerance: {act['tolerance_v']:.4f} V")
         elif test_type == 'Fan Control Test':
             if act.get('fan_test_trigger_source'):
                 params.append(f"Trigger Source: 0x{act['fan_test_trigger_source']:X}")
@@ -2057,7 +2068,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -5343,7 +5354,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -5964,6 +5975,62 @@ Data Points Used: {data_points}"""
             ext_5v_test_layout.addRow('Tolerance (mV):', ext_5v_test_tolerance_edit)
             ext_5v_test_layout.addRow('Pre-dwell Time (ms):', ext_5v_test_pre_dwell_time_edit)
             ext_5v_test_layout.addRow('Dwell Time (ms):', ext_5v_test_dwell_time_edit)
+            
+            # DC Bus Sensing Test fields (DBC mode)
+            dc_bus_sensing_widget = QtWidgets.QWidget()
+            dc_bus_sensing_layout = QtWidgets.QFormLayout(dc_bus_sensing_widget)
+            
+            # Oscilloscope Channel: dropdown of enabled channel names from oscilloscope configuration
+            dc_bus_osc_channel_combo = QtWidgets.QComboBox()
+            # Populate from oscilloscope configuration
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                dc_bus_osc_channel_combo.addItems(channel_names)
+            else:
+                dc_bus_osc_channel_combo.addItem('No oscilloscope config loaded', None)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            dc_bus_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                dc_bus_feedback_msg_combo.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            dc_bus_feedback_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_dc_bus_feedback_signals(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                dc_bus_feedback_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    dc_bus_feedback_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_dc_bus_feedback_signals(0)
+            dc_bus_feedback_msg_combo.currentIndexChanged.connect(_update_dc_bus_feedback_signals)
+            
+            # Dwell time input (int, in ms)
+            dc_bus_dwell_time_validator = QtGui.QIntValidator(1, 60000, self)
+            dc_bus_dwell_time_edit = QtWidgets.QLineEdit()
+            dc_bus_dwell_time_edit.setValidator(dc_bus_dwell_time_validator)
+            dc_bus_dwell_time_edit.setPlaceholderText('e.g., 500')
+            
+            # Tolerance input (float, in V)
+            dc_bus_tolerance_validator = QtGui.QDoubleValidator(0.0, 1000.0, 4, self)
+            dc_bus_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            dc_bus_tolerance_edit = QtWidgets.QLineEdit()
+            dc_bus_tolerance_edit.setValidator(dc_bus_tolerance_validator)
+            dc_bus_tolerance_edit.setPlaceholderText('e.g., 0.1')
+            
+            # Populate DC Bus Sensing Test sub-widget
+            dc_bus_sensing_layout.addRow('Oscilloscope Channel:', dc_bus_osc_channel_combo)
+            dc_bus_sensing_layout.addRow('Feedback Signal Source:', dc_bus_feedback_msg_combo)
+            dc_bus_sensing_layout.addRow('Feedback Signal:', dc_bus_feedback_signal_combo)
+            dc_bus_sensing_layout.addRow('Dwell Time (ms):', dc_bus_dwell_time_edit)
+            dc_bus_sensing_layout.addRow('Tolerance (V):', dc_bus_tolerance_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -6260,6 +6327,7 @@ Data Points Used: {data_points}"""
         test_type_to_index['Temperature Validation Test'] = act_stacked.addWidget(temperature_validation_widget)
         test_type_to_index['Fan Control Test'] = act_stacked.addWidget(fan_control_widget)
         test_type_to_index['External 5V Test'] = act_stacked.addWidget(ext_5v_test_widget)
+        test_type_to_index['DC Bus Sensing'] = act_stacked.addWidget(dc_bus_sensing_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -6281,7 +6349,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -6652,6 +6720,44 @@ Data Points Used: {data_points}"""
                         'pre_dwell_time_ms': pre_dwell_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'DC Bus Sensing':
+                    # DC Bus Sensing: read all fields (DBC mode)
+                    osc_channel = dc_bus_osc_channel_combo.currentText().strip() if dc_bus_osc_channel_combo.count() else ''
+                    
+                    try:
+                        feedback_msg_id = dc_bus_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = dc_bus_feedback_signal_combo.currentText().strip() if dc_bus_feedback_signal_combo.count() else ''
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dc_bus_dwell(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dc_bus_dwell(dc_bus_dwell_time_edit)
+                    
+                    # Tolerance (float, in V)
+                    def _to_float_or_none_dc_bus_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_dc_bus_tolerance(dc_bus_tolerance_edit)
+                    
+                    act = {
+                        'type': 'DC Bus Sensing',
+                        'oscilloscope_channel': osc_channel,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'tolerance_v': tolerance_val,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -6980,6 +7086,46 @@ Data Points Used: {data_points}"""
                         'pre_dwell_time_ms': pre_dwell_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'DC Bus Sensing':
+                    # DC Bus Sensing (no DBC): read from text fields
+                    # Note: DC Bus Sensing requires oscilloscope config, so fallback mode may not be fully supported
+                    # For now, we'll use text fields similar to other tests
+                    osc_channel = dc_bus_osc_channel_combo.currentText().strip() if dc_bus_osc_channel_combo.count() else ''
+                    
+                    try:
+                        feedback_msg_id = int(dc_bus_feedback_msg_edit.text().strip(), 0) if dc_bus_feedback_msg_edit.text().strip() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = dc_bus_feedback_signal_edit.text().strip()
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dc_bus_dwell_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dc_bus_dwell_fallback(dc_bus_dwell_time_edit_fallback)
+                    
+                    # Tolerance (float, in V)
+                    def _to_float_or_none_dc_bus_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_dc_bus_tolerance_fallback(dc_bus_tolerance_edit_fallback)
+                    
+                    act = {
+                        'type': 'DC Bus Sensing',
+                        'oscilloscope_channel': osc_channel,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'tolerance_v': tolerance_val,
+                    }
             # if using DBC-driven fields, read feedback from combo
             fb_msg_id = None
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -7081,8 +7227,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', or 'External 5V Test'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', or 'DC Bus Sensing'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -7202,6 +7348,22 @@ Data Points Used: {data_points}"""
                 return False, "External 5V Test requires dwell time (ms)"
             if actuation.get('dwell_time_ms', 0) <= 0:
                 return False, "Dwell time must be positive"
+        elif test_type == 'DC Bus Sensing':
+            # Validate required fields
+            if not actuation.get('oscilloscope_channel'):
+                return False, "DC Bus Sensing test requires oscilloscope channel"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "DC Bus Sensing test requires feedback signal source (CAN ID)"
+            if not actuation.get('feedback_signal'):
+                return False, "DC Bus Sensing test requires feedback signal name"
+            if actuation.get('dwell_time_ms') is None:
+                return False, "DC Bus Sensing test requires dwell time (ms)"
+            if actuation.get('dwell_time_ms', 0) <= 0:
+                return False, "Dwell time must be positive"
+            if actuation.get('tolerance_v') is None:
+                return False, "DC Bus Sensing test requires tolerance (V)"
+            if actuation.get('tolerance_v', 0) < 0:
+                return False, "Tolerance must be non-negative"
         
         return True, ""
     
@@ -7597,7 +7759,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -8114,6 +8276,10 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_edit)
             
             # Fan Control Test fields (DBC mode) - for edit dialog
+            # Create container for Fan Control Test (edit)
+            fan_control_widget_edit = QtWidgets.QWidget()
+            fan_control_layout_edit = QtWidgets.QFormLayout(fan_control_widget_edit)
+            
             fan_control_trigger_msg_combo_edit = QtWidgets.QComboBox()
             for m, label in msg_display:
                 fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
@@ -8214,15 +8380,241 @@ Data Points Used: {data_points}"""
             except Exception:
                 pass
             
-            # Populate fan control sub-widget
-            fan_control_layout.addRow('Fan Test Trigger Source:', fan_control_trigger_msg_combo_edit)
-            fan_control_layout.addRow('Fan Test Trigger Signal:', fan_control_trigger_signal_combo_edit)
-            fan_control_layout.addRow('Fan Control Feedback Source:', fan_control_feedback_msg_combo_edit)
-            fan_control_layout.addRow('Fan Enabled Signal:', fan_control_enabled_signal_combo_edit)
-            fan_control_layout.addRow('Fan Tach Feedback Signal:', fan_control_tach_signal_combo_edit)
-            fan_control_layout.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_combo_edit)
-            fan_control_layout.addRow('Dwell Time (ms):', fan_control_dwell_time_edit_edit)
-            fan_control_layout.addRow('Test Timeout (ms):', fan_control_timeout_edit_edit)
+            # Populate fan control sub-widget (edit)
+            fan_control_layout_edit.addRow('Fan Test Trigger Source:', fan_control_trigger_msg_combo_edit)
+            fan_control_layout_edit.addRow('Fan Test Trigger Signal:', fan_control_trigger_signal_combo_edit)
+            fan_control_layout_edit.addRow('Fan Control Feedback Source:', fan_control_feedback_msg_combo_edit)
+            fan_control_layout_edit.addRow('Fan Enabled Signal:', fan_control_enabled_signal_combo_edit)
+            fan_control_layout_edit.addRow('Fan Tach Feedback Signal:', fan_control_tach_signal_combo_edit)
+            fan_control_layout_edit.addRow('Fan Fault Feedback Signal:', fan_control_fault_signal_combo_edit)
+            fan_control_layout_edit.addRow('Dwell Time (ms):', fan_control_dwell_time_edit_edit)
+            fan_control_layout_edit.addRow('Test Timeout (ms):', fan_control_timeout_edit_edit)
+            
+            # External 5V Test fields (DBC mode) - for edit dialog
+            ext_5v_test_widget_edit = QtWidgets.QWidget()
+            ext_5v_test_layout_edit = QtWidgets.QFormLayout(ext_5v_test_widget_edit)
+            
+            # Ext 5V Test Trigger Source: dropdown of CAN Messages
+            ext_5v_test_trigger_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                ext_5v_test_trigger_msg_combo_edit.addItem(label, fid)
+            
+            # Ext 5V Test Trigger Signal: dropdown based on selected message
+            ext_5v_test_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_ext_5v_test_trigger_signals_edit(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                ext_5v_test_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    ext_5v_test_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_ext_5v_test_trigger_signals_edit(0)
+            ext_5v_test_trigger_msg_combo_edit.currentIndexChanged.connect(_update_ext_5v_test_trigger_signals_edit)
+            
+            # EOL Ext 5V Measurement Source: dropdown of CAN Messages
+            ext_5v_test_eol_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                ext_5v_test_eol_msg_combo_edit.addItem(label, fid)
+            
+            # EOL Ext 5V Measurement Signal: dropdown based on selected message
+            ext_5v_test_eol_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_ext_5v_test_eol_signals_edit(idx=0):
+                """Update EOL signal dropdown based on selected message."""
+                ext_5v_test_eol_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    ext_5v_test_eol_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_ext_5v_test_eol_signals_edit(0)
+            ext_5v_test_eol_msg_combo_edit.currentIndexChanged.connect(_update_ext_5v_test_eol_signals_edit)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            ext_5v_test_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                ext_5v_test_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            ext_5v_test_feedback_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_ext_5v_test_feedback_signals_edit(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                ext_5v_test_feedback_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    ext_5v_test_feedback_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_ext_5v_test_feedback_signals_edit(0)
+            ext_5v_test_feedback_msg_combo_edit.currentIndexChanged.connect(_update_ext_5v_test_feedback_signals_edit)
+            
+            # Tolerance input (float, in mV)
+            ext_5v_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 10000.0, 2, self)
+            ext_5v_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            ext_5v_test_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('tolerance_mv', '')))
+            ext_5v_test_tolerance_edit_edit.setValidator(ext_5v_tolerance_validator_edit)
+            ext_5v_test_tolerance_edit_edit.setPlaceholderText('e.g., 50.0')
+            
+            # Pre-dwell time input (int, in ms)
+            ext_5v_pre_dwell_validator_edit = QtGui.QIntValidator(0, 60000, self)
+            ext_5v_test_pre_dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('pre_dwell_time_ms', '')))
+            ext_5v_test_pre_dwell_time_edit_edit.setValidator(ext_5v_pre_dwell_validator_edit)
+            ext_5v_test_pre_dwell_time_edit_edit.setPlaceholderText('e.g., 100')
+            
+            # Dwell time input (int, in ms)
+            ext_5v_dwell_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            ext_5v_test_dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            ext_5v_test_dwell_time_edit_edit.setValidator(ext_5v_dwell_time_validator_edit)
+            ext_5v_test_dwell_time_edit_edit.setPlaceholderText('e.g., 500')
+            
+            # Populate External 5V Test fields from stored data
+            try:
+                trigger_msg_id = act.get('ext_5v_test_trigger_source')
+                if trigger_msg_id is not None:
+                    for i in range(ext_5v_test_trigger_msg_combo_edit.count()):
+                        if ext_5v_test_trigger_msg_combo_edit.itemData(i) == trigger_msg_id:
+                            ext_5v_test_trigger_msg_combo_edit.setCurrentIndex(i)
+                            _update_ext_5v_test_trigger_signals_edit(i)
+                            break
+                if act.get('ext_5v_test_trigger_signal') and ext_5v_test_trigger_signal_combo_edit.count():
+                    try:
+                        ext_5v_test_trigger_signal_combo_edit.setCurrentText(str(act.get('ext_5v_test_trigger_signal')))
+                    except Exception:
+                        pass
+                
+                eol_msg_id = act.get('eol_ext_5v_measurement_source')
+                if eol_msg_id is not None:
+                    for i in range(ext_5v_test_eol_msg_combo_edit.count()):
+                        if ext_5v_test_eol_msg_combo_edit.itemData(i) == eol_msg_id:
+                            ext_5v_test_eol_msg_combo_edit.setCurrentIndex(i)
+                            _update_ext_5v_test_eol_signals_edit(i)
+                            break
+                if act.get('eol_ext_5v_measurement_signal') and ext_5v_test_eol_signal_combo_edit.count():
+                    try:
+                        ext_5v_test_eol_signal_combo_edit.setCurrentText(str(act.get('eol_ext_5v_measurement_signal')))
+                    except Exception:
+                        pass
+                
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(ext_5v_test_feedback_msg_combo_edit.count()):
+                        if ext_5v_test_feedback_msg_combo_edit.itemData(i) == fb_msg_id:
+                            ext_5v_test_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_ext_5v_test_feedback_signals_edit(i)
+                            break
+                if act.get('feedback_signal') and ext_5v_test_feedback_signal_combo_edit.count():
+                    try:
+                        ext_5v_test_feedback_signal_combo_edit.setCurrentText(str(act.get('feedback_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate External 5V Test sub-widget
+            ext_5v_test_layout_edit.addRow('Ext 5V Test Trigger Source:', ext_5v_test_trigger_msg_combo_edit)
+            ext_5v_test_layout_edit.addRow('Ext 5V Test Trigger Signal:', ext_5v_test_trigger_signal_combo_edit)
+            ext_5v_test_layout_edit.addRow('EOL Ext 5V Measurement Source:', ext_5v_test_eol_msg_combo_edit)
+            ext_5v_test_layout_edit.addRow('EOL Ext 5V Measurement Signal:', ext_5v_test_eol_signal_combo_edit)
+            ext_5v_test_layout_edit.addRow('Feedback Signal Source:', ext_5v_test_feedback_msg_combo_edit)
+            ext_5v_test_layout_edit.addRow('Feedback Signal:', ext_5v_test_feedback_signal_combo_edit)
+            ext_5v_test_layout_edit.addRow('Tolerance (mV):', ext_5v_test_tolerance_edit_edit)
+            ext_5v_test_layout_edit.addRow('Pre-dwell Time (ms):', ext_5v_test_pre_dwell_time_edit_edit)
+            ext_5v_test_layout_edit.addRow('Dwell Time (ms):', ext_5v_test_dwell_time_edit_edit)
+            
+            # DC Bus Sensing Test fields (DBC mode) - for edit dialog
+            dc_bus_sensing_widget_edit = QtWidgets.QWidget()
+            dc_bus_sensing_layout_edit = QtWidgets.QFormLayout(dc_bus_sensing_widget_edit)
+            
+            # Oscilloscope Channel: dropdown of enabled channel names from oscilloscope configuration
+            dc_bus_osc_channel_combo_edit = QtWidgets.QComboBox()
+            # Populate from oscilloscope configuration
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                dc_bus_osc_channel_combo_edit.addItems(channel_names)
+            else:
+                dc_bus_osc_channel_combo_edit.addItem('No oscilloscope config loaded', None)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            dc_bus_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                dc_bus_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            dc_bus_feedback_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_dc_bus_feedback_signals_edit(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                dc_bus_feedback_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    dc_bus_feedback_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_dc_bus_feedback_signals_edit(0)
+            dc_bus_feedback_msg_combo_edit.currentIndexChanged.connect(_update_dc_bus_feedback_signals_edit)
+            
+            # Dwell time input (int, in ms)
+            dc_bus_dwell_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            dc_bus_dwell_time_edit_edit = QtWidgets.QLineEdit(str(act.get('dwell_time_ms', '')))
+            dc_bus_dwell_time_edit_edit.setValidator(dc_bus_dwell_time_validator_edit)
+            dc_bus_dwell_time_edit_edit.setPlaceholderText('e.g., 500')
+            
+            # Tolerance input (float, in V)
+            dc_bus_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 1000.0, 4, self)
+            dc_bus_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            dc_bus_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('tolerance_v', '')))
+            dc_bus_tolerance_edit_edit.setValidator(dc_bus_tolerance_validator_edit)
+            dc_bus_tolerance_edit_edit.setPlaceholderText('e.g., 0.1')
+            
+            # Populate DC Bus Sensing fields from stored data
+            try:
+                osc_channel = act.get('oscilloscope_channel', '')
+                if osc_channel and dc_bus_osc_channel_combo_edit.count():
+                    try:
+                        dc_bus_osc_channel_combo_edit.setCurrentText(osc_channel)
+                    except Exception:
+                        pass
+                
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(dc_bus_feedback_msg_combo_edit.count()):
+                        if dc_bus_feedback_msg_combo_edit.itemData(i) == fb_msg_id:
+                            dc_bus_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_dc_bus_feedback_signals_edit(i)
+                            break
+                if act.get('feedback_signal') and dc_bus_feedback_signal_combo_edit.count():
+                    try:
+                        dc_bus_feedback_signal_combo_edit.setCurrentText(str(act.get('feedback_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate DC Bus Sensing Test sub-widget
+            dc_bus_sensing_layout_edit.addRow('Oscilloscope Channel:', dc_bus_osc_channel_combo_edit)
+            dc_bus_sensing_layout_edit.addRow('Feedback Signal Source:', dc_bus_feedback_msg_combo_edit)
+            dc_bus_sensing_layout_edit.addRow('Feedback Signal:', dc_bus_feedback_signal_combo_edit)
+            dc_bus_sensing_layout_edit.addRow('Dwell Time (ms):', dc_bus_dwell_time_edit_edit)
+            dc_bus_sensing_layout_edit.addRow('Tolerance (V):', dc_bus_tolerance_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -8452,6 +8844,9 @@ Data Points Used: {data_points}"""
         test_type_to_index_edit['Phase Current Test'] = act_stacked_edit.addWidget(phase_current_widget)
         test_type_to_index_edit['Analog Static Test'] = act_stacked_edit.addWidget(analog_static_widget)
         test_type_to_index_edit['Temperature Validation Test'] = act_stacked_edit.addWidget(temperature_validation_widget)
+        test_type_to_index_edit['Fan Control Test'] = act_stacked_edit.addWidget(fan_control_widget_edit)
+        test_type_to_index_edit['External 5V Test'] = act_stacked_edit.addWidget(ext_5v_test_widget_edit)
+        test_type_to_index_edit['DC Bus Sensing'] = act_stacked_edit.addWidget(dc_bus_sensing_widget_edit)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked_edit)
@@ -8473,7 +8868,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -8788,6 +9183,97 @@ Data Points Used: {data_points}"""
                         'fan_fault_feedback_signal': fan_fault_signal,
                         'dwell_time_ms': dwell_time_val,
                         'test_timeout_ms': timeout_val,
+                    }
+                elif data['type'] == 'External 5V Test':
+                    # External 5V Test: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = ext_5v_test_trigger_msg_combo_edit.currentData() if 'ext_5v_test_trigger_msg_combo_edit' in locals() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = ext_5v_test_trigger_signal_combo_edit.currentText().strip() if 'ext_5v_test_trigger_signal_combo_edit' in locals() and ext_5v_test_trigger_signal_combo_edit.count() else ''
+                    
+                    try:
+                        eol_msg_id = ext_5v_test_eol_msg_combo_edit.currentData() if 'ext_5v_test_eol_msg_combo_edit' in locals() else None
+                    except Exception:
+                        eol_msg_id = None
+                    eol_signal = ext_5v_test_eol_signal_combo_edit.currentText().strip() if 'ext_5v_test_eol_signal_combo_edit' in locals() and ext_5v_test_eol_signal_combo_edit.count() else ''
+                    
+                    try:
+                        feedback_msg_id = ext_5v_test_feedback_msg_combo_edit.currentData() if 'ext_5v_test_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = ext_5v_test_feedback_signal_combo_edit.currentText().strip() if 'ext_5v_test_feedback_signal_combo_edit' in locals() and ext_5v_test_feedback_signal_combo_edit.count() else ''
+                    
+                    # Tolerance (float)
+                    def _to_float_or_none_ext5v_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_ext5v_tolerance_edit(ext_5v_test_tolerance_edit_edit) if 'ext_5v_test_tolerance_edit_edit' in locals() else None
+                    
+                    # Pre-dwell and dwell times (int)
+                    def _to_int_or_none_ext5v_time_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_dwell_val = _to_int_or_none_ext5v_time_edit(ext_5v_test_pre_dwell_time_edit_edit) if 'ext_5v_test_pre_dwell_time_edit_edit' in locals() else None
+                    dwell_time_val = _to_int_or_none_ext5v_time_edit(ext_5v_test_dwell_time_edit_edit) if 'ext_5v_test_dwell_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'External 5V Test',
+                        'ext_5v_test_trigger_source': trigger_msg_id,
+                        'ext_5v_test_trigger_signal': trigger_signal,
+                        'eol_ext_5v_measurement_source': eol_msg_id,
+                        'eol_ext_5v_measurement_signal': eol_signal,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'tolerance_mv': tolerance_val,
+                        'pre_dwell_time_ms': pre_dwell_val,
+                        'dwell_time_ms': dwell_time_val,
+                    }
+                elif data['type'] == 'DC Bus Sensing':
+                    # DC Bus Sensing: read all fields (DBC mode)
+                    osc_channel = dc_bus_osc_channel_combo_edit.currentText().strip() if 'dc_bus_osc_channel_combo_edit' in locals() and dc_bus_osc_channel_combo_edit.count() else ''
+                    
+                    try:
+                        feedback_msg_id = dc_bus_feedback_msg_combo_edit.currentData() if 'dc_bus_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = dc_bus_feedback_signal_combo_edit.currentText().strip() if 'dc_bus_feedback_signal_combo_edit' in locals() and dc_bus_feedback_signal_combo_edit.count() else ''
+                    
+                    # Dwell time (int)
+                    def _to_int_or_none_dc_bus_dwell_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    dwell_time_val = _to_int_or_none_dc_bus_dwell_edit(dc_bus_dwell_time_edit_edit) if 'dc_bus_dwell_time_edit_edit' in locals() else None
+                    
+                    # Tolerance (float, in V)
+                    def _to_float_or_none_dc_bus_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_val = _to_float_or_none_dc_bus_tolerance_edit(dc_bus_tolerance_edit_edit) if 'dc_bus_tolerance_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'DC Bus Sensing',
+                        'oscilloscope_channel': osc_channel,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'dwell_time_ms': dwell_time_val,
+                        'tolerance_v': tolerance_val,
                     }
             else:
                 if data['type'] == 'Digital Logic Test':

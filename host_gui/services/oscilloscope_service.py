@@ -24,6 +24,7 @@ REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', r
 REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
 REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
 REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+REGEX_PAVA = re.compile(r'C\d+:PAVA\s+MEAN,([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)V?', re.IGNORECASE)
 
 try:
     import pyvisa
@@ -275,7 +276,9 @@ class OscilloscopeService:
             return None
         
         try:
-            if command.endswith('?'):
+            # Check if command contains '?' (query command) - not just ends with it
+            # This handles commands like "C4:PAVA? MEAN" which have parameters after '?'
+            if '?' in command:
                 # Query command - expects response
                 return self.oscilloscope.query(command)
             else:
@@ -476,6 +479,151 @@ class OscilloscopeService:
                             channel_names.append(channel_name)
         
         return channel_names
+    
+    def get_channel_number_from_name(self, channel_name: str, config: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Get channel number (1-4) from channel name.
+        
+        Args:
+            channel_name: Channel name (e.g., "DC Bus Voltage")
+            config: Optional configuration dictionary. If None, returns None.
+        
+        Returns:
+            Channel number (1-4) if found, None otherwise
+        """
+        if config is None or not channel_name:
+            return None
+        
+        if 'channels' in config:
+            for ch_key in ['CH1', 'CH2', 'CH3', 'CH4']:
+                if ch_key in config['channels']:
+                    ch_config = config['channels'][ch_key]
+                    if ch_config.get('enabled', False):
+                        config_channel_name = ch_config.get('channel_name', '').strip()
+                        if config_channel_name == channel_name:
+                            return int(ch_key[2])  # Extract number from 'CH1', 'CH2', etc.
+        
+        return None
+    
+    def parse_pava_response(self, response: str) -> Tuple[Optional[float], Optional[str]]:
+        """Parse PAVA MEAN response to extract mean value in volts.
+        
+        Expected format: "C4:PAVA MEAN,9.040000E+00V"
+        
+        Args:
+            response: Raw response string from oscilloscope
+            
+        Returns:
+            Tuple of (mean_value_volts, error_message)
+            If parsing succeeds, returns (value, None)
+            If parsing fails, returns (None, error_message)
+        """
+        if not response:
+            return None, "Empty response"
+        
+        response = response.strip()
+        
+        # Pattern: C{ch}:PAVA MEAN,{value}V
+        # Value can be in scientific notation: 9.040000E+00 or 9.04E+00 or 9.04
+        match = REGEX_PAVA.search(response)
+        
+        if match:
+            try:
+                value_str = match.group(1)
+                value = float(value_str)
+                return value, None
+            except ValueError as e:
+                return None, f"Failed to convert value '{value_str}' to float: {e}"
+        
+        # Fallback: try to extract any number followed by V
+        pattern_fallback = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*V', re.IGNORECASE)
+        match_fallback = pattern_fallback.search(response)
+        if match_fallback:
+            try:
+                value_str = match_fallback.group(1)
+                value = float(value_str)
+                return value, None
+            except ValueError as e:
+                return None, f"Failed to convert fallback value '{value_str}' to float: {e}"
+        
+        return None, f"Could not parse PAVA response: {response}"
+    
+    def query_pava_mean(self, channel: int, retries: int = 3) -> Optional[float]:
+        """Query PAVA MEAN value for a channel.
+        
+        Args:
+            channel: Channel number (1-4)
+            retries: Number of retry attempts (default: 3)
+            
+        Returns:
+            Mean value in volts, or None if query fails
+        """
+        if not self.is_connected():
+            logger.error("Cannot query PAVA: oscilloscope not connected")
+            return None
+        
+        if channel < 1 or channel > 4:
+            logger.error(f"Invalid channel number: {channel} (must be 1-4)")
+            return None
+        
+        cmd = f"C{channel}:PAVA? MEAN"
+        last_response = None
+        
+        for attempt in range(retries):
+            try:
+                if attempt > 0:
+                    # Wait longer between retries
+                    time.sleep(0.5 * attempt)
+                    logger.debug(f"Retrying PAVA query for channel {channel} (attempt {attempt + 1}/{retries})")
+                
+                response = self.send_command(cmd)
+                last_response = response
+                
+                if response is None:
+                    logger.warning(f"No response from PAVA command for channel {channel} (attempt {attempt + 1}/{retries})")
+                    if attempt < retries - 1:
+                        continue
+                    else:
+                        logger.error(f"No response from PAVA command for channel {channel} after {retries} attempts")
+                        return None
+                
+                # Check if response is empty
+                if not response or not response.strip():
+                    logger.warning(f"Empty response from PAVA command for channel {channel} (attempt {attempt + 1}/{retries})")
+                    if attempt < retries - 1:
+                        continue
+                    else:
+                        logger.error(f"Empty response from PAVA command for channel {channel} after {retries} attempts")
+                        return None
+                
+                logger.debug(f"PAVA response for channel {channel}: {repr(response)}")
+                
+                value, error = self.parse_pava_response(response)
+                if error:
+                    logger.warning(f"Failed to parse PAVA response for channel {channel} (attempt {attempt + 1}/{retries}): {error}")
+                    logger.debug(f"Raw response was: {repr(response)}")
+                    if attempt < retries - 1:
+                        continue
+                    else:
+                        logger.error(f"Failed to parse PAVA response for channel {channel} after {retries} attempts: {error}")
+                        return None
+                
+                logger.info(f"PAVA MEAN for channel {channel}: {value} V")
+                return value
+                
+            except Exception as e:
+                logger.warning(f"Exception querying PAVA for channel {channel} (attempt {attempt + 1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    continue
+                else:
+                    logger.error(f"Error querying PAVA for channel {channel} after {retries} attempts: {e}", exc_info=True)
+                    if last_response is not None:
+                        logger.debug(f"Last response was: {repr(last_response)}")
+                    return None
+        
+        logger.error(f"Failed to query PAVA for channel {channel} after {retries} attempts")
+        if last_response is not None:
+            logger.debug(f"Last response was: {repr(last_response)}")
+        return None
     
     def cleanup(self) -> None:
         """Clean up resources. Call this when shutting down."""
