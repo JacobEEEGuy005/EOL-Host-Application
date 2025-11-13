@@ -105,7 +105,6 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ FanFault m105 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ InverterTemperature m106 : 16|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
  SG_ MotorTemperature m106 : 48|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
- SG_ Charger_SignalState m107 : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
  SG_ Enable_ACInputRelay m107 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ Enable_FAN m107 : 17|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ Enable_PFC m107 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
@@ -150,6 +149,7 @@ BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
  SG_ RectifierTemperature m106 : 32|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
  SG_ NewSignal_0024 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
  SG_ NewSignal_0031 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Charger_SignalState m107 : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
 
 
 
@@ -219,7 +219,6 @@ CM_ SG_ 250 FanTachGood "Flag to check if fan is acutally spinning.";
 CM_ SG_ 250 FanFault "Flag to check if fan control has fault";
 CM_ SG_ 250 InverterTemperature "Inverter Module Temperature";
 CM_ SG_ 250 MotorTemperature "Motor Temperature";
-CM_ SG_ 250 Charger_SignalState "2 Byte Status of various Digital Signal States for Charger";
 CM_ SG_ 250 Enable_ACInputRelay "";
 CM_ SG_ 250 AC_VoltageRMS "";
 CM_ SG_ 3221225472 PhaseWCurrentFSR "Full Scale Reading of Phase W Current Sensor";
@@ -234,6 +233,7 @@ CM_ SG_ 3221225472 BrakeFSR "Full Scale Reading of Brake Input";
 CM_ SG_ 3221225472 Throttle2FSR "Full Scale Reading of Throttle 2 Input";
 CM_ SG_ 3221225472 Throttle1FSR "Full Scale Reading of Throttle 1 Input";
 CM_ SG_ 3221225472 RectifierTemperature "Rectifier Module Temperature";
+CM_ SG_ 3221225472 Charger_SignalState "2 Byte Status of various Digital Signal States for Charger";
 BA_DEF_  "BusType" STRING ;
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ SG_  "GenSigStartValue" FLOAT 0 100000;
