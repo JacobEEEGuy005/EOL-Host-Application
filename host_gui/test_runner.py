@@ -224,6 +224,12 @@ class TestRunner:
                     logger.warning(f"Invalid dwell time in digital test, using {DWELL_TIME_DEFAULT}ms: {e}")
                     dwell_ms = DWELL_TIME_DEFAULT
 
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+
                 def _encode_value_to_bytes(v):
                     # Try DBC encoding if available and signal specified
                     # Phase 1: Use DbcService if available
@@ -508,6 +514,12 @@ class TestRunner:
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Invalid dwell time, using {DWELL_TIME_DEFAULT}ms: {e}")
                     dwell_ms = DWELL_TIME_DEFAULT
+
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
 
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
@@ -842,7 +854,6 @@ class TestRunner:
 
                     # Phase 1: Use CanService if available
                     if self.can_service is not None and self.can_service.is_connected():
-                        from backend.adapters.interface import Frame as AdapterFrame
                         f = AdapterFrame(can_id=can_id, data=data_bytes, timestamp=time.time())
                         logger.debug(f'Signals: {signals}')
                         logger.debug(f'Encode data: {encode_data}')
@@ -1353,7 +1364,7 @@ class TestRunner:
                 if dwell_ms <= 0:
                     return False, "Dwell time must be positive"
                 
-                # Import AdapterFrame at function level (same pattern as Fan Control Test)
+                # Import AdapterFrame at function level (unified pattern)
                 try:
                     from backend.adapters.interface import Frame as AdapterFrame
                 except ImportError:
@@ -1632,6 +1643,12 @@ class TestRunner:
                 if timeout_ms <= 0:
                     return False, "Test timeout must be positive"
                 
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+                
                 def _nb_sleep(sec: float) -> None:
                     """Non-blocking sleep that processes Qt events.
 
@@ -1712,8 +1729,6 @@ class TestRunner:
                         return False, "Failed to encode fan trigger message"
                     
                     # Use CanService.send_frame() with Frame object (same pattern as other tests)
-                    from backend.adapters.interface import Frame as AdapterFrame
-                    
                     if self.can_service is not None and self.can_service.is_connected():
                         f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
                         logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
@@ -1855,8 +1870,6 @@ class TestRunner:
                         logger.warning("Failed to encode fan disable message, but continuing with test evaluation")
                     else:
                         # Use CanService.send_frame() with Frame object
-                        from backend.adapters.interface import Frame as AdapterFrame
-                        
                         if self.can_service is not None and self.can_service.is_connected():
                             f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
                             logger.debug(f"Sending fan disable frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
