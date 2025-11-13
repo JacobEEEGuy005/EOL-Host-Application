@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides a comprehensive guide for AI agents on how to add new test types to the EOL Host Application codebase. The system currently supports 8 test types:
+This document provides a comprehensive guide for AI agents on how to add new test types to the EOL Host Application codebase. The system currently supports 9 test types:
 
 1. **Digital Logic Test** - Tests digital relay states
 2. **Analog Sweep Test** - Sweeps DAC voltages and monitors feedback
@@ -12,6 +12,7 @@ This document provides a comprehensive guide for AI agents on how to add new tes
 6. **Fan Control Test** - Fan control system testing
 7. **External 5V Test** - External 5V power supply testing
 8. **DC Bus Sensing** - DC bus voltage sensing with oscilloscope
+9. **Output Current Calibration** - Output current sensor calibration with oscilloscope integration
 
 ## Architecture Overview
 
@@ -457,28 +458,639 @@ def _run_your_new_test(self, test: Dict[str, Any], timeout: float) -> Tuple[bool
 
 #### 8.1 Add to Report Type Filter
 
-In `_refresh_test_report()` method (around line 2166), add your test type to the filter:
+In `_refresh_test_report()` method (around line 2260), add your test type to the filter dropdown:
 
 ```python
-if type_filter != 'All':
-    # ... existing filters ...
-    elif type_filter == 'Your New Test Type' and test_type != 'Your New Test Type':
-        continue
+self.report_type_filter.addItems([
+    'All', 
+    'Digital Logic Test', 
+    'Analog Sweep Test', 
+    # ... existing types ...
+    'Your New Test Type'  # <-- Add here
+])
 ```
 
-#### 8.2 Add Report Display Logic
+#### 8.2 Add Report Tree Display Logic
 
-In `_build_test_report()` method (around line 2012), add logic to display your test type's results appropriately. Check how other test types are displayed and follow the same pattern.
+In `_refresh_test_report()` method (around line 2547+), add a section to display your test type's results in the report tree:
 
-### Step 9: Update Results Display
+```python
+# For your new test type, add results and plot sections
+is_your_test = (test_type == 'Your New Test Type' or 
+                (test_config and test_config.get('type') == 'Your New Test Type'))
+if is_your_test and test_config:
+    exec_data_full = self._test_execution_data.get(test_name, exec_data)
+    plot_data = exec_data_full.get('plot_data')
+    
+    if plot_data:
+        # Add calibration/results data section
+        if some_result_data:
+            results_item = QtWidgets.QTreeWidgetItem(['Results', '', '', ''])
+            results_item.setExpanded(False)
+            # Add child items with results
+            results_item.addChild(QtWidgets.QTreeWidgetItem(['Parameter 1', f"{value1:.4f}", '', '']))
+            test_item.addChild(results_item)
+        
+        # Add plot widget if plot data is available
+        if matplotlib_available:
+            plot_item = QtWidgets.QTreeWidgetItem(['Plot: Your Plot Title', '', '', ''])
+            plot_item.setExpanded(False)
+            
+            x_values = plot_data.get('x_values', [])
+            y_values = plot_data.get('y_values', [])
+            
+            if x_values and y_values:
+                try:
+                    # Create plot widget
+                    plot_widget = QtWidgets.QWidget()
+                    plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                    plot_layout.setContentsMargins(0, 0, 0, 0)
+                    
+                    plot_figure = Figure(figsize=(8, 6))
+                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                    plot_axes = plot_figure.add_subplot(111)
+                    
+                    # Filter out NaN values
+                    x_clean = []
+                    y_clean = []
+                    min_len = min(len(x_values), len(y_values))
+                    for i in range(min_len):
+                        x_val = x_values[i]
+                        y_val = y_values[i]
+                        if (isinstance(x_val, (int, float)) and isinstance(y_val, (int, float)) and
+                            not (isinstance(x_val, float) and x_val != x_val) and
+                            not (isinstance(y_val, float) and y_val != y_val)):
+                            x_clean.append(x_val)
+                            y_clean.append(y_val)
+                    
+                    if x_clean and y_clean:
+                        plot_axes.plot(x_clean, y_clean, 'bo', markersize=6, label='Data Points')
+                        plot_axes.set_xlabel('X-Axis Label')
+                        plot_axes.set_ylabel('Y-Axis Label')
+                        plot_axes.set_title(f'Your Plot Title: {test_name}')
+                        plot_axes.grid(True, alpha=0.3)
+                        plot_axes.legend()
+                        plot_axes.relim()
+                        plot_axes.autoscale()
+                    
+                    plot_figure.tight_layout()
+                    plot_layout.addWidget(plot_canvas)
+                    
+                    # Set widget as item widget
+                    self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                except Exception as e:
+                    logger.error(f"Error creating plot in report: {e}", exc_info=True)
+                    plot_item.setText(1, f"Plot error: {e}")
+            
+            test_item.addChild(plot_item)
+```
+
+**Reference Implementation:** See `Output Current Calibration` section in `_refresh_test_report()` (lines 2660-2763) for a complete example.
+
+#### 8.3 Add to Test Details Popup
+
+In `_show_test_details_popup()` method (around line 1800+), add a section to display your test type's plot and results in the popup dialog:
+
+```python
+# For your new test type
+elif test_type == 'Your New Test Type':
+    plot_data = exec_data.get('plot_data')
+    if plot_data:
+        # Create plot section
+        plot_label = QtWidgets.QLabel('Plot:')
+        plot_label.setStyleSheet('font-weight: bold;')
+        layout.addWidget(plot_label)
+        
+        # Create matplotlib plot
+        if matplotlib_available:
+            try:
+                plot_figure = Figure(figsize=(6, 4))
+                plot_canvas = FigureCanvasQTAgg(plot_figure)
+                plot_axes = plot_figure.add_subplot(111)
+                
+                x_values = plot_data.get('x_values', [])
+                y_values = plot_data.get('y_values', [])
+                # ... plot data ...
+                
+                plot_figure.tight_layout()
+                layout.addWidget(plot_canvas)
+            except Exception as e:
+                logger.error(f"Error creating plot in popup: {e}", exc_info=True)
+        
+        # Add results text
+        results_text = QtWidgets.QTextEdit()
+        results_text.setReadOnly(True)
+        results_text.setMaximumHeight(100)
+        # ... populate results text ...
+        layout.addWidget(results_text)
+```
+
+**Reference Implementation:** See `Output Current Calibration` section in `_show_test_details_popup()` for a complete example.
+
+### Step 9: Update Results Display and Storage
 
 **File:** `host_gui/base_gui.py`
 
-#### 9.1 Add to Results Table
+#### 9.1 Store Plot Data for Reports
 
-In methods that display test results (around line 1179), ensure your test type is handled correctly. Most test types use the same display logic, but check if special handling is needed.
+In `_on_test_finished()` or `_on_test_failed()` methods (around line 1500+), ensure plot data is stored for your test type:
 
-### Step 10: Testing Checklist
+```python
+# Store plot data for your test type
+if test_type == 'Your New Test Type':
+    plot_data = self._test_plot_data_temp.get(test_name, {})
+    if plot_data:
+        exec_data['plot_data'] = {
+            'x_values': list(plot_data.get('x_values', [])),
+            'y_values': list(plot_data.get('y_values', [])),
+            # ... other plot data fields ...
+        }
+```
+
+#### 9.2 Store Result Statistics
+
+Also store any calculated statistics or results:
+
+```python
+# Store result data
+result_data = self._test_result_data_temp.get(test_name, {})
+if result_data:
+    exec_data['result_data'] = {
+        'statistic1': result_data.get('statistic1'),
+        'statistic2': result_data.get('statistic2'),
+        # ... other result fields ...
+    }
+```
+
+**Reference Implementation:** See `Output Current Calibration` handling in `_on_test_finished()` (around line 1535+).
+
+### Step 10: Add Plot Initialization (If Using Live Plots)
+
+**File:** `host_gui/base_gui.py`
+
+If your test type uses live plots that update during execution, you need to initialize the plot before the test starts:
+
+#### 10.1 Create Plot Initialization Method
+
+Add a method to initialize your test type's plot:
+
+```python
+def _initialize_your_test_plot(self, test_name: Optional[str] = None) -> None:
+    """Initialize the plot for Your New Test Type with proper labels and title.
+    
+    Args:
+        test_name: Optional test name to include in the plot title
+    """
+    if not matplotlib_available:
+        logger.debug("Matplotlib not available, skipping plot initialization")
+        return
+    if not hasattr(self, 'plot_axes') or self.plot_axes is None:
+        logger.debug("Plot axes not initialized, skipping plot initialization")
+        return
+    if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+        logger.debug("Plot canvas not initialized, skipping plot initialization")
+        return
+    try:
+        self.plot_axes.clear()
+        self.plot_axes.set_xlabel('Your X-Axis Label')
+        self.plot_axes.set_ylabel('Your Y-Axis Label')
+        self.plot_axes.set_title(f'Your Plot Title{(": " + test_name) if test_name else ""}')
+        self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+        # Add reference lines if needed
+        # self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+        # Create plot line
+        self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+        self.plot_axes.legend()
+        self.plot_figure.tight_layout()
+        self.plot_canvas.draw_idle()
+        self._your_test_plot_initialized = True
+        logger.debug(f"Initialized plot for Your New Test Type: {test_name}")
+    except Exception as e:
+        logger.error(f"Failed to initialize Your New Test Type plot: {e}", exc_info=True)
+```
+
+#### 10.2 Call Plot Initialization in Test Runner
+
+**File:** `host_gui/test_runner.py`
+
+In your test execution code, call the plot initialization right after clearing the plot:
+
+```python
+# Initialize plot
+if self.plot_clear_callback is not None:
+    self.plot_clear_callback()
+
+# Initialize plot labels and title for your test type
+test_name = test.get('name', '')
+if self.gui is not None and hasattr(self.gui, '_initialize_your_test_plot'):
+    try:
+        self.gui._initialize_your_test_plot(test_name)
+    except Exception as e:
+        logger.debug(f"Failed to initialize Your New Test Type plot: {e}")
+```
+
+**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2344-2350).
+
+#### 10.3 Update Plot Update Method
+
+In `_update_plot()` method (around line 2111), add handling for your test type:
+
+```python
+# Detect your test type
+is_your_test = False
+if hasattr(self, '_current_test_index') and self._current_test_index is not None:
+    if self._current_test_index < len(self._tests):
+        current_test = self._tests[self._current_test_index]
+        is_your_test = current_test.get('type') == 'Your New Test Type'
+
+# Add new data point
+if x_value is not None and y_value is not None:
+    if is_your_test:
+        # Initialize plot if not already done (fallback)
+        if not hasattr(self, '_your_test_plot_initialized') or not self._your_test_plot_initialized:
+            self._initialize_your_test_plot(test_name)
+        
+        # Store data points
+        if not hasattr(self, 'plot_x_values'):
+            self.plot_x_values = []
+        if not hasattr(self, 'plot_y_values'):
+            self.plot_y_values = []
+        
+        self.plot_x_values.append(x_value)
+        self.plot_y_values.append(y_value)
+        
+        # Update plot
+        self.plot_line.set_data(self.plot_x_values, self.plot_y_values)
+        self.plot_axes.relim()
+        self.plot_axes.autoscale()
+        self.plot_canvas.draw_idle()
+```
+
+**Reference Implementation:** See `Output Current Calibration` handling in `_update_plot()` (around line 2171+).
+
+### Step 11: Add HTML/PDF Export Support (If Using Plots)
+
+**File:** `host_gui/base_gui.py`
+
+#### 11.1 Create Plot Image Generation Functions
+
+Add functions to generate plot images for export:
+
+```python
+def _generate_your_test_plot_image(self, test_name: str, x_values: list, 
+                                   y_values: list, output_format: str = 'png') -> Optional[bytes]:
+    """Generate a plot image for export.
+    
+    Args:
+        test_name: Name of the test
+        x_values: List of X-axis values
+        y_values: List of Y-axis values
+        output_format: Image format ('png', 'svg', etc.)
+        
+    Returns:
+        Image bytes if successful, None otherwise
+    """
+    if not matplotlib_available:
+        return None
+    
+    # Filter out NaN values
+    x_clean = []
+    y_clean = []
+    if x_values and y_values:
+        min_len = min(len(x_values), len(y_values))
+        for i in range(min_len):
+            x_val = x_values[i]
+            y_val = y_values[i]
+            if (isinstance(x_val, (int, float)) and isinstance(y_val, (int, float)) and
+                not (isinstance(x_val, float) and x_val != x_val) and
+                not (isinstance(y_val, float) and y_val != y_val)):
+                x_clean.append(x_val)
+                y_clean.append(y_val)
+    
+    if not (x_clean and y_clean):
+        return None
+    
+    try:
+        import io
+        from matplotlib.figure import Figure
+        
+        fig = Figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        
+        ax.plot(x_clean, y_clean, 'bo', markersize=6, label='Data Points')
+        ax.set_xlabel('X-Axis Label')
+        ax.set_ylabel('Y-Axis Label')
+        ax.set_title(f'Your Plot Title: {test_name}')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.relim()
+        ax.autoscale()
+        
+        fig.tight_layout()
+        
+        # Save to bytes buffer
+        buf = io.BytesIO()
+        fig.savefig(buf, format=output_format, dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        image_bytes = buf.read()
+        buf.close()
+        
+        return image_bytes
+    except Exception as e:
+        logger.error(f"Error generating plot image: {e}", exc_info=True)
+        return None
+
+def _generate_your_test_plot_base64(self, test_name: str, x_values: list,
+                                    y_values: list) -> Optional[str]:
+    """Generate a base64-encoded plot image for HTML embedding.
+    
+    Args:
+        test_name: Name of the test
+        x_values: List of X-axis values
+        y_values: List of Y-axis values
+        
+    Returns:
+        Base64-encoded image string if successful, None otherwise
+    """
+    image_bytes = self._generate_your_test_plot_image(test_name, x_values, y_values, 'png')
+    if image_bytes:
+        return base64.b64encode(image_bytes).decode('utf-8')
+    return None
+```
+
+#### 11.2 Add to HTML Export
+
+In `_export_report_html()` method (around line 3217), add a section for your test type:
+
+```python
+# Your New Test Type test results
+elif test_type == 'Your New Test Type' or (test_config and test_config.get('type') == 'Your New Test Type'):
+    plot_data = exec_data.get('plot_data')
+    if plot_data:
+        # Add results table
+        result1 = plot_data.get('result1')
+        result2 = plot_data.get('result2')
+        if result1 is not None or result2 is not None:
+            html_parts.append('<h3>Results</h3>')
+            html_parts.append('<table class="calibration-table">')
+            html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
+            if result1 is not None:
+                html_parts.append(f'<tr><td>Result 1</td><td>{result1:.6f}</td></tr>')
+            if result2 is not None:
+                html_parts.append(f'<tr><td>Result 2</td><td>{result2:.6f}</td></tr>')
+            html_parts.append('</table>')
+        
+        # Add plot image
+        x_values = plot_data.get('x_values', [])
+        y_values = plot_data.get('y_values', [])
+        if x_values and y_values:
+            plot_base64 = self._generate_your_test_plot_base64(test_name, x_values, y_values)
+            if plot_base64:
+                html_parts.append('<h3>Plot: Your Plot Title</h3>')
+                html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Plot for {test_name}" class="plot-image">')
+```
+
+**Reference Implementation:** See `Output Current Calibration` section in `_export_report_html()` (around line 3410+).
+
+#### 11.3 Add to PDF Export (Optional)
+
+In `_export_report_pdf()` method (around line 3325), add similar logic for PDF export if needed. See existing implementations for Phase Current Test or Analog tests.
+
+### Step 12: Handle Multiplexed Signals (If Needed)
+
+**File:** `host_gui/test_runner.py`
+
+If your test type uses CAN messages with multiplexed signals (signals that require a `MessageType` multiplexor), you need to handle this in your test execution:
+
+#### 12.1 Finding Multiplexor Values
+
+When encoding CAN messages, check if signals are multiplexed and extract the multiplexor value:
+
+```python
+# Find message
+msg = self.dbc_service.find_message_by_id(message_id)
+if msg is None:
+    return False, f"Message (ID: 0x{message_id:X}) not found in DBC"
+
+# Build signal values dict - include required signals (DeviceID, MessageType) if they exist
+signal_values = {}
+
+# Check for DeviceID signal (common requirement)
+for sig in msg.signals:
+    if sig.name == 'DeviceID':
+        signal_values['DeviceID'] = 0  # Default value, adjust as needed
+        break
+
+# Check for MessageType signal (multiplexor)
+message_type_value = None
+for sig in msg.signals:
+    if sig.name == 'MessageType':
+        # Check if your target signal is multiplexed
+        target_signal = None
+        for s in msg.signals:
+            if s.name == your_signal_name:
+                target_signal = s
+                break
+        
+        if target_signal and hasattr(target_signal, 'multiplexer_ids') and target_signal.multiplexer_ids:
+            # Signal is multiplexed, use the multiplexor ID
+            message_type_value = target_signal.multiplexer_ids[0]
+        else:
+            # Signal is not multiplexed, but MessageType exists - use default 0
+            message_type_value = 0
+        
+        signal_values['MessageType'] = message_type_value
+        break
+
+# Add your signal value
+signal_values[your_signal_name] = your_signal_value
+
+# Encode and send
+frame_data = self.dbc_service.encode_message(msg, signal_values)
+frame = AdapterFrame(can_id=message_id, data=frame_data)
+self.can_service.send_frame(frame)
+```
+
+**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2354+) for complete multiplexor handling.
+
+#### 12.2 Common Pattern for Multiple Messages
+
+If you need to send multiple messages with the same multiplexor logic:
+
+```python
+def _get_message_type_for_signal(msg, signal_name):
+    """Helper to get MessageType value for a signal."""
+    for sig in msg.signals:
+        if sig.name == signal_name:
+            if hasattr(sig, 'multiplexer_ids') and sig.multiplexer_ids:
+                return sig.multiplexer_ids[0]
+    return None
+
+# Use for different messages
+trigger_msg = self.dbc_service.find_message_by_id(trigger_msg_id)
+trigger_msg_type = _get_message_type_for_signal(trigger_msg, test_trigger_signal)
+
+setpoint_msg = self.dbc_service.find_message_by_id(setpoint_msg_id)
+setpoint_msg_type = _get_message_type_for_signal(setpoint_msg, current_setpoint_signal)
+```
+
+### Step 13: Oscilloscope Integration (If Needed)
+
+**File:** `host_gui/test_runner.py`
+
+If your test type requires oscilloscope integration, follow this pattern:
+
+#### 13.1 Verify Oscilloscope Setup
+
+```python
+# Check oscilloscope service availability
+if self.oscilloscope_service is None or not self.oscilloscope_service.is_connected():
+    return False, "Oscilloscope not connected. Please connect oscilloscope before running test."
+
+# Get oscilloscope configuration
+osc_config = None
+if self.gui is not None and hasattr(self.gui, '_oscilloscope_config'):
+    osc_config = self.gui._oscilloscope_config
+else:
+    return False, "Oscilloscope configuration not available. Please configure oscilloscope first."
+
+# Get channel number from channel name
+channel_num = self.oscilloscope_service.get_channel_number_from_name(channel_name, osc_config)
+if channel_num is None:
+    return False, f"Channel '{channel_name}' not found in oscilloscope configuration or not enabled"
+```
+
+#### 13.2 Configure Oscilloscope
+
+```python
+# Set timebase
+self.oscilloscope_service.send_command(f"TDIV {timebase}")
+time.sleep(0.2)
+
+# Verify timebase
+tdiv_response = self.oscilloscope_service.send_command("TDIV?")
+if tdiv_response is None:
+    return False, "Failed to verify oscilloscope timebase"
+
+# Enable channel
+tra_response = self.oscilloscope_service.send_command(f"C{channel_num}:TRA?")
+tra_str = tra_response.strip().upper()
+is_on = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
+
+if not is_on:
+    self.oscilloscope_service.send_command(f"C{channel_num}:TRA ON")
+    time.sleep(0.2)
+    # Verify it's now ON
+    tra_response = self.oscilloscope_service.send_command(f"C{channel_num}:TRA?")
+    # ... verify ...
+```
+
+#### 13.3 Acquire Data from Oscilloscope
+
+```python
+# Start acquisition
+self.oscilloscope_service.send_command("TRMD AUTO")
+time.sleep(0.1)
+
+# Collect data during acquisition time
+# ... collect CAN data in parallel ...
+
+# Stop acquisition
+self.oscilloscope_service.send_command("STOP")
+
+# Query oscilloscope for average
+osc_response = self.oscilloscope_service.send_command(f"C{channel_num}:PAVA? MEAN")
+if osc_response:
+    try:
+        # Parse response (format may vary)
+        osc_value = float(osc_response.strip())
+    except ValueError:
+        logger.warning(f"Could not parse oscilloscope response: {osc_response}")
+        osc_value = None
+else:
+    osc_value = None
+```
+
+**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2247-2325) for complete oscilloscope integration.
+
+### Step 14: Data Analysis and Calculations (If Needed)
+
+**File:** `host_gui/test_runner.py`
+
+If your test type requires data analysis (e.g., linear regression, statistics), implement it in your test execution:
+
+#### 14.1 Linear Regression Example
+
+```python
+# Collect data points
+x_values = []  # e.g., oscilloscope measurements
+y_values = []  # e.g., CAN measurements
+
+# ... collect data during test execution ...
+
+# Perform linear regression
+try:
+    import numpy as np
+    # Fit polynomial of degree 1 (linear)
+    coeffs = np.polyfit(x_values, y_values, 1)
+    slope = coeffs[0]
+    intercept = coeffs[1]
+except ImportError:
+    # Fallback: manual calculation if numpy not available
+    n = len(x_values)
+    if n > 0:
+        sum_x = sum(x_values)
+        sum_y = sum(y_values)
+        sum_xy = sum(x * y for x, y in zip(x_values, y_values))
+        sum_x2 = sum(x * x for x in x_values)
+        
+        slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x) if (n * sum_x2 - sum_x * sum_x) != 0 else 0
+        intercept = (sum_y - slope * sum_x) / n if n > 0 else 0
+
+# Calculate gain error
+expected_slope = 1.0  # Ideal slope
+gain_error = ((slope - expected_slope) / expected_slope) * 100.0  # Percentage
+
+# Calculate adjustment factor
+adjustment_factor = expected_slope / slope if abs(slope) > 1e-10 else 0.0
+
+# Determine pass/fail
+passed = abs(gain_error) <= tolerance_percent
+```
+
+**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2600+) for complete linear regression implementation.
+
+#### 14.2 Store Analysis Results
+
+Store calculated results for report generation:
+
+```python
+# Store plot data
+if self.gui is not None:
+    if not hasattr(self.gui, '_test_plot_data_temp'):
+        self.gui._test_plot_data_temp = {}
+    self.gui._test_plot_data_temp[test_name] = {
+        'x_values': x_values,
+        'y_values': y_values,
+        'slope': slope,
+        'intercept': intercept,
+        'gain_error': gain_error,
+        'adjustment_factor': adjustment_factor,
+        'tolerance_percent': tolerance_percent
+    }
+    
+    # Store result data
+    if not hasattr(self.gui, '_test_result_data_temp'):
+        self.gui._test_result_data_temp = {}
+    self.gui._test_result_data_temp[test_name] = {
+        'slope': slope,
+        'intercept': intercept,
+        'gain_error': gain_error,
+        'adjustment_factor': adjustment_factor
+    }
+```
+
+### Step 15: Testing Checklist
 
 After implementing your new test type, verify:
 
@@ -495,6 +1107,15 @@ After implementing your new test type, verify:
 - [ ] JSON schema validation works (test with invalid configuration)
 - [ ] Test works with DBC loaded
 - [ ] Test works without DBC loaded (if applicable)
+- [ ] Plot initialization works (if using live plots)
+- [ ] Plot updates correctly during test execution (if using live plots)
+- [ ] Plot appears in test report tree view (if using plots)
+- [ ] Plot appears in test details popup (if using plots)
+- [ ] Plot appears in HTML export (if using plots)
+- [ ] Plot appears in PDF export (if using plots)
+- [ ] Multiplexed signals handled correctly (if applicable)
+- [ ] Oscilloscope integration works (if applicable)
+- [ ] Data analysis calculations are correct (if applicable)
 
 ## Common Patterns and Examples
 
@@ -579,6 +1200,127 @@ phase2_passed = _evaluate_phase(phase2_values)
 passed = phase1_passed and phase2_passed
 ```
 
+### Pattern 4: Oscilloscope + CAN Data Collection Test
+
+For tests that collect data from both oscilloscope and CAN (like Output Current Calibration):
+
+```python
+# 1. Verify oscilloscope setup
+if not self.oscilloscope_service.is_connected():
+    return False, "Oscilloscope not connected"
+
+# Get channel number
+channel_num = self.oscilloscope_service.get_channel_number_from_name(channel_name, osc_config)
+
+# Set timebase and enable channel
+self.oscilloscope_service.send_command(f"TDIV {timebase}")
+self.oscilloscope_service.send_command(f"C{channel_num}:TRA ON")
+
+# 2. Send test trigger
+# ... send CAN message to enable test mode ...
+
+# 3. Loop through setpoints
+for setpoint in setpoints:
+    # Send setpoint via CAN
+    # ... send CAN message with setpoint value ...
+    
+    # Wait for stabilization
+    _nb_sleep(pre_acquisition_time_ms / 1000.0)
+    
+    # Start data collection
+    self.oscilloscope_service.send_command("TRMD AUTO")
+    
+    # Collect CAN data
+    can_values = []
+    end_time = time.time() + (acquisition_time_ms / 1000.0)
+    while time.time() < end_time:
+        if self.signal_service is not None:
+            _, val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+            if val is not None:
+                can_values.append(float(val))
+        _nb_sleep(SLEEP_INTERVAL_SHORT)
+    
+    # Stop oscilloscope
+    self.oscilloscope_service.send_command("STOP")
+    
+    # Get oscilloscope average
+    osc_response = self.oscilloscope_service.send_command(f"C{channel_num}:PAVA? MEAN")
+    osc_value = float(osc_response.strip()) if osc_response else None
+    
+    # Calculate averages
+    can_avg = sum(can_values) / len(can_values) if can_values else None
+    
+    # Store for later analysis
+    osc_averages.append(osc_value)
+    can_averages.append(can_avg)
+    
+    # Update live plot
+    if self.plot_update_callback is not None:
+        self.plot_update_callback(osc_value, can_avg, test_name)
+
+# 4. Disable test mode
+# ... send CAN message to disable test mode ...
+
+# 5. Perform analysis (e.g., linear regression)
+# ... calculate slope, intercept, gain error, etc. ...
+
+# 6. Store results for reports
+if self.gui is not None:
+    self.gui._test_plot_data_temp[test_name] = {
+        'osc_averages': osc_averages,
+        'can_averages': can_averages,
+        'slope': slope,
+        'intercept': intercept,
+        'gain_error': gain_error,
+        'adjustment_factor': adjustment_factor
+    }
+```
+
+**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2149+) for complete implementation.
+
+### Pattern 5: Test with Multiplexed CAN Signals
+
+For tests that use multiplexed signals (signals requiring MessageType):
+
+```python
+# Find message
+msg = self.dbc_service.find_message_by_id(message_id)
+
+# Build signal values - include DeviceID and MessageType if they exist
+signal_values = {}
+
+# Add DeviceID if present
+for sig in msg.signals:
+    if sig.name == 'DeviceID':
+        signal_values['DeviceID'] = 0  # or appropriate value
+        break
+
+# Add MessageType if signal is multiplexed
+target_signal = None
+for sig in msg.signals:
+    if sig.name == your_signal_name:
+        target_signal = sig
+        break
+
+if target_signal and hasattr(target_signal, 'multiplexer_ids') and target_signal.multiplexer_ids:
+    # Signal is multiplexed - use multiplexor ID
+    message_type_value = target_signal.multiplexer_ids[0]
+    signal_values['MessageType'] = message_type_value
+elif any(s.name == 'MessageType' for s in msg.signals):
+    # MessageType exists but signal not multiplexed - use default 0
+    signal_values['MessageType'] = 0
+
+# Add your signal value
+signal_values[your_signal_name] = your_signal_value
+
+# Encode and send
+frame_data = self.dbc_service.encode_message(msg, signal_values)
+frame = AdapterFrame(can_id=message_id, data=frame_data)
+self.can_service.send_frame(frame)
+```
+
+**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2354+) for complete multiplexor handling.
+
 ## Important Notes
 
 1. **Test Type Names**: Must match exactly across all files. Use consistent capitalization and spelling.
@@ -599,7 +1341,15 @@ passed = phase1_passed and phase2_passed
 
 7. **Plot Updates**: If your test type produces plot data, use `self.plot_update_callback()` to update plots in real-time.
 
-8. **Result Storage**: Store detailed results in `self.gui._test_result_data_temp[test_name]` for later retrieval in report generation.
+8. **Result Storage**: Store detailed results in `self.gui._test_result_data_temp[test_name]` and plot data in `self.gui._test_plot_data_temp[test_name]` for later retrieval in report generation.
+
+9. **Multiplexed Signals**: When encoding CAN messages, always check if signals are multiplexed and include `MessageType` and `DeviceID` if they exist in the message. See Pattern 5 for details.
+
+10. **Oscilloscope Integration**: When using oscilloscope, always verify connection and configuration before starting. Use proper SCPI commands and handle response parsing errors gracefully.
+
+11. **Plot Initialization**: For tests with live plots, initialize plot labels and title before test starts using a dedicated initialization method. This ensures the plot is ready before data collection begins.
+
+12. **Data Analysis**: If your test performs calculations (regression, statistics), store both raw data and calculated results for report generation.
 
 ## File Locations Summary
 
@@ -610,9 +1360,14 @@ passed = phase1_passed and phase2_passed
 | Create Dialog | `host_gui/base_gui.py` | `_on_create_test()` |
 | Edit Dialog | `host_gui/base_gui.py` | `_on_edit_test()` |
 | Validation | `host_gui/base_gui.py` | `_validate_test()` |
-| Execution | `host_gui/test_runner.py` | `run_test()` |
+| Execution | `host_gui/test_runner.py` | `run_single_test()` |
 | Service Execution | `host_gui/services/test_execution_service.py` | `run_single_test()` |
-| Reports | `host_gui/base_gui.py` | `_build_test_report()`, `_refresh_test_report()` |
+| Plot Initialization | `host_gui/base_gui.py` | `_initialize_<test_type>_plot()` |
+| Plot Updates | `host_gui/base_gui.py` | `_update_plot()` |
+| Reports (Tree) | `host_gui/base_gui.py` | `_refresh_test_report()` |
+| Reports (Popup) | `host_gui/base_gui.py` | `_show_test_details_popup()` |
+| HTML Export | `host_gui/base_gui.py` | `_export_report_html()`, `_generate_<test_type>_plot_base64()` |
+| PDF Export | `host_gui/base_gui.py` | `_export_report_pdf()` |
 
 ## Conclusion
 
