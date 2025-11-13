@@ -1,7 +1,7 @@
 {
   "tests": [
     {
-      "name": "Key Signal Indicator",
+      "name": "KSI Logic Test",
       "type": "Digital Logic Test",
       "feedback_signal": "KeySwitchIndicator",
       "feedback_message_id": 250,
@@ -11,12 +11,12 @@
         "signal": "CMD_Relay_1",
         "value_low": "0",
         "value_high": "1",
-        "dwell_ms": 500
+        "dwell_ms": 1000
       },
-      "created_at": "2025-10-29T13:59:29.353114Z"
+      "created_at": "2025-11-12T14:49:17.325520Z"
     },
     {
-      "name": "Forward Mode",
+      "name": "Forward Switch Logic Test",
       "type": "Digital Logic Test",
       "feedback_signal": "ForwardMode",
       "feedback_message_id": 250,
@@ -26,12 +26,12 @@
         "signal": "CMD_Relay_2",
         "value_low": "0",
         "value_high": "1",
-        "dwell_ms": 500
+        "dwell_ms": 1000
       },
-      "created_at": "2025-10-29T14:00:52.848643Z"
+      "created_at": "2025-11-12T14:49:44.535390Z"
     },
     {
-      "name": "Boost Mode",
+      "name": "Boost Switch Logic Test",
       "type": "Digital Logic Test",
       "feedback_signal": "BoostMode",
       "feedback_message_id": 250,
@@ -41,12 +41,12 @@
         "signal": "CMD_Relay_3",
         "value_low": "0",
         "value_high": "1",
-        "dwell_ms": 500
+        "dwell_ms": 1000
       },
-      "created_at": "2025-10-29T14:02:22.354230Z"
+      "created_at": "2025-11-12T14:50:07.700133Z"
     },
     {
-      "name": "Reverse Mode",
+      "name": "Reverse Switch Logic Test",
       "type": "Digital Logic Test",
       "feedback_signal": "ReverseMode",
       "feedback_message_id": 250,
@@ -56,12 +56,12 @@
         "signal": "CMD_Relay_4",
         "value_low": "0",
         "value_high": "1",
-        "dwell_ms": 500
+        "dwell_ms": 1000
       },
-      "created_at": "2025-10-29T14:04:12.576374Z"
+      "created_at": "2025-11-12T14:50:33.583924Z"
     },
     {
-      "name": "Throttle1 Voltage",
+      "name": "Throttle 1 Voltage",
       "type": "Analog Sweep Test",
       "feedback_signal": "Throttle1Voltage",
       "feedback_message_id": 250,
@@ -74,7 +74,7 @@
         "mux_channel_value": 0,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -95,7 +95,7 @@
         "mux_channel_value": 1,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -116,7 +116,7 @@
         "mux_channel_value": 2,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -137,7 +137,7 @@
         "mux_channel_value": 3,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -158,7 +158,7 @@
         "mux_channel_value": 4,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -179,7 +179,7 @@
         "mux_channel_value": 5,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -200,7 +200,7 @@
         "mux_channel_value": 6,
         "dac_min_mv": 0,
         "dac_max_mv": 5000,
-        "dac_step_mv": 100,
+        "dac_step_mv": 500,
         "dac_dwell_ms": 1500,
         "expected_gain": 1.0,
         "gain_tolerance_percent": 1.5
@@ -208,38 +208,86 @@
       "created_at": "2025-11-04T04:54:08.655963Z"
     },
     {
-      "name": "MtrTemp",
-      "type": "Analog Static Test",
+      "name": "Inverter Temperature",
+      "type": "Temperature Validation Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "Analog Static Test",
+        "type": "Temperature Validation Test",
         "feedback_signal_source": 250,
-        "feedback_signal": "MtrTempVoltage",
-        "eol_signal_source": 256,
-        "eol_signal": "ADC_A2_mV",
-        "tolerance_mv": 15.0,
-        "pre_dwell_time_ms": 1000,
-        "dwell_time_ms": 2000
+        "feedback_signal": "InverterTemperature",
+        "reference_temperature_c": 29.0,
+        "tolerance_c": 1.0,
+        "dwell_time_ms": 3000
       },
-      "created_at": "2025-11-08T12:54:43.250458Z"
+      "created_at": "2025-11-10T14:14:40.482611Z"
     },
     {
-      "name": "External 5V",
-      "type": "Analog Static Test",
+      "name": "Motor Temperature",
+      "type": "Temperature Validation Test",
       "feedback_signal": "DeviceID",
       "feedback_message_id": 256,
       "actuation": {
-        "type": "Analog Static Test",
+        "type": "Temperature Validation Test",
+        "feedback_signal_source": 250,
+        "feedback_signal": "MotorTemperature",
+        "reference_temperature_c": 0.0,
+        "tolerance_c": 1.0,
+        "dwell_time_ms": 3000
+      },
+      "created_at": "2025-11-10T14:15:01.523737Z"
+    },
+    {
+      "name": "Fan Test",
+      "type": "Fan Control Test",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "Fan Control Test",
+        "fan_test_trigger_source": 272,
+        "fan_test_trigger_signal": "Fan_Ctrl",
+        "fan_control_feedback_source": 250,
+        "fan_enabled_signal": "FanEnabled",
+        "fan_tach_feedback_signal": "FanTachGood",
+        "fan_fault_feedback_signal": "FanFault",
+        "dwell_time_ms": 2000,
+        "test_timeout_ms": 4000
+      },
+      "created_at": "2025-11-10T15:48:59.162753Z"
+    },
+    {
+      "name": "External 5V Monitoring",
+      "type": "External 5V Test",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "External 5V Test",
+        "ext_5v_test_trigger_source": 272,
+        "ext_5v_test_trigger_signal": "Ext_5V_Ctrl",
+        "eol_ext_5v_measurement_source": 256,
+        "eol_ext_5v_measurement_signal": "ADC_A3_mV",
         "feedback_signal_source": 250,
         "feedback_signal": "external5V",
-        "eol_signal_source": 256,
-        "eol_signal": "ADC_A3_mV",
-        "tolerance_mv": 15.0,
-        "pre_dwell_time_ms": 1000,
-        "dwell_time_ms": 2000
+        "tolerance_mv": 50.0,
+        "pre_dwell_time_ms": 500,
+        "dwell_time_ms": 1500
       },
-      "created_at": "2025-11-08T12:54:45.301217Z"
+      "created_at": "2025-11-10T15:50:07.705021Z"
+    },
+    {
+      "name": "DC Bus Voltage Sensor",
+      "type": "DC Bus Sensing",
+      "feedback_signal": "DeviceID",
+      "feedback_message_id": 256,
+      "actuation": {
+        "type": "DC Bus Sensing",
+        "oscilloscope_channel": "DC Bus Voltage",
+        "feedback_signal_source": 250,
+        "feedback_signal": "DCBusVoltage",
+        "dwell_time_ms": 2000,
+        "tolerance_v": 0.5
+      },
+      "created_at": "2025-11-13T05:40:27.306308Z"
     },
     {
       "name": "Phase Current",
@@ -256,7 +304,7 @@
         "phase_current_v_signal": "PhaseVCurrent",
         "phase_current_w_signal": "PhaseWCurrent",
         "min_iq": 10.0,
-        "max_iq": 50.0,
+        "max_iq": 20.0,
         "step_iq": 10.0,
         "ipc_test_duration_ms": 3000,
         "oscilloscope_phase_v_ch": "Phase V Current",

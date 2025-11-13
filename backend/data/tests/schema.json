@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
@@ -101,6 +101,23 @@
                   "tolerance_mv",
                   "pre_dwell_time_ms",
                   "dwell_time_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"DC Bus Sensing"},
+                  "oscilloscope_channel": {"type":"string"},
+                  "feedback_signal_source": {"type":"integer"},
+                  "feedback_signal": {"type":"string"},
+                  "dwell_time_ms": {"type":"integer", "minimum":1},
+                  "tolerance_v": {"type":"number", "minimum":0}
+                },
+                "required": [
+                  "oscilloscope_channel",
+                  "feedback_signal_source",
+                  "feedback_signal",
+                  "dwell_time_ms",
+                  "tolerance_v"
                 ]
               },
               {

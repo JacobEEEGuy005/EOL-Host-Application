@@ -76,8 +76,15 @@ class ActuationConfig:
         tolerance_mv: Tolerance in millivolts for pass/fail determination
         pre_dwell_time_ms: Pre-dwell time in milliseconds (system stabilization)
         dwell_time_ms: Dwell time in milliseconds (data collection period)
+        
+        For DC Bus Sensing:
+        oscilloscope_channel: Channel name from oscilloscope configuration (e.g., "DC Bus Voltage")
+        feedback_signal_source: CAN message ID containing feedback signal
+        feedback_signal: Signal name for feedback signal
+        dwell_time_ms: Dwell time in milliseconds (data collection period)
+        tolerance_v: Tolerance in volts for pass/fail determination
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', or 'External 5V Test'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', or 'DC Bus Sensing'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -138,6 +145,12 @@ class ActuationConfig:
     eol_ext_5v_measurement_signal: Optional[str] = None  # Signal name for EOL Ext 5V measurement
     # Note: feedback_signal_source and feedback_signal are already defined for Analog Static Test
     # tolerance_mv, pre_dwell_time_ms, and dwell_time_ms are also already defined
+    
+    # DC Bus Sensing Test fields
+    oscilloscope_channel: Optional[str] = None  # Channel name from oscilloscope configuration
+    # Note: feedback_signal_source and feedback_signal are already defined for Analog Static Test
+    # Note: dwell_time_ms is already defined
+    tolerance_v: Optional[float] = None  # Tolerance in volts
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -257,6 +270,17 @@ class ActuationConfig:
                 result['pre_dwell_time_ms'] = self.pre_dwell_time_ms
             if self.dwell_time_ms is not None:
                 result['dwell_time_ms'] = self.dwell_time_ms
+        elif self.type == 'DC Bus Sensing':
+            if self.oscilloscope_channel:
+                result['oscilloscope_channel'] = self.oscilloscope_channel
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.feedback_signal:
+                result['feedback_signal'] = self.feedback_signal
+            if self.dwell_time_ms is not None:
+                result['dwell_time_ms'] = self.dwell_time_ms
+            if self.tolerance_v is not None:
+                result['tolerance_v'] = self.tolerance_v
         return result
     
     @classmethod

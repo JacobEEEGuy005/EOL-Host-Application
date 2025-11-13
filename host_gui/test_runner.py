@@ -224,6 +224,12 @@ class TestRunner:
                     logger.warning(f"Invalid dwell time in digital test, using {DWELL_TIME_DEFAULT}ms: {e}")
                     dwell_ms = DWELL_TIME_DEFAULT
 
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+
                 def _encode_value_to_bytes(v):
                     # Try DBC encoding if available and signal specified
                     # Phase 1: Use DbcService if available
@@ -508,6 +514,12 @@ class TestRunner:
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Invalid dwell time, using {DWELL_TIME_DEFAULT}ms: {e}")
                     dwell_ms = DWELL_TIME_DEFAULT
+
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
 
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
@@ -842,7 +854,6 @@ class TestRunner:
 
                     # Phase 1: Use CanService if available
                     if self.can_service is not None and self.can_service.is_connected():
-                        from backend.adapters.interface import Frame as AdapterFrame
                         f = AdapterFrame(can_id=can_id, data=data_bytes, timestamp=time.time())
                         logger.debug(f'Signals: {signals}')
                         logger.debug(f'Encode data: {encode_data}')
@@ -1353,7 +1364,7 @@ class TestRunner:
                 if dwell_ms <= 0:
                     return False, "Dwell time must be positive"
                 
-                # Import AdapterFrame at function level (same pattern as Fan Control Test)
+                # Import AdapterFrame at function level (unified pattern)
                 try:
                     from backend.adapters.interface import Frame as AdapterFrame
                 except ImportError:
@@ -1632,6 +1643,12 @@ class TestRunner:
                 if timeout_ms <= 0:
                     return False, "Test timeout must be positive"
                 
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+                
                 def _nb_sleep(sec: float) -> None:
                     """Non-blocking sleep that processes Qt events.
 
@@ -1712,8 +1729,6 @@ class TestRunner:
                         return False, "Failed to encode fan trigger message"
                     
                     # Use CanService.send_frame() with Frame object (same pattern as other tests)
-                    from backend.adapters.interface import Frame as AdapterFrame
-                    
                     if self.can_service is not None and self.can_service.is_connected():
                         f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
                         logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
@@ -1855,8 +1870,6 @@ class TestRunner:
                         logger.warning("Failed to encode fan disable message, but continuing with test evaluation")
                     else:
                         # Use CanService.send_frame() with Frame object
-                        from backend.adapters.interface import Frame as AdapterFrame
-                        
                         if self.can_service is not None and self.can_service.is_connected():
                             f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
                             logger.debug(f"Sending fan disable frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
@@ -1935,6 +1948,203 @@ class TestRunner:
                     self.gui._test_result_data_temp[test_name] = result_data
                 
                 logger.info(f"Fan Control Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
+            elif act.get('type') == 'DC Bus Sensing':
+                # DC Bus Sensing Test execution:
+                # 1) Check if oscilloscope channel is ON (C{ch}:TRA?), if not, turn it ON (C{ch}:TRA ON) and verify
+                # 2) Send TRMD AUTO to oscilloscope and start logging CAN feedback signal
+                # 3) Wait for dwell time
+                # 4) Stop oscilloscope acquisition (*STOP) and stop logging CAN feedback signal
+                # 5) Obtain average value from oscilloscope using C{ch}:PAVA? MEAN
+                # 6) Obtain average from CAN feedback signal
+                # 7) Compare both averages: |osc_avg - can_avg| <= tolerance -> PASS
+                
+                # Extract parameters
+                osc_channel_name = act.get('oscilloscope_channel')
+                feedback_msg_id = act.get('feedback_signal_source')
+                feedback_signal = act.get('feedback_signal')
+                dwell_ms = int(act.get('dwell_time_ms', 0))
+                tolerance_v = float(act.get('tolerance_v', 0))
+                
+                # Validate parameters
+                if not all([osc_channel_name, feedback_msg_id, feedback_signal]):
+                    return False, "Missing required DC Bus Sensing Test parameters (oscilloscope_channel, feedback_signal_source, feedback_signal)"
+                
+                if tolerance_v < 0:
+                    return False, "Tolerance must be non-negative"
+                
+                if dwell_ms <= 0:
+                    return False, "Dwell time must be positive"
+                
+                # Check oscilloscope service availability
+                if self.oscilloscope_service is None or not self.oscilloscope_service.is_connected():
+                    return False, "Oscilloscope not connected. Please connect oscilloscope before running DC Bus Sensing test."
+                
+                # Get oscilloscope configuration
+                osc_config = None
+                if self.gui is not None and hasattr(self.gui, '_oscilloscope_config'):
+                    osc_config = self.gui._oscilloscope_config
+                else:
+                    return False, "Oscilloscope configuration not available. Please configure oscilloscope first."
+                
+                # Get channel number from channel name
+                channel_num = self.oscilloscope_service.get_channel_number_from_name(osc_channel_name, osc_config)
+                if channel_num is None:
+                    return False, f"Channel '{osc_channel_name}' not found in oscilloscope configuration or not enabled"
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events.
+                    
+                    Args:
+                        sec: Sleep duration in seconds
+                    """
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Step 1: Check if channel is ON, turn ON if needed
+                logger.info(f"DC Bus Sensing Test: Checking channel {channel_num} ({osc_channel_name})...")
+                try:
+                    tra_response = self.oscilloscope_service.send_command(f"C{channel_num}:TRA?")
+                    if tra_response is None:
+                        return False, f"Failed to query channel {channel_num} trace status"
+                    
+                    tra_str = tra_response.strip().upper()
+                    is_on = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
+                    
+                    if not is_on:
+                        logger.info(f"Channel {channel_num} is OFF, turning ON...")
+                        self.oscilloscope_service.send_command(f"C{channel_num}:TRA ON")
+                        time.sleep(0.2)  # Small delay for command processing
+                        
+                        # Verify it's now ON
+                        tra_response = self.oscilloscope_service.send_command(f"C{channel_num}:TRA?")
+                        if tra_response is None:
+                            return False, f"Failed to verify channel {channel_num} trace status after enabling"
+                        
+                        tra_str = tra_response.strip().upper()
+                        is_on = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
+                        if not is_on:
+                            return False, f"Failed to enable channel {channel_num} trace"
+                        
+                        logger.info(f"Channel {channel_num} enabled successfully")
+                    else:
+                        logger.info(f"Channel {channel_num} is already ON")
+                except Exception as e:
+                    return False, f"Error checking/enabling channel {channel_num}: {e}"
+                
+                # Step 2: Send TRMD AUTO and start logging CAN feedback signal
+                logger.info("DC Bus Sensing Test: Starting oscilloscope acquisition (TRMD AUTO)...")
+                try:
+                    self.oscilloscope_service.send_command("TRMD AUTO")
+                    time.sleep(0.2)  # Small delay for command processing
+                except Exception as e:
+                    return False, f"Failed to start oscilloscope acquisition: {e}"
+                
+                # Start collecting CAN feedback signal values
+                can_feedback_values = []
+                collecting_can_data = True
+                
+                logger.info(f"DC Bus Sensing Test: Collecting CAN feedback signal for {dwell_ms}ms...")
+                start_time = time.time()
+                end_time = start_time + (dwell_ms / 1000.0)
+                
+                # Step 3: Collect CAN data during dwell time
+                while time.time() < end_time and collecting_can_data:
+                    try:
+                        if self.signal_service is not None:
+                            ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                        elif self.gui is not None:
+                            ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        else:
+                            ts_fb, fb_val = (None, None)
+                        
+                        if fb_val is not None:
+                            try:
+                                # Convert to volts if needed (assuming CAN signal might be in mV)
+                                fb_float = float(fb_val)
+                                # If value seems to be in mV (large values > 1000), convert to V
+                                if abs(fb_float) > 1000:
+                                    fb_float = fb_float / 1000.0
+                                can_feedback_values.append(fb_float)
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading CAN feedback signal: {e}")
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 4: Stop oscilloscope acquisition and stop logging
+                collecting_can_data = False
+                logger.info("DC Bus Sensing Test: Stopping oscilloscope acquisition...")
+                try:
+                    # Use *STOP as per requirements (not just STOP)
+                    self.oscilloscope_service.send_command("*STOP")
+                    # Wait longer for acquisition to fully stop and data to be processed
+                    time.sleep(0.5)  # Increased delay for command processing
+                except Exception as e:
+                    logger.warning(f"Failed to stop oscilloscope acquisition: {e} (continuing with analysis)")
+                
+                # Step 5: Obtain average from oscilloscope
+                # Note: PAVA command may need additional time after STOP for oscilloscope to process data
+                logger.info(f"DC Bus Sensing Test: Querying oscilloscope average (C{channel_num}:PAVA? MEAN)...")
+                time.sleep(0.3)  # Additional delay before querying PAVA
+                osc_avg = self.oscilloscope_service.query_pava_mean(channel_num)
+                if osc_avg is None:
+                    return False, f"Failed to obtain average value from oscilloscope channel {channel_num}"
+                
+                # Step 6: Calculate average from CAN feedback signal
+                if not can_feedback_values:
+                    return False, f"No CAN feedback data collected during dwell time ({dwell_ms}ms). Check CAN connection and signal configuration."
+                
+                can_avg = sum(can_feedback_values) / len(can_feedback_values)
+                
+                # Step 7: Compare and determine pass/fail
+                difference = abs(osc_avg - can_avg)
+                passed = difference <= tolerance_v
+                
+                # Build info string
+                info = f"Oscilloscope Average: {osc_avg:.4f} V, CAN Average: {can_avg:.4f} V, "
+                info += f"Difference: {difference:.4f} V, Tolerance: {tolerance_v:.4f} V"
+                info += f"\nCAN samples collected: {len(can_feedback_values)}"
+                
+                if not passed:
+                    info += f"\nFAIL: Difference {difference:.4f} V exceeds tolerance {tolerance_v:.4f} V"
+                else:
+                    info += f"\nPASS: Difference {difference:.4f} V within tolerance {tolerance_v:.4f} V"
+                
+                # Store results for display
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'oscilloscope_avg': osc_avg,
+                    'can_avg': can_avg,
+                    'difference': difference,
+                    'tolerance': tolerance_v,
+                    'can_samples': len(can_feedback_values),
+                    'can_values': can_feedback_values,
+                    'oscilloscope_channel': osc_channel_name,
+                    'channel_number': channel_num
+                }
+                
+                # Store in temporary storage for retrieval by _on_test_finished
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"DC Bus Sensing Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
             else:
                 pass
