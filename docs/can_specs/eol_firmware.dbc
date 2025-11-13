@@ -133,24 +133,6 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ RectifierTemperature m110 : 48|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
  SG_ ChargerIout_TrimValue m111 : 32|16@1+ (0.01,0) [0|655.35] "%" Vector__XXX
 
-BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
- SG_ NewSignal_0020 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
- SG_ PhaseWCurrentFSR m114 : 32|16@1+ (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
- SG_ PhaseVCurrentFSR m114 : 16|16@1+ (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
- SG_ DCBusVoltageFSR m112 : 48|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ MtrTempFSR m113 : 48|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ Analog2FSR m113 : 32|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ Analog1FSR m113 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ EncCosineFSR m112 : 32|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ EncSineFSR m112 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ BrakeFSR m111 : 48|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ Throttle2FSR m111 : 32|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ Throttle1FSR m111 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
- SG_ RectifierTemperature m106 : 32|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
- SG_ NewSignal_0024 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
- SG_ NewSignal_0031 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
- SG_ Charger_SignalState m107 : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
-
 
 
 CM_ BU_ EOL_Hardware "EOL Test Hardware Device";
@@ -221,19 +203,6 @@ CM_ SG_ 250 InverterTemperature "Inverter Module Temperature";
 CM_ SG_ 250 MotorTemperature "Motor Temperature";
 CM_ SG_ 250 Enable_ACInputRelay "";
 CM_ SG_ 250 AC_VoltageRMS "";
-CM_ SG_ 3221225472 PhaseWCurrentFSR "Full Scale Reading of Phase W Current Sensor";
-CM_ SG_ 3221225472 PhaseVCurrentFSR "Full Scale Reading of Phase V Current Sensor";
-CM_ SG_ 3221225472 DCBusVoltageFSR "Full Scale Reading of DC Bus Voltage Sensor";
-CM_ SG_ 3221225472 MtrTempFSR "Full Scale Reading of Motor Temperature Sensor Input";
-CM_ SG_ 3221225472 Analog2FSR "Full Scale Reading of Analog 2 Input";
-CM_ SG_ 3221225472 Analog1FSR "Full Scale Reading of Analog 1 Input";
-CM_ SG_ 3221225472 EncCosineFSR "Full Scale Reading of Cosine Input";
-CM_ SG_ 3221225472 EncSineFSR "Full Scale Reading of Encoder Sin Input";
-CM_ SG_ 3221225472 BrakeFSR "Full Scale Reading of Brake Input";
-CM_ SG_ 3221225472 Throttle2FSR "Full Scale Reading of Throttle 2 Input";
-CM_ SG_ 3221225472 Throttle1FSR "Full Scale Reading of Throttle 1 Input";
-CM_ SG_ 3221225472 RectifierTemperature "Rectifier Module Temperature";
-CM_ SG_ 3221225472 Charger_SignalState "2 Byte Status of various Digital Signal States for Charger";
 BA_DEF_  "BusType" STRING ;
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ SG_  "GenSigStartValue" FLOAT 0 100000;
