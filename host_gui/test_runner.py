@@ -2146,6 +2146,541 @@ class TestRunner:
                 
                 logger.info(f"DC Bus Sensing Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            elif act.get('type') == 'Output Current Calibration':
+                # Output Current Calibration Test execution:
+                # 1) Verify oscilloscope setup (TDIV, TRA, probe attenuation)
+                # 2) Generate current setpoints array
+                # 3) Initialize plot
+                # 4) Send test trigger to DUT
+                # 5) For each setpoint:
+                #    a. Send current setpoint
+                #    b. Wait pre-acquisition time
+                #    c. Start CAN logging and oscilloscope acquisition
+                #    d. Collect data during acquisition time
+                #    e. Stop data collection
+                #    f. Calculate averages and update plot
+                # 6) Disable test mode
+                # 7) Perform linear regression and calculate gain error
+                # 8) Determine pass/fail
+                
+                # Extract parameters
+                test_trigger_source = act.get('test_trigger_source')
+                test_trigger_signal = act.get('test_trigger_signal')
+                test_trigger_signal_value = act.get('test_trigger_signal_value')
+                current_setpoint_signal = act.get('current_setpoint_signal')
+                feedback_msg_id = act.get('feedback_signal_source')
+                feedback_signal = act.get('feedback_signal')
+                osc_channel_name = act.get('oscilloscope_channel')
+                osc_timebase = act.get('oscilloscope_timebase')
+                min_current = float(act.get('minimum_test_current', 0))
+                max_current = float(act.get('maximum_test_current', 0))
+                step_current = float(act.get('step_current', 0))
+                pre_acq_ms = int(act.get('pre_acquisition_time_ms', 0))
+                acq_ms = int(act.get('acquisition_time_ms', 0))
+                tolerance_percent = float(act.get('tolerance_percent', 0))
+                
+                # Validate parameters
+                if not all([test_trigger_source, test_trigger_signal, test_trigger_signal_value is not None,
+                           current_setpoint_signal, feedback_msg_id, feedback_signal, osc_channel_name, osc_timebase]):
+                    return False, "Missing required Output Current Calibration Test parameters"
+                
+                if not (0 <= test_trigger_signal_value <= 255):
+                    return False, f"Test trigger signal value must be in range 0-255, got {test_trigger_signal_value}"
+                
+                if min_current < 0 or max_current < 0:
+                    return False, "Minimum and maximum test current must be non-negative"
+                
+                if max_current < min_current:
+                    return False, f"Maximum test current ({max_current}) must be >= minimum ({min_current})"
+                
+                if step_current < 0.1:
+                    return False, f"Step current must be >= 0.1 A, got {step_current}"
+                
+                if pre_acq_ms < 0:
+                    return False, "Pre-acquisition time must be non-negative"
+                
+                if acq_ms <= 0:
+                    return False, "Acquisition time must be positive"
+                
+                if tolerance_percent < 0:
+                    return False, "Tolerance must be non-negative"
+                
+                # Check oscilloscope service availability
+                if self.oscilloscope_service is None or not self.oscilloscope_service.is_connected():
+                    return False, "Oscilloscope not connected. Please connect oscilloscope before running Output Current Calibration test."
+                
+                # Check DBC service availability
+                if self.dbc_service is None or not self.dbc_service.is_loaded():
+                    return False, "Output Current Calibration requires DBC file to be loaded"
+                
+                # Get oscilloscope configuration
+                osc_config = None
+                if self.gui is not None and hasattr(self.gui, '_oscilloscope_config'):
+                    osc_config = self.gui._oscilloscope_config
+                else:
+                    return False, "Oscilloscope configuration not available. Please configure oscilloscope first."
+                
+                # Get channel number from channel name
+                channel_num = self.oscilloscope_service.get_channel_number_from_name(osc_channel_name, osc_config)
+                if channel_num is None:
+                    return False, f"Channel '{osc_channel_name}' not found in oscilloscope configuration or not enabled"
+                
+                # Import AdapterFrame at function level (unified pattern)
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events."""
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Step 1: Verify oscilloscope setup
+                logger.info(f"Output Current Calibration: Verifying oscilloscope setup...")
+                try:
+                    # Check connection
+                    if not self.oscilloscope_service.is_connected():
+                        return False, "Oscilloscope not connected"
+                    
+                    # Set and verify timebase
+                    logger.info(f"Setting oscilloscope timebase to {osc_timebase}...")
+                    self.oscilloscope_service.send_command(f"TDIV {osc_timebase}")
+                    time.sleep(0.2)
+                    
+                    tdiv_response = self.oscilloscope_service.send_command("TDIV?")
+                    if tdiv_response is None:
+                        return False, "Failed to verify oscilloscope timebase"
+                    
+                    # Parse timebase response (format may vary, check if it contains our value)
+                    tdiv_str = tdiv_response.strip().upper()
+                    if osc_timebase.upper() not in tdiv_str:
+                        logger.warning(f"Timebase verification: expected {osc_timebase}, got {tdiv_response}")
+                        # Continue anyway, might be a parsing issue
+                    
+                    # Enable channel and verify
+                    logger.info(f"Enabling channel {channel_num} ({osc_channel_name})...")
+                    tra_response = self.oscilloscope_service.send_command(f"C{channel_num}:TRA?")
+                    if tra_response is None:
+                        return False, f"Failed to query channel {channel_num} trace status"
+                    
+                    tra_str = tra_response.strip().upper()
+                    is_on = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
+                    
+                    if not is_on:
+                        logger.info(f"Channel {channel_num} is OFF, turning ON...")
+                        self.oscilloscope_service.send_command(f"C{channel_num}:TRA ON")
+                        time.sleep(0.2)
+                        
+                        # Verify it's now ON
+                        tra_response = self.oscilloscope_service.send_command(f"C{channel_num}:TRA?")
+                        if tra_response is None:
+                            return False, f"Failed to verify channel {channel_num} trace status after enabling"
+                        
+                        tra_str = tra_response.strip().upper()
+                        is_on = 'ON' in tra_str or tra_str == '1' or 'TRUE' in tra_str
+                        if not is_on:
+                            return False, f"Failed to enable channel {channel_num} trace"
+                        
+                        logger.info(f"Channel {channel_num} enabled successfully")
+                    else:
+                        logger.info(f"Channel {channel_num} is already ON")
+                    
+                    # Verify probe attenuation (optional check)
+                    # Get channel config from oscilloscope config
+                    channel_config = None
+                    if osc_config and 'channels' in osc_config:
+                        for ch_key, ch_cfg in osc_config['channels'].items():
+                            if ch_cfg.get('name') == osc_channel_name:
+                                channel_config = ch_cfg
+                                break
+                    
+                    if channel_config and 'probe_attenuation' in channel_config:
+                        expected_attenuation = channel_config['probe_attenuation']
+                        # Query actual attenuation (if supported by oscilloscope)
+                        # Note: Some oscilloscopes may not support this query, so we'll skip if it fails
+                        try:
+                            attn_response = self.oscilloscope_service.send_command(f"C{channel_num}:ATTN?")
+                            if attn_response:
+                                # Parse attenuation from response
+                                import re
+                                attn_match = re.search(r'([\d.]+)', attn_response)
+                                if attn_match:
+                                    actual_attenuation = float(attn_match.group(1))
+                                    if abs(actual_attenuation - expected_attenuation) > 0.1:
+                                        logger.warning(f"Probe attenuation mismatch: expected {expected_attenuation}, got {actual_attenuation}")
+                        except Exception as e:
+                            logger.debug(f"Could not verify probe attenuation: {e}")
+                    
+                    logger.info("Oscilloscope setup verified successfully")
+                except Exception as e:
+                    return False, f"Failed to verify oscilloscope setup: {e}"
+                
+                # Step 2: Generate current setpoints array
+                logger.info(f"Generating current setpoints from {min_current}A to {max_current}A with step {step_current}A...")
+                current_setpoints = []
+                current = min_current
+                while current <= max_current + 0.001:  # Add small epsilon for floating point comparison
+                    current_setpoints.append(round(current, 3))
+                    current += step_current
+                
+                if not current_setpoints:
+                    return False, "No current setpoints generated. Check minimum, maximum, and step current values."
+                
+                logger.info(f"Generated {len(current_setpoints)} setpoints: {current_setpoints}")
+                
+                # Initialize plot
+                if self.plot_clear_callback is not None:
+                    self.plot_clear_callback()
+                
+                if self.label_update_callback is not None:
+                    self.label_update_callback("Output Current Calibration: Initializing...")
+                
+                # Initialize data storage
+                can_averages = []
+                osc_averages = []
+                setpoint_values = []
+                
+                # Step 3: Send test trigger to DUT
+                logger.info(f"Sending test trigger to DUT (signal={test_trigger_signal}, value={test_trigger_signal_value})...")
+                try:
+                    # Find message and encode
+                    trigger_msg = self.dbc_service.find_message_by_id(test_trigger_source)
+                    if trigger_msg is None:
+                        return False, f"Test trigger message (ID: 0x{test_trigger_source:X}) not found in DBC"
+                    
+                    # Build signal values dict - include required signals (DeviceID, MessageType) if they exist
+                    signal_values = {}
+                    
+                    # Get all signals from the message to check for required ones
+                    all_signals = self.dbc_service.get_message_signals(trigger_msg)
+                    signal_names = [sig.name for sig in all_signals]
+                    
+                    # Include DeviceID if it exists (default to 0)
+                    if 'DeviceID' in signal_names:
+                        signal_values['DeviceID'] = 0
+                    
+                    # Check if test_trigger_signal is multiplexed and get MessageType from multiplexer_ids
+                    mux_value = None
+                    for sig in all_signals:
+                        if sig.name == test_trigger_signal and getattr(sig, 'multiplexer_ids', None):
+                            mux_value = sig.multiplexer_ids[0]
+                            break
+                    
+                    # Only set MessageType if signal is actually multiplexed
+                    if mux_value is not None:
+                        signal_values['MessageType'] = mux_value
+                        logger.info(f"Using MessageType={mux_value} from multiplexor for {test_trigger_signal}")
+                    elif 'MessageType' in signal_names:
+                        # If MessageType exists but signal is not multiplexed, use default 0
+                        signal_values['MessageType'] = 0
+                    
+                    # Add the signal we actually want to set (only test_trigger_signal for initial trigger)
+                    signal_values[test_trigger_signal] = test_trigger_signal_value
+                    # Note: current_setpoint_signal is sent separately in the setpoint loop, not in the initial trigger
+                    
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        # Fallback if AdapterFrame not available
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    
+                    if not self.can_service.send_frame(frame):
+                        return False, "Failed to send test trigger message to DUT"
+                    
+                    logger.info("Test trigger sent successfully")
+                    _nb_sleep(0.5)  # Small delay for DUT to initialize
+                except Exception as e:
+                    return False, f"Failed to send test trigger: {e}"
+                
+                # Step 4: Iterate through current setpoints
+                test_name = test.get('name', '<unnamed>')
+                for setpoint_idx, setpoint in enumerate(current_setpoints):
+                    logger.info(f"Testing setpoint {setpoint_idx + 1}/{len(current_setpoints)}: {setpoint}A")
+                    
+                    # 4a. Send current setpoint
+                    try:
+                        # Build signal values dict - include required signals (DeviceID, MessageType) if they exist
+                        signal_values = {}
+                        
+                        # Get all signals from the message to check for required ones
+                        all_signals = self.dbc_service.get_message_signals(trigger_msg)
+                        signal_names = [sig.name for sig in all_signals]
+                        
+                        # Include DeviceID if it exists (default to 0)
+                        if 'DeviceID' in signal_names:
+                            signal_values['DeviceID'] = 0
+                        
+                        # Check if current_setpoint_signal is multiplexed and get MessageType from multiplexer_ids
+                        # If not, check if test_trigger_signal is multiplexed (use same MessageType as trigger)
+                        mux_value = None
+                        for sig in all_signals:
+                            if sig.name == current_setpoint_signal and getattr(sig, 'multiplexer_ids', None):
+                                mux_value = sig.multiplexer_ids[0]
+                                break
+                        
+                        # If current_setpoint_signal is not multiplexed, check test_trigger_signal
+                        if mux_value is None:
+                            for sig in all_signals:
+                                if sig.name == test_trigger_signal and getattr(sig, 'multiplexer_ids', None):
+                                    mux_value = sig.multiplexer_ids[0]
+                                    break
+                        
+                        # Only set MessageType if signal is actually multiplexed
+                        if mux_value is not None:
+                            signal_values['MessageType'] = mux_value
+                        elif 'MessageType' in signal_names:
+                            # If MessageType exists but signal is not multiplexed, use default 0
+                            signal_values['MessageType'] = 0
+                        
+                        # Add the signal we actually want to set
+                        signal_values[current_setpoint_signal] = setpoint
+                        
+                        frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                        if AdapterFrame is not None:
+                            frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                        else:
+                            # Fallback if AdapterFrame not available
+                            class Frame:
+                                def __init__(self, can_id, data):
+                                    self.can_id = can_id
+                                    self.data = data
+                            frame = Frame(can_id=test_trigger_source, data=frame_data)
+                        
+                        if not self.can_service.send_frame(frame):
+                            logger.warning(f"Failed to send current setpoint {setpoint}A, continuing...")
+                            continue
+                        
+                        logger.info(f"Sent current setpoint: {setpoint}A")
+                    except Exception as e:
+                        logger.warning(f"Failed to send current setpoint {setpoint}A: {e}, continuing...")
+                        continue
+                    
+                    # 4b. Wait for pre-acquisition time
+                    logger.info(f"Waiting {pre_acq_ms}ms for current to stabilize...")
+                    _nb_sleep(pre_acq_ms / 1000.0)
+                    
+                    # 4c. Start data acquisition
+                    logger.info(f"Starting data acquisition for {acq_ms}ms...")
+                    can_feedback_values = []
+                    collecting_can_data = True
+                    
+                    try:
+                        # Start oscilloscope acquisition
+                        self.oscilloscope_service.send_command("TRMD AUTO")
+                        time.sleep(0.2)
+                    except Exception as e:
+                        logger.warning(f"Failed to start oscilloscope acquisition: {e}, continuing...")
+                    
+                    # 4d. Collect data during acquisition time
+                    start_time = time.time()
+                    end_time = start_time + (acq_ms / 1000.0)
+                    
+                    while time.time() < end_time and collecting_can_data:
+                        try:
+                            if self.signal_service is not None:
+                                ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                            elif self.gui is not None:
+                                ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                            else:
+                                ts_fb, fb_val = (None, None)
+                            
+                            if fb_val is not None:
+                                try:
+                                    fb_float = float(fb_val)
+                                    can_feedback_values.append(fb_float)
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading CAN feedback signal: {e}")
+                        
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                    
+                    # 4e. Stop data acquisition
+                    collecting_can_data = False
+                    logger.info("Stopping data acquisition...")
+                    try:
+                        self.oscilloscope_service.send_command("STOP")
+                        time.sleep(0.5)  # Wait for acquisition to stop
+                    except Exception as e:
+                        logger.warning(f"Failed to stop oscilloscope acquisition: {e}")
+                    
+                    # 4f. Analyze data and update plot
+                    if not can_feedback_values:
+                        logger.warning(f"No CAN data collected at setpoint {setpoint}A, skipping...")
+                        continue
+                    
+                    # Calculate CAN average
+                    can_avg = sum(can_feedback_values) / len(can_feedback_values)
+                    
+                    # Query oscilloscope average
+                    time.sleep(0.3)  # Additional delay before querying PAVA
+                    osc_avg = self.oscilloscope_service.query_pava_mean(channel_num)
+                    if osc_avg is None:
+                        logger.warning(f"Failed to obtain oscilloscope average at setpoint {setpoint}A, skipping...")
+                        continue
+                    
+                    # Store data
+                    can_averages.append(can_avg)
+                    osc_averages.append(osc_avg)
+                    setpoint_values.append(setpoint)
+                    
+                    logger.info(f"Setpoint {setpoint}A: CAN avg={can_avg:.4f}A, Osc avg={osc_avg:.4f}A")
+                    
+                    # Update plot
+                    if self.plot_update_callback is not None:
+                        self.plot_update_callback(osc_avg, can_avg, test_name)
+                    
+                    if self.label_update_callback is not None:
+                        self.label_update_callback(f"Output Current Calibration: Setpoint {setpoint_idx + 1}/{len(current_setpoints)} ({setpoint}A) - CAN: {can_avg:.3f}A, Osc: {osc_avg:.3f}A")
+                
+                # Step 5: Disable test mode
+                logger.info("Disabling test mode at DUT...")
+                try:
+                    # Build signal values dict - include required signals (DeviceID, MessageType) if they exist
+                    signal_values = {}
+                    
+                    # Get all signals from the message to check for required ones
+                    all_signals = self.dbc_service.get_message_signals(trigger_msg)
+                    signal_names = [sig.name for sig in all_signals]
+                    
+                    # Include DeviceID if it exists (default to 0)
+                    if 'DeviceID' in signal_names:
+                        signal_values['DeviceID'] = 0
+                    
+                    # Check if test_trigger_signal is multiplexed and get MessageType from multiplexer_ids
+                    mux_value = None
+                    for sig in all_signals:
+                        if sig.name == test_trigger_signal and getattr(sig, 'multiplexer_ids', None):
+                            mux_value = sig.multiplexer_ids[0]
+                            break
+                    
+                    # Only set MessageType if signal is actually multiplexed
+                    if mux_value is not None:
+                        signal_values['MessageType'] = mux_value
+                    elif 'MessageType' in signal_names:
+                        # If MessageType exists but signal is not multiplexed, use default 0
+                        signal_values['MessageType'] = 0
+                    
+                    # Add the signal we actually want to set
+                    signal_values[test_trigger_signal] = 0  # Disable test mode
+                    
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        # Fallback if AdapterFrame not available
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    self.can_service.send_frame(frame)
+                    logger.info("Test mode disabled")
+                except Exception as e:
+                    logger.warning(f"Failed to disable test mode: {e}")
+                
+                # Step 6: Perform linear regression and calculate gain error
+                if len(can_averages) < 2:
+                    return False, f"Insufficient data points collected. Need at least 2 setpoints, got {len(can_averages)}. Check CAN connection and signal configuration."
+                
+                logger.info(f"Performing linear regression on {len(can_averages)} data points...")
+                
+                # Linear regression: Y = slope * X + intercept
+                # X = oscilloscope averages (reference)
+                # Y = CAN averages (DUT measurements)
+                try:
+                    # Try using numpy if available
+                    try:
+                        import numpy as np
+                        # Use numpy polyfit for linear regression (degree 1)
+                        coeffs = np.polyfit(osc_averages, can_averages, 1)
+                        slope = float(coeffs[0])
+                        intercept = float(coeffs[1])
+                    except ImportError:
+                        # Manual linear regression calculation
+                        n = len(osc_averages)
+                        sum_x = sum(osc_averages)
+                        sum_y = sum(can_averages)
+                        sum_xy = sum(osc_averages[i] * can_averages[i] for i in range(n))
+                        sum_x2 = sum(x * x for x in osc_averages)
+                        
+                        denominator = n * sum_x2 - sum_x * sum_x
+                        if abs(denominator) < 1e-10:
+                            return False, "Cannot perform linear regression: data points are collinear or insufficient variation"
+                        
+                        slope = (n * sum_xy - sum_x * sum_y) / denominator
+                        intercept = (sum_y - slope * sum_x) / n
+                    
+                    # Calculate gain error
+                    ideal_slope = 1.0
+                    gain_error = abs(slope - ideal_slope) * 100.0
+                    adjustment_factor = 1.0 / slope if abs(slope) > 1e-10 else None
+                    
+                    # Determine pass/fail
+                    passed = gain_error <= tolerance_percent
+                    
+                    # Build info string
+                    info = f"Linear Regression Results:\n"
+                    info += f"  Slope: {slope:.6f} (ideal: 1.0)\n"
+                    info += f"  Intercept: {intercept:.6f} A\n"
+                    info += f"  Gain Error: {gain_error:.4f}%\n"
+                    if adjustment_factor is not None:
+                        info += f"  Adjustment Factor: {adjustment_factor:.6f}\n"
+                    info += f"  Tolerance: {tolerance_percent:.4f}%\n"
+                    info += f"  Data Points: {len(can_averages)}\n"
+                    info += f"\nSetpoint Results:\n"
+                    for i, (sp, can_avg, osc_avg) in enumerate(zip(setpoint_values, can_averages, osc_averages)):
+                        info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A\n"
+                    
+                    if passed:
+                        info += f"\nPASS: Gain error {gain_error:.4f}% within tolerance {tolerance_percent:.4f}%"
+                    else:
+                        info += f"\nFAIL: Gain error {gain_error:.4f}% exceeds tolerance {tolerance_percent:.4f}%"
+                    
+                    # Store results for display
+                    result_data = {
+                        'slope': slope,
+                        'intercept': intercept,
+                        'gain_error': gain_error,
+                        'adjustment_factor': adjustment_factor,
+                        'tolerance_percent': tolerance_percent,
+                        'data_points': len(can_averages),
+                        'setpoint_values': setpoint_values,
+                        'can_averages': can_averages,
+                        'osc_averages': osc_averages,
+                        'oscilloscope_channel': osc_channel_name,
+                        'channel_number': channel_num
+                    }
+                    
+                    if self.gui is not None:
+                        if not hasattr(self.gui, '_test_result_data_temp'):
+                            self.gui._test_result_data_temp = {}
+                        self.gui._test_result_data_temp[test_name] = result_data
+                    
+                    logger.info(f"Output Current Calibration Test completed: {'PASS' if passed else 'FAIL'}")
+                    return passed, info
+                    
+                except Exception as e:
+                    logger.error(f"Failed to calculate calibration parameters: {e}", exc_info=True)
+                    return False, f"Failed to calculate calibration parameters: {e}. Check data quality."
             else:
                 pass
         except Exception as e:

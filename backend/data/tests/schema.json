@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
@@ -118,6 +118,41 @@
                   "feedback_signal",
                   "dwell_time_ms",
                   "tolerance_v"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Output Current Calibration"},
+                  "test_trigger_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "test_trigger_signal": {"type":"string"},
+                  "test_trigger_signal_value": {"type":"integer", "minimum":0, "maximum":255},
+                  "current_setpoint_signal": {"type":"string"},
+                  "feedback_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "feedback_signal": {"type":"string"},
+                  "oscilloscope_channel": {"type":"string"},
+                  "oscilloscope_timebase": {"type":"string", "enum":["10MS","20MS","100MS","500MS"]},
+                  "minimum_test_current": {"type":"number", "minimum":0},
+                  "maximum_test_current": {"type":"number", "minimum":0},
+                  "step_current": {"type":"number", "minimum":0.1},
+                  "pre_acquisition_time_ms": {"type":"integer", "minimum":0},
+                  "acquisition_time_ms": {"type":"integer", "minimum":1},
+                  "tolerance_percent": {"type":"number", "minimum":0}
+                },
+                "required": [
+                  "test_trigger_source",
+                  "test_trigger_signal",
+                  "test_trigger_signal_value",
+                  "current_setpoint_signal",
+                  "feedback_signal_source",
+                  "feedback_signal",
+                  "oscilloscope_channel",
+                  "oscilloscope_timebase",
+                  "minimum_test_current",
+                  "maximum_test_current",
+                  "step_current",
+                  "pre_acquisition_time_ms",
+                  "acquisition_time_ms",
+                  "tolerance_percent"
                 ]
               },
               {

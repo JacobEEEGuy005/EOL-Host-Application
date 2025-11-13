@@ -1234,6 +1234,35 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
             if act.get('tolerance_v') is not None:
                 params.append(f"Tolerance: {act['tolerance_v']:.4f} V")
+        elif test_type == 'Output Current Calibration':
+            if act.get('test_trigger_source'):
+                params.append(f"Trigger Source: 0x{act['test_trigger_source']:X}")
+            if act.get('test_trigger_signal'):
+                params.append(f"Trigger Signal: {act['test_trigger_signal']}")
+            if act.get('test_trigger_signal_value') is not None:
+                params.append(f"Trigger Value: {act['test_trigger_signal_value']}")
+            if act.get('current_setpoint_signal'):
+                params.append(f"Setpoint Signal: {act['current_setpoint_signal']}")
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_signal'):
+                params.append(f"Feedback Signal: {act['feedback_signal']}")
+            if act.get('oscilloscope_channel'):
+                params.append(f"Oscilloscope Channel: {act['oscilloscope_channel']}")
+            if act.get('oscilloscope_timebase'):
+                params.append(f"Timebase: {act['oscilloscope_timebase']}")
+            if act.get('minimum_test_current') is not None:
+                params.append(f"Min Current: {act['minimum_test_current']:.2f} A")
+            if act.get('maximum_test_current') is not None:
+                params.append(f"Max Current: {act['maximum_test_current']:.2f} A")
+            if act.get('step_current') is not None:
+                params.append(f"Step Current: {act['step_current']:.2f} A")
+            if act.get('pre_acquisition_time_ms') is not None:
+                params.append(f"Pre-Acq Time: {act['pre_acquisition_time_ms']} ms")
+            if act.get('acquisition_time_ms') is not None:
+                params.append(f"Acquisition Time: {act['acquisition_time_ms']} ms")
+            if act.get('tolerance_percent') is not None:
+                params.append(f"Tolerance: {act['tolerance_percent']:.4f}%")
         elif test_type == 'Fan Control Test':
             if act.get('fan_test_trigger_source'):
                 params.append(f"Trigger Source: 0x{act['fan_test_trigger_source']:X}")
@@ -2068,7 +2097,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -5354,7 +5383,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -6031,6 +6060,154 @@ Data Points Used: {data_points}"""
             dc_bus_sensing_layout.addRow('Feedback Signal:', dc_bus_feedback_signal_combo)
             dc_bus_sensing_layout.addRow('Dwell Time (ms):', dc_bus_dwell_time_edit)
             dc_bus_sensing_layout.addRow('Tolerance (V):', dc_bus_tolerance_edit)
+            
+            # Output Current Calibration Test fields (DBC mode)
+            output_current_calibration_widget = QtWidgets.QWidget()
+            output_current_calibration_layout = QtWidgets.QFormLayout(output_current_calibration_widget)
+            
+            # Test Trigger Source: dropdown of CAN Messages
+            output_current_trigger_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_trigger_msg_combo.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            output_current_trigger_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_trigger_signals(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                output_current_trigger_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trigger_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trigger_signals(0)
+            output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_trigger_signals)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            output_current_trigger_value_validator = QtGui.QIntValidator(0, 255, self)
+            output_current_trigger_value_edit = QtWidgets.QLineEdit()
+            output_current_trigger_value_edit.setValidator(output_current_trigger_value_validator)
+            output_current_trigger_value_edit.setPlaceholderText('e.g., 1 (to enable)')
+            
+            # Current Setpoint Signal: dropdown based on same message as trigger
+            output_current_setpoint_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_setpoint_signals():
+                """Update setpoint signal dropdown based on trigger message selection."""
+                output_current_setpoint_signal_combo.clear()
+                try:
+                    idx = output_current_trigger_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_setpoint_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_setpoint_signals()
+            output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_setpoint_signals)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            output_current_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_feedback_msg_combo.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            output_current_feedback_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_feedback_signals(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                output_current_feedback_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_feedback_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_feedback_signals(0)
+            output_current_feedback_msg_combo.currentIndexChanged.connect(_update_output_current_feedback_signals)
+            
+            # Oscilloscope Channel: dropdown of enabled channel names
+            output_current_osc_channel_combo = QtWidgets.QComboBox()
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                output_current_osc_channel_combo.addItems(channel_names)
+            else:
+                output_current_osc_channel_combo.addItem('No oscilloscope config loaded', None)
+            
+            # Oscilloscope Timebase: dropdown
+            output_current_timebase_combo = QtWidgets.QComboBox()
+            output_current_timebase_combo.addItems(['10MS', '20MS', '100MS', '500MS'])
+            
+            # Minimum Test Current: double input (>= 0, default 5.0)
+            output_current_min_current_validator = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_min_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_min_current_edit = QtWidgets.QLineEdit()
+            output_current_min_current_edit.setValidator(output_current_min_current_validator)
+            output_current_min_current_edit.setPlaceholderText('e.g., 5.0')
+            output_current_min_current_edit.setText('5.0')
+            
+            # Maximum Test Current: double input (>= minimum, default 20.0)
+            output_current_max_current_validator = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_max_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_max_current_edit = QtWidgets.QLineEdit()
+            output_current_max_current_edit.setValidator(output_current_max_current_validator)
+            output_current_max_current_edit.setPlaceholderText('e.g., 20.0')
+            output_current_max_current_edit.setText('20.0')
+            
+            # Step Current: double input (>= 0.1, default 5.0)
+            output_current_step_current_validator = QtGui.QDoubleValidator(0.1, 1000.0, 3, self)
+            output_current_step_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_step_current_edit = QtWidgets.QLineEdit()
+            output_current_step_current_edit.setValidator(output_current_step_current_validator)
+            output_current_step_current_edit.setPlaceholderText('e.g., 5.0')
+            output_current_step_current_edit.setText('5.0')
+            
+            # Pre-Acquisition Time: integer input (>= 0, default 1000)
+            output_current_pre_acq_validator = QtGui.QIntValidator(0, 60000, self)
+            output_current_pre_acq_edit = QtWidgets.QLineEdit()
+            output_current_pre_acq_edit.setValidator(output_current_pre_acq_validator)
+            output_current_pre_acq_edit.setPlaceholderText('e.g., 1000')
+            output_current_pre_acq_edit.setText('1000')
+            
+            # Acquisition Time: integer input (>= 1, default 3000)
+            output_current_acq_validator = QtGui.QIntValidator(1, 60000, self)
+            output_current_acq_edit = QtWidgets.QLineEdit()
+            output_current_acq_edit.setValidator(output_current_acq_validator)
+            output_current_acq_edit.setPlaceholderText('e.g., 3000')
+            output_current_acq_edit.setText('3000')
+            
+            # Tolerance: double input (>= 0, default 1.0)
+            output_current_tolerance_validator = QtGui.QDoubleValidator(0.0, 100.0, 3, self)
+            output_current_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_tolerance_edit = QtWidgets.QLineEdit()
+            output_current_tolerance_edit.setValidator(output_current_tolerance_validator)
+            output_current_tolerance_edit.setPlaceholderText('e.g., 1.0')
+            output_current_tolerance_edit.setText('1.0')
+            
+            # Populate Output Current Calibration Test sub-widget
+            output_current_calibration_layout.addRow('Test Trigger Source:', output_current_trigger_msg_combo)
+            output_current_calibration_layout.addRow('Test Trigger Signal:', output_current_trigger_signal_combo)
+            output_current_calibration_layout.addRow('Test Trigger Signal Value:', output_current_trigger_value_edit)
+            output_current_calibration_layout.addRow('Current Setpoint Signal:', output_current_setpoint_signal_combo)
+            output_current_calibration_layout.addRow('Feedback Signal Source:', output_current_feedback_msg_combo)
+            output_current_calibration_layout.addRow('Feedback Signal:', output_current_feedback_signal_combo)
+            output_current_calibration_layout.addRow('Oscilloscope Channel:', output_current_osc_channel_combo)
+            output_current_calibration_layout.addRow('Oscilloscope Timebase:', output_current_timebase_combo)
+            output_current_calibration_layout.addRow('Minimum Test Current (A):', output_current_min_current_edit)
+            output_current_calibration_layout.addRow('Maximum Test Current (A):', output_current_max_current_edit)
+            output_current_calibration_layout.addRow('Step Current (A):', output_current_step_current_edit)
+            output_current_calibration_layout.addRow('Pre-Acquisition Time (ms):', output_current_pre_acq_edit)
+            output_current_calibration_layout.addRow('Acquisition Time (ms):', output_current_acq_edit)
+            output_current_calibration_layout.addRow('Tolerance (%):', output_current_tolerance_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -6328,6 +6505,8 @@ Data Points Used: {data_points}"""
         test_type_to_index['Fan Control Test'] = act_stacked.addWidget(fan_control_widget)
         test_type_to_index['External 5V Test'] = act_stacked.addWidget(ext_5v_test_widget)
         test_type_to_index['DC Bus Sensing'] = act_stacked.addWidget(dc_bus_sensing_widget)
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
+            test_type_to_index['Output Current Calibration'] = act_stacked.addWidget(output_current_calibration_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -6349,7 +6528,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -6758,6 +6937,112 @@ Data Points Used: {data_points}"""
                         'dwell_time_ms': dwell_time_val,
                         'tolerance_v': tolerance_val,
                     }
+                elif t == 'Output Current Calibration':
+                    # Output Current Calibration: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = output_current_trigger_msg_combo.currentData()
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = output_current_trigger_signal_combo.currentText().strip() if output_current_trigger_signal_combo.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_output_current_trigger_value(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_output_current_trigger_value(output_current_trigger_value_edit)
+                    
+                    setpoint_signal = output_current_setpoint_signal_combo.currentText().strip() if output_current_setpoint_signal_combo.count() else ''
+                    
+                    try:
+                        feedback_msg_id = output_current_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = output_current_feedback_signal_combo.currentText().strip() if output_current_feedback_signal_combo.count() else ''
+                    
+                    osc_channel = output_current_osc_channel_combo.currentText().strip() if output_current_osc_channel_combo.count() else ''
+                    timebase = output_current_timebase_combo.currentText().strip() if output_current_timebase_combo.count() else ''
+                    
+                    # Minimum Test Current (float)
+                    def _to_float_or_none_output_current_min(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_current = _to_float_or_none_output_current_min(output_current_min_current_edit)
+                    
+                    # Maximum Test Current (float)
+                    def _to_float_or_none_output_current_max(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    max_current = _to_float_or_none_output_current_max(output_current_max_current_edit)
+                    
+                    # Step Current (float)
+                    def _to_float_or_none_output_current_step(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    step_current = _to_float_or_none_output_current_step(output_current_step_current_edit)
+                    
+                    # Pre-Acquisition Time (int)
+                    def _to_int_or_none_output_current_pre_acq(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_acq_time = _to_int_or_none_output_current_pre_acq(output_current_pre_acq_edit)
+                    
+                    # Acquisition Time (int)
+                    def _to_int_or_none_output_current_acq(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acq_time = _to_int_or_none_output_current_acq(output_current_acq_edit)
+                    
+                    # Tolerance (float, in %)
+                    def _to_float_or_none_output_current_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_percent = _to_float_or_none_output_current_tolerance(output_current_tolerance_edit)
+                    
+                    act = {
+                        'type': 'Output Current Calibration',
+                        'test_trigger_source': trigger_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'current_setpoint_signal': setpoint_signal,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'oscilloscope_channel': osc_channel,
+                        'oscilloscope_timebase': timebase,
+                        'minimum_test_current': min_current,
+                        'maximum_test_current': max_current,
+                        'step_current': step_current,
+                        'pre_acquisition_time_ms': pre_acq_time,
+                        'acquisition_time_ms': acq_time,
+                        'tolerance_percent': tolerance_percent,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -7127,24 +7412,36 @@ Data Points Used: {data_points}"""
                         'tolerance_v': tolerance_val,
                     }
             # if using DBC-driven fields, read feedback from combo
+            # Only save feedback fields for test types that use them
+            # Test types that have their own feedback fields inside actuation don't need these
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 
+                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration')
+            
             fb_msg_id = None
-            if self.dbc_service is not None and self.dbc_service.is_loaded():
-                try:
-                    feedback = fb_signal_combo.currentText().strip()
-                    fb_msg_id = fb_msg_combo.currentData()
-                except Exception:
-                    feedback = ''
-            else:
-                feedback = feedback_edit.text().strip()
+            feedback = None
+            if t not in test_types_with_own_feedback:
+                # Only read feedback fields for test types that use them
+                if self.dbc_service is not None and self.dbc_service.is_loaded():
+                    try:
+                        feedback = fb_signal_combo.currentText().strip()
+                        fb_msg_id = fb_msg_combo.currentData()
+                    except Exception:
+                        feedback = ''
+                else:
+                    feedback = feedback_edit.text().strip()
 
             entry = {
                 'name': nm,
                 'type': t,
-                'feedback_signal': feedback,
-                'feedback_message_id': fb_msg_id,
                 'actuation': act,
                 'created_at': datetime.utcnow().isoformat() + 'Z'
             }
+            
+            # Only add feedback fields if they were read (for test types that use them)
+            if feedback is not None:
+                entry['feedback_signal'] = feedback
+            if fb_msg_id is not None:
+                entry['feedback_message_id'] = fb_msg_id
             
             # Validate test before adding
             is_valid, error_msg = self._validate_test(entry)
@@ -7227,8 +7524,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', or 'DC Bus Sensing'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -7364,6 +7661,70 @@ Data Points Used: {data_points}"""
                 return False, "DC Bus Sensing test requires tolerance (V)"
             if actuation.get('tolerance_v', 0) < 0:
                 return False, "Tolerance must be non-negative"
+        elif test_type == 'Output Current Calibration':
+            # Validate required fields
+            if actuation.get('test_trigger_source') is None:
+                return False, "Output Current Calibration test requires test trigger source (CAN ID)"
+            if not (0 <= actuation.get('test_trigger_source', -1) <= 0x1FFFFFFF):
+                return False, "Test trigger source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('test_trigger_signal'):
+                return False, "Output Current Calibration test requires test trigger signal name"
+            if actuation.get('test_trigger_signal_value') is None:
+                return False, "Output Current Calibration test requires test trigger signal value"
+            if not (0 <= actuation.get('test_trigger_signal_value', -1) <= 255):
+                return False, "Test trigger signal value must be in range 0-255"
+            if not actuation.get('current_setpoint_signal'):
+                return False, "Output Current Calibration test requires current setpoint signal name"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Output Current Calibration test requires feedback signal source (CAN ID)"
+            if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Feedback signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('feedback_signal'):
+                return False, "Output Current Calibration test requires feedback signal name"
+            if not actuation.get('oscilloscope_channel'):
+                return False, "Output Current Calibration test requires oscilloscope channel"
+            if actuation.get('oscilloscope_timebase') not in ('10MS', '20MS', '100MS', '500MS'):
+                return False, "Oscilloscope timebase must be one of: '10MS', '20MS', '100MS', '500MS'"
+            if actuation.get('minimum_test_current') is None:
+                return False, "Output Current Calibration test requires minimum test current (A)"
+            if actuation.get('minimum_test_current', -1) < 0:
+                return False, "Minimum test current must be non-negative"
+            if actuation.get('maximum_test_current') is None:
+                return False, "Output Current Calibration test requires maximum test current (A)"
+            if actuation.get('maximum_test_current', -1) < 0:
+                return False, "Maximum test current must be non-negative"
+            if actuation.get('minimum_test_current') is not None and actuation.get('maximum_test_current') is not None:
+                if actuation.get('maximum_test_current') < actuation.get('minimum_test_current'):
+                    return False, "Maximum test current must be >= minimum test current"
+            if actuation.get('step_current') is None:
+                return False, "Output Current Calibration test requires step current (A)"
+            if actuation.get('step_current', 0) < 0.1:
+                return False, "Step current must be >= 0.1 A"
+            if actuation.get('pre_acquisition_time_ms') is None:
+                return False, "Output Current Calibration test requires pre-acquisition time (ms)"
+            if actuation.get('pre_acquisition_time_ms', -1) < 0:
+                return False, "Pre-acquisition time must be non-negative"
+            if actuation.get('acquisition_time_ms') is None:
+                return False, "Output Current Calibration test requires acquisition time (ms)"
+            if actuation.get('acquisition_time_ms', 0) <= 0:
+                return False, "Acquisition time must be positive"
+            if actuation.get('tolerance_percent') is None:
+                return False, "Output Current Calibration test requires tolerance (%)"
+            if actuation.get('tolerance_percent', -1) < 0:
+                return False, "Tolerance must be non-negative"
+            # Check oscilloscope service availability
+            if self.oscilloscope_service is None or not self.oscilloscope_service.is_connected():
+                return False, "Output Current Calibration test requires oscilloscope to be connected"
+            # Check oscilloscope channel exists in profile
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                osc_channel = actuation.get('oscilloscope_channel', '')
+                if osc_channel:
+                    channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                    if osc_channel not in channel_names:
+                        return False, f"Oscilloscope channel '{osc_channel}' not found in oscilloscope configuration"
+            # Check DBC service is available (test requires DBC)
+            if self.dbc_service is None or not self.dbc_service.is_loaded():
+                return False, "Output Current Calibration test requires DBC file to be loaded"
         
         return True, ""
     
@@ -7759,7 +8120,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -8615,6 +8976,198 @@ Data Points Used: {data_points}"""
             dc_bus_sensing_layout_edit.addRow('Feedback Signal:', dc_bus_feedback_signal_combo_edit)
             dc_bus_sensing_layout_edit.addRow('Dwell Time (ms):', dc_bus_dwell_time_edit_edit)
             dc_bus_sensing_layout_edit.addRow('Tolerance (V):', dc_bus_tolerance_edit_edit)
+            
+            # Output Current Calibration Test fields (DBC mode) - for edit dialog
+            output_current_calibration_widget_edit = QtWidgets.QWidget()
+            output_current_calibration_layout_edit = QtWidgets.QFormLayout(output_current_calibration_widget_edit)
+            
+            # Test Trigger Source: dropdown of CAN Messages
+            output_current_trigger_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_trigger_msg_combo_edit.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            output_current_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_trigger_signals_edit(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                output_current_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trigger_signals_edit(0)
+            output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_trigger_signals_edit)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            output_current_trigger_value_validator_edit = QtGui.QIntValidator(0, 255, self)
+            output_current_trigger_value_edit_edit = QtWidgets.QLineEdit(str(act.get('test_trigger_signal_value', '')))
+            output_current_trigger_value_edit_edit.setValidator(output_current_trigger_value_validator_edit)
+            output_current_trigger_value_edit_edit.setPlaceholderText('e.g., 1 (to enable)')
+            
+            # Current Setpoint Signal: dropdown based on same message as trigger
+            output_current_setpoint_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_setpoint_signals_edit():
+                """Update setpoint signal dropdown based on trigger message selection."""
+                output_current_setpoint_signal_combo_edit.clear()
+                try:
+                    idx = output_current_trigger_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_setpoint_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_setpoint_signals_edit()
+            output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_setpoint_signals_edit)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            output_current_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            output_current_feedback_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_feedback_signals_edit(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                output_current_feedback_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_feedback_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_feedback_signals_edit(0)
+            output_current_feedback_msg_combo_edit.currentIndexChanged.connect(_update_output_current_feedback_signals_edit)
+            
+            # Oscilloscope Channel: dropdown of enabled channel names
+            output_current_osc_channel_combo_edit = QtWidgets.QComboBox()
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                output_current_osc_channel_combo_edit.addItems(channel_names)
+            else:
+                output_current_osc_channel_combo_edit.addItem('No oscilloscope config loaded', None)
+            
+            # Oscilloscope Timebase: dropdown
+            output_current_timebase_combo_edit = QtWidgets.QComboBox()
+            output_current_timebase_combo_edit.addItems(['10MS', '20MS', '100MS', '500MS'])
+            
+            # Minimum Test Current: double input (>= 0, default 5.0)
+            output_current_min_current_validator_edit = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_min_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_min_current_edit_edit = QtWidgets.QLineEdit(str(act.get('minimum_test_current', '5.0')))
+            output_current_min_current_edit_edit.setValidator(output_current_min_current_validator_edit)
+            output_current_min_current_edit_edit.setPlaceholderText('e.g., 5.0')
+            
+            # Maximum Test Current: double input (>= minimum, default 20.0)
+            output_current_max_current_validator_edit = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_max_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_max_current_edit_edit = QtWidgets.QLineEdit(str(act.get('maximum_test_current', '20.0')))
+            output_current_max_current_edit_edit.setValidator(output_current_max_current_validator_edit)
+            output_current_max_current_edit_edit.setPlaceholderText('e.g., 20.0')
+            
+            # Step Current: double input (>= 0.1, default 5.0)
+            output_current_step_current_validator_edit = QtGui.QDoubleValidator(0.1, 1000.0, 3, self)
+            output_current_step_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_step_current_edit_edit = QtWidgets.QLineEdit(str(act.get('step_current', '5.0')))
+            output_current_step_current_edit_edit.setValidator(output_current_step_current_validator_edit)
+            output_current_step_current_edit_edit.setPlaceholderText('e.g., 5.0')
+            
+            # Pre-Acquisition Time: integer input (>= 0, default 1000)
+            output_current_pre_acq_validator_edit = QtGui.QIntValidator(0, 60000, self)
+            output_current_pre_acq_edit_edit = QtWidgets.QLineEdit(str(act.get('pre_acquisition_time_ms', '1000')))
+            output_current_pre_acq_edit_edit.setValidator(output_current_pre_acq_validator_edit)
+            output_current_pre_acq_edit_edit.setPlaceholderText('e.g., 1000')
+            
+            # Acquisition Time: integer input (>= 1, default 3000)
+            output_current_acq_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            output_current_acq_edit_edit = QtWidgets.QLineEdit(str(act.get('acquisition_time_ms', '3000')))
+            output_current_acq_edit_edit.setValidator(output_current_acq_validator_edit)
+            output_current_acq_edit_edit.setPlaceholderText('e.g., 3000')
+            
+            # Tolerance: double input (>= 0, default 1.0)
+            output_current_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 100.0, 3, self)
+            output_current_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('tolerance_percent', '1.0')))
+            output_current_tolerance_edit_edit.setValidator(output_current_tolerance_validator_edit)
+            output_current_tolerance_edit_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Populate Output Current Calibration fields from stored data
+            try:
+                trigger_msg_id = act.get('test_trigger_source')
+                if trigger_msg_id is not None:
+                    for i in range(output_current_trigger_msg_combo_edit.count()):
+                        if output_current_trigger_msg_combo_edit.itemData(i) == trigger_msg_id:
+                            output_current_trigger_msg_combo_edit.setCurrentIndex(i)
+                            _update_output_current_trigger_signals_edit(i)
+                            break
+                if act.get('test_trigger_signal') and output_current_trigger_signal_combo_edit.count():
+                    try:
+                        output_current_trigger_signal_combo_edit.setCurrentText(str(act.get('test_trigger_signal')))
+                    except Exception:
+                        pass
+                
+                if act.get('current_setpoint_signal') and output_current_setpoint_signal_combo_edit.count():
+                    try:
+                        output_current_setpoint_signal_combo_edit.setCurrentText(str(act.get('current_setpoint_signal')))
+                    except Exception:
+                        pass
+                
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(output_current_feedback_msg_combo_edit.count()):
+                        if output_current_feedback_msg_combo_edit.itemData(i) == fb_msg_id:
+                            output_current_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_output_current_feedback_signals_edit(i)
+                            break
+                if act.get('feedback_signal') and output_current_feedback_signal_combo_edit.count():
+                    try:
+                        output_current_feedback_signal_combo_edit.setCurrentText(str(act.get('feedback_signal')))
+                    except Exception:
+                        pass
+                
+                osc_channel = act.get('oscilloscope_channel', '')
+                if osc_channel and output_current_osc_channel_combo_edit.count():
+                    try:
+                        output_current_osc_channel_combo_edit.setCurrentText(osc_channel)
+                    except Exception:
+                        pass
+                
+                timebase = act.get('oscilloscope_timebase', '')
+                if timebase and output_current_timebase_combo_edit.count():
+                    try:
+                        output_current_timebase_combo_edit.setCurrentText(timebase)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Output Current Calibration Test sub-widget
+            output_current_calibration_layout_edit.addRow('Test Trigger Source:', output_current_trigger_msg_combo_edit)
+            output_current_calibration_layout_edit.addRow('Test Trigger Signal:', output_current_trigger_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Test Trigger Signal Value:', output_current_trigger_value_edit_edit)
+            output_current_calibration_layout_edit.addRow('Current Setpoint Signal:', output_current_setpoint_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Feedback Signal Source:', output_current_feedback_msg_combo_edit)
+            output_current_calibration_layout_edit.addRow('Feedback Signal:', output_current_feedback_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Oscilloscope Channel:', output_current_osc_channel_combo_edit)
+            output_current_calibration_layout_edit.addRow('Oscilloscope Timebase:', output_current_timebase_combo_edit)
+            output_current_calibration_layout_edit.addRow('Minimum Test Current (A):', output_current_min_current_edit_edit)
+            output_current_calibration_layout_edit.addRow('Maximum Test Current (A):', output_current_max_current_edit_edit)
+            output_current_calibration_layout_edit.addRow('Step Current (A):', output_current_step_current_edit_edit)
+            output_current_calibration_layout_edit.addRow('Pre-Acquisition Time (ms):', output_current_pre_acq_edit_edit)
+            output_current_calibration_layout_edit.addRow('Acquisition Time (ms):', output_current_acq_edit_edit)
+            output_current_calibration_layout_edit.addRow('Tolerance (%):', output_current_tolerance_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -8847,6 +9400,8 @@ Data Points Used: {data_points}"""
         test_type_to_index_edit['Fan Control Test'] = act_stacked_edit.addWidget(fan_control_widget_edit)
         test_type_to_index_edit['External 5V Test'] = act_stacked_edit.addWidget(ext_5v_test_widget_edit)
         test_type_to_index_edit['DC Bus Sensing'] = act_stacked_edit.addWidget(dc_bus_sensing_widget_edit)
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
+            test_type_to_index_edit['Output Current Calibration'] = act_stacked_edit.addWidget(output_current_calibration_widget_edit)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked_edit)
@@ -8868,7 +9423,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -8900,15 +9455,28 @@ Data Points Used: {data_points}"""
             data['name'] = new_name
             data['type'] = type_combo.currentText()
             # feedback
-            if self.dbc_service is not None and self.dbc_service.is_loaded():
-                try:
-                    data['feedback_message_id'] = fb_msg_combo.currentData()
-                    data['feedback_signal'] = fb_signal_combo.currentText().strip()
-                except Exception:
-                    data['feedback_message_id'] = None
-                    data['feedback_signal'] = ''
+            # Only save feedback fields for test types that use them
+            # Test types that have their own feedback fields inside actuation don't need these
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 
+                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration')
+            
+            if data['type'] not in test_types_with_own_feedback:
+                # Only read and save feedback fields for test types that use them
+                if self.dbc_service is not None and self.dbc_service.is_loaded():
+                    try:
+                        data['feedback_message_id'] = fb_msg_combo.currentData()
+                        data['feedback_signal'] = fb_signal_combo.currentText().strip()
+                    except Exception:
+                        data['feedback_message_id'] = None
+                        data['feedback_signal'] = ''
+                else:
+                    data['feedback_signal'] = feedback_edit.text().strip()
             else:
-                data['feedback_signal'] = feedback_edit.text().strip()
+                # Remove feedback fields if they exist (for test types that don't use them)
+                if 'feedback_signal' in data:
+                    del data['feedback_signal']
+                if 'feedback_message_id' in data:
+                    del data['feedback_message_id']
 
             # actuation
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -9274,6 +9842,112 @@ Data Points Used: {data_points}"""
                         'feedback_signal': feedback_signal,
                         'dwell_time_ms': dwell_time_val,
                         'tolerance_v': tolerance_val,
+                    }
+                elif data['type'] == 'Output Current Calibration':
+                    # Output Current Calibration: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = output_current_trigger_msg_combo_edit.currentData() if 'output_current_trigger_msg_combo_edit' in locals() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = output_current_trigger_signal_combo_edit.currentText().strip() if 'output_current_trigger_signal_combo_edit' in locals() and output_current_trigger_signal_combo_edit.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_output_current_trigger_value_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_output_current_trigger_value_edit(output_current_trigger_value_edit_edit) if 'output_current_trigger_value_edit_edit' in locals() else None
+                    
+                    setpoint_signal = output_current_setpoint_signal_combo_edit.currentText().strip() if 'output_current_setpoint_signal_combo_edit' in locals() and output_current_setpoint_signal_combo_edit.count() else ''
+                    
+                    try:
+                        feedback_msg_id = output_current_feedback_msg_combo_edit.currentData() if 'output_current_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = output_current_feedback_signal_combo_edit.currentText().strip() if 'output_current_feedback_signal_combo_edit' in locals() and output_current_feedback_signal_combo_edit.count() else ''
+                    
+                    osc_channel = output_current_osc_channel_combo_edit.currentText().strip() if 'output_current_osc_channel_combo_edit' in locals() and output_current_osc_channel_combo_edit.count() else ''
+                    timebase = output_current_timebase_combo_edit.currentText().strip() if 'output_current_timebase_combo_edit' in locals() and output_current_timebase_combo_edit.count() else ''
+                    
+                    # Minimum Test Current (float)
+                    def _to_float_or_none_output_current_min_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_current = _to_float_or_none_output_current_min_edit(output_current_min_current_edit_edit) if 'output_current_min_current_edit_edit' in locals() else None
+                    
+                    # Maximum Test Current (float)
+                    def _to_float_or_none_output_current_max_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    max_current = _to_float_or_none_output_current_max_edit(output_current_max_current_edit_edit) if 'output_current_max_current_edit_edit' in locals() else None
+                    
+                    # Step Current (float)
+                    def _to_float_or_none_output_current_step_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    step_current = _to_float_or_none_output_current_step_edit(output_current_step_current_edit_edit) if 'output_current_step_current_edit_edit' in locals() else None
+                    
+                    # Pre-Acquisition Time (int)
+                    def _to_int_or_none_output_current_pre_acq_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_acq_time = _to_int_or_none_output_current_pre_acq_edit(output_current_pre_acq_edit_edit) if 'output_current_pre_acq_edit_edit' in locals() else None
+                    
+                    # Acquisition Time (int)
+                    def _to_int_or_none_output_current_acq_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acq_time = _to_int_or_none_output_current_acq_edit(output_current_acq_edit_edit) if 'output_current_acq_edit_edit' in locals() else None
+                    
+                    # Tolerance (float, in %)
+                    def _to_float_or_none_output_current_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_percent = _to_float_or_none_output_current_tolerance_edit(output_current_tolerance_edit_edit) if 'output_current_tolerance_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Output Current Calibration',
+                        'test_trigger_source': trigger_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'current_setpoint_signal': setpoint_signal,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'oscilloscope_channel': osc_channel,
+                        'oscilloscope_timebase': timebase,
+                        'minimum_test_current': min_current,
+                        'maximum_test_current': max_current,
+                        'step_current': step_current,
+                        'pre_acquisition_time_ms': pre_acq_time,
+                        'acquisition_time_ms': acq_time,
+                        'tolerance_percent': tolerance_percent,
                     }
             else:
                 if data['type'] == 'Digital Logic Test':

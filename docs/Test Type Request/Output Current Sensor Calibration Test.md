@@ -28,11 +28,11 @@
   
   Hardware Requirements:
   - Device Under Test (DUT)
-  - EOL Hardware
-  - CAN Hardware (Canalystii)
+    - EOL Hardware
+    - CAN Hardware (Canalystii)
   - Oscilloscope - Siglent SDS1104X-u (or compatible)
   - Current probe connected to oscilloscope channel
-  
+
   Special Considerations:
   - Requires oscilloscope to be connected and configured before test execution
   - Test iterates through multiple current setpoints (sweep pattern)
@@ -88,7 +88,7 @@ Describe the step-by-step execution flow:
 
 ```
 1. Verify Oscilloscope Setup
-   - Action: 
+    - Action: 
      1. Check oscilloscope connection status
      2. Send TDIV command with oscilloscope_timebase value (e.g., "TDIV 100MS")
      3. Verify timebase is set correctly using "TDIV?" query command
@@ -111,7 +111,7 @@ Describe the step-by-step execution flow:
    - Expected result: Array of current setpoints ready, plot initialized with correct labels
 
 3. Trigger Test at DUT
-   - Action: 
+    - Action: 
      - Encode and send CAN message with test_trigger_signal = test_trigger_signal_value (typically 1)
        to enable output current test mode at DUT
      - DUT should initialize and output current at default setpoint (typically 5A)
@@ -121,7 +121,7 @@ Describe the step-by-step execution flow:
 4. For each current setpoint in the array:
    a. Send Current Setpoint
       - Action: Encode and send CAN message with current_setpoint_signal = setpoint value (in Amperes)
-      - Duration: As fast as possible
+    - Duration: As fast as possible
       - Expected result: Current setpoint command sent successfully
    
    b. Wait for Pre-Acquisition Time
@@ -134,7 +134,7 @@ Describe the step-by-step execution flow:
         - Start logging CAN feedback signal (feedback_signal from feedback_signal_source)
         - Send "TRMD AUTO" command to oscilloscope to start acquisition
         - Initialize data collection lists for this setpoint
-      - Duration: As fast as possible
+    - Duration: As fast as possible
       - Expected result: CAN logging started, oscilloscope acquisition started
    
    d. Collect Data During Acquisition Time
@@ -149,7 +149,7 @@ Describe the step-by-step execution flow:
       - Action: 
         - Stop logging CAN feedback signal
         - Send "STOP" command to oscilloscope to stop acquisition
-      - Duration: As fast as possible
+    - Duration: As fast as possible
       - Expected result: CAN logging stopped, oscilloscope acquisition stopped
    
    f. Analyze Data and Update Plot
@@ -158,11 +158,11 @@ Describe the step-by-step execution flow:
         - Query oscilloscope for average value using "C{ch_num}:PAVA? MEAN" command
         - Store both averages in lists for final analysis
         - Update scatter plot with point (oscilloscope_avg, can_avg)
-      - Duration: As fast as possible
+    - Duration: As fast as possible
       - Expected result: Averages calculated and stored, plot updated with new data point
 
 5. Post-Test Analysis
-   - Action: 
+    - Action: 
      - Send test trigger signal with value 0 to disable test mode at DUT
      - Perform linear regression on collected data points (CAN vs Oscilloscope)
      - Calculate gain error: gain_error = |(slope - 1.0)| * 100%

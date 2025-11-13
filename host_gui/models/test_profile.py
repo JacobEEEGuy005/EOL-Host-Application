@@ -83,8 +83,24 @@ class ActuationConfig:
         feedback_signal: Signal name for feedback signal
         dwell_time_ms: Dwell time in milliseconds (data collection period)
         tolerance_v: Tolerance in volts for pass/fail determination
+        
+        For Output Current Calibration:
+        test_trigger_source: CAN message ID for test trigger command
+        test_trigger_signal: Signal name for test trigger (enable/disable test mode)
+        test_trigger_signal_value: Value to send for test trigger signal (typically 1 to enable, 0 to disable)
+        current_setpoint_signal: Signal name for setting output current setpoint
+        feedback_signal_source: CAN message ID for feedback signal (DUT current measurement)
+        feedback_signal: Signal name for output current feedback from DUT
+        oscilloscope_channel: Channel name from oscilloscope configuration for current measurement
+        oscilloscope_timebase: Oscilloscope timebase setting ("10MS", "20MS", "100MS", or "500MS")
+        minimum_test_current: Minimum current setpoint in Amperes
+        maximum_test_current: Maximum current setpoint in Amperes
+        step_current: Current step size in Amperes for sweep
+        pre_acquisition_time_ms: Time to wait before starting data acquisition (stabilization time)
+        acquisition_time_ms: Time to collect data from both CAN and oscilloscope
+        tolerance_percent: Maximum allowed gain error percentage
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', or 'DC Bus Sensing'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -151,6 +167,21 @@ class ActuationConfig:
     # Note: feedback_signal_source and feedback_signal are already defined for Analog Static Test
     # Note: dwell_time_ms is already defined
     tolerance_v: Optional[float] = None  # Tolerance in volts
+    
+    # Output Current Calibration Test fields
+    test_trigger_source: Optional[int] = None  # CAN message ID for test trigger command
+    test_trigger_signal: Optional[str] = None  # Signal name for test trigger
+    test_trigger_signal_value: Optional[int] = None  # Value to send for test trigger signal (0-255)
+    current_setpoint_signal: Optional[str] = None  # Signal name for setting output current setpoint
+    # Note: feedback_signal_source and feedback_signal are already defined
+    # Note: oscilloscope_channel is already defined
+    oscilloscope_timebase: Optional[str] = None  # Oscilloscope timebase setting ("10MS", "20MS", "100MS", or "500MS")
+    minimum_test_current: Optional[float] = None  # Minimum current setpoint in Amperes
+    maximum_test_current: Optional[float] = None  # Maximum current setpoint in Amperes
+    step_current: Optional[float] = None  # Current step size in Amperes for sweep
+    pre_acquisition_time_ms: Optional[int] = None  # Time to wait before starting data acquisition
+    acquisition_time_ms: Optional[int] = None  # Time to collect data from both CAN and oscilloscope
+    tolerance_percent: Optional[float] = None  # Maximum allowed gain error percentage
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -281,6 +312,35 @@ class ActuationConfig:
                 result['dwell_time_ms'] = self.dwell_time_ms
             if self.tolerance_v is not None:
                 result['tolerance_v'] = self.tolerance_v
+        elif self.type == 'Output Current Calibration':
+            if self.test_trigger_source is not None:
+                result['test_trigger_source'] = self.test_trigger_source
+            if self.test_trigger_signal:
+                result['test_trigger_signal'] = self.test_trigger_signal
+            if self.test_trigger_signal_value is not None:
+                result['test_trigger_signal_value'] = self.test_trigger_signal_value
+            if self.current_setpoint_signal:
+                result['current_setpoint_signal'] = self.current_setpoint_signal
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.feedback_signal:
+                result['feedback_signal'] = self.feedback_signal
+            if self.oscilloscope_channel:
+                result['oscilloscope_channel'] = self.oscilloscope_channel
+            if self.oscilloscope_timebase:
+                result['oscilloscope_timebase'] = self.oscilloscope_timebase
+            if self.minimum_test_current is not None:
+                result['minimum_test_current'] = self.minimum_test_current
+            if self.maximum_test_current is not None:
+                result['maximum_test_current'] = self.maximum_test_current
+            if self.step_current is not None:
+                result['step_current'] = self.step_current
+            if self.pre_acquisition_time_ms is not None:
+                result['pre_acquisition_time_ms'] = self.pre_acquisition_time_ms
+            if self.acquisition_time_ms is not None:
+                result['acquisition_time_ms'] = self.acquisition_time_ms
+            if self.tolerance_percent is not None:
+                result['tolerance_percent'] = self.tolerance_percent
         return result
     
     @classmethod
