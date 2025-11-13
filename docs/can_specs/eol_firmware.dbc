@@ -73,7 +73,6 @@ BO_ 272 Command: 8 Host_PC
  SG_ Fan_Ctrl m21 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ Ext_5V_Ctrl m22 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ Test_Request m32 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
- SG_ ChargerVout_SetPoint m33 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
  SG_ ChargerIout_SetPoint m33 : 32|16@1+ (0.01,0) [0|655.35] "A" Vector__XXX
  SG_ Set_ChargerIout_TrimValue m34 : 32|16@1+ (0.01,0) [0|655.35] "%" Vector__XXX
 
