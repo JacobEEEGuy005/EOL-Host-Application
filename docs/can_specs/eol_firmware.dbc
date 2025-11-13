@@ -72,6 +72,10 @@ BO_ 272 Command: 8 Host_PC
  SG_ Mctrl_Set_Id_Ref m20 : 48|16@1- (0.1,0) [-3276.7|3276.7] "A" Vector__XXX
  SG_ Fan_Ctrl m21 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ Ext_5V_Ctrl m22 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Test_Request m32 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ ChargerVout_SetPoint m33 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ ChargerIout_SetPoint m33 : 32|16@1+ (0.01,0) [0|655.35] "A" Vector__XXX
+ SG_ Set_ChargerIout_TrimValue m34 : 32|16@1+ (0.01,0) [0|655.35] "%" Vector__XXX
 
 BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ DeviceID : 0|8@1+ (1,0) [0|255] ""  Host_PC
@@ -100,8 +104,35 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ FanTachGood m105 : 17|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ FanFault m105 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ InverterTemperature m106 : 16|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
- SG_ RectifierTemperature m106 : 32|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
  SG_ MotorTemperature m106 : 48|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
+ SG_ Charger_SignalState m107 : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ Enable_ACInputRelay m107 : 16|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Enable_FAN m107 : 17|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Enable_PFC m107 : 18|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Disable_HV_GDriver m107 : 19|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Plug_Pilot m107 : 20|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Plug_Pilot_Filtered m107 : 21|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ PFC_PGood m107 : 22|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ PFC_PGood_Filtered m107 : 23|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ Fan_Tach_Good m107 : 24|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ AC_Detect m107 : 25|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ AC_Good m107 : 26|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ ChargerFaultNow m107 : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ ChargerFaultPrev m107 : 40|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ ChargerTestState m107 : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ PCMC_Flag m107 : 56|8@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ ACPWMFaultNow m108 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ ACPWMFaultPrev m108 : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ ACPWM_Frequency m108 : 32|16@1+ (1,0) [0|65535] "Hz" Vector__XXX
+ SG_ ACPWM_Duty m108 : 48|16@1+ (0.01,0) [0|100] "%" Vector__XXX
+ SG_ ACFaultNow m109 : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ACFaultPrev m109 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AC_VoltageRMS m109 : 32|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ AC_LineFrequency m109 : 48|8@1+ (0.01,0) [0|655.35] "Hz" Vector__XXX
+ SG_ ChargerVout m110 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ ChargerIout m110 : 32|16@1+ (0.01,0) [0|655.35] "A" Vector__XXX
+ SG_ RectifierTemperature m110 : 48|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
+ SG_ ChargerIout_TrimValue m111 : 32|16@1+ (0.01,0) [0|655.35] "%" Vector__XXX
 
 BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
  SG_ NewSignal_0020 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
@@ -116,6 +147,9 @@ BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
  SG_ BrakeFSR m111 : 48|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
  SG_ Throttle2FSR m111 : 32|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
  SG_ Throttle1FSR m111 : 16|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ RectifierTemperature m106 : 32|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
+ SG_ NewSignal_0024 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ NewSignal_0031 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
 
 
 
@@ -184,8 +218,10 @@ CM_ SG_ 250 FanEnabled "Flag to check if Fan control is enabled";
 CM_ SG_ 250 FanTachGood "Flag to check if fan is acutally spinning.";
 CM_ SG_ 250 FanFault "Flag to check if fan control has fault";
 CM_ SG_ 250 InverterTemperature "Inverter Module Temperature";
-CM_ SG_ 250 RectifierTemperature "Rectifier Module Temperature";
 CM_ SG_ 250 MotorTemperature "Motor Temperature";
+CM_ SG_ 250 Charger_SignalState "2 Byte Status of various Digital Signal States for Charger";
+CM_ SG_ 250 Enable_ACInputRelay "";
+CM_ SG_ 250 AC_VoltageRMS "";
 CM_ SG_ 3221225472 PhaseWCurrentFSR "Full Scale Reading of Phase W Current Sensor";
 CM_ SG_ 3221225472 PhaseVCurrentFSR "Full Scale Reading of Phase V Current Sensor";
 CM_ SG_ 3221225472 DCBusVoltageFSR "Full Scale Reading of DC Bus Voltage Sensor";
@@ -197,6 +233,7 @@ CM_ SG_ 3221225472 EncSineFSR "Full Scale Reading of Encoder Sin Input";
 CM_ SG_ 3221225472 BrakeFSR "Full Scale Reading of Brake Input";
 CM_ SG_ 3221225472 Throttle2FSR "Full Scale Reading of Throttle 2 Input";
 CM_ SG_ 3221225472 Throttle1FSR "Full Scale Reading of Throttle 1 Input";
+CM_ SG_ 3221225472 RectifierTemperature "Rectifier Module Temperature";
 BA_DEF_  "BusType" STRING ;
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ SG_  "GenSigStartValue" FLOAT 0 100000;
