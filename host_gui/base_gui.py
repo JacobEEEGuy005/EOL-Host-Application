@@ -1531,6 +1531,18 @@ class BaseGUI(QtWidgets.QMainWindow):
                     'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
                     'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
                 }
+            elif test_type == 'Output Current Calibration':
+                # Store plot data for Output Current Calibration tests
+                exec_data['plot_data'] = {
+                    'osc_averages': list(plot_data.get('osc_averages', [])),
+                    'can_averages': list(plot_data.get('can_averages', [])),
+                    'setpoint_values': list(plot_data.get('setpoint_values', [])),
+                    'slope': plot_data.get('slope'),
+                    'intercept': plot_data.get('intercept'),
+                    'gain_error': plot_data.get('gain_error'),
+                    'adjustment_factor': plot_data.get('adjustment_factor'),
+                    'tolerance_percent': plot_data.get('tolerance_percent')
+                }
             elif test_type == 'Analog Static Test':
                 # Store plot data and statistics for analog_static tests
                 if plot_data:
@@ -1920,6 +1932,103 @@ Data Points Used: {data_points}"""
                     error_label.setStyleSheet('color: red;')
                     layout.addWidget(error_label)
         
+        # Plot section for Output Current Calibration tests
+        is_output_current_calibration = test_config and test_config.get('type') == 'Output Current Calibration'
+        if is_output_current_calibration and plot_data and matplotlib_available:
+            plot_osc_averages = plot_data.get('osc_averages', [])
+            plot_can_averages = plot_data.get('can_averages', [])
+            
+            if plot_osc_averages and plot_can_averages:
+                plot_label = QtWidgets.QLabel(f'<b>Output Current Calibration: DUT vs Oscilloscope Comparison:</b>')
+                layout.addWidget(plot_label)
+                
+                try:
+                    # Create a new figure for the dialog
+                    plot_figure = Figure(figsize=(8, 6))
+                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                    plot_axes = plot_figure.add_subplot(111)
+                    
+                    # Filter out NaN values and ensure matching lengths
+                    osc_clean = []
+                    can_clean = []
+                    min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                    for i in range(min_len):
+                        osc_val = plot_osc_averages[i]
+                        can_val = plot_can_averages[i]
+                        # Check if both are valid (not NaN)
+                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                            not (isinstance(can_val, float) and can_val != can_val)):
+                            osc_clean.append(osc_val)
+                            can_clean.append(can_val)
+                    
+                    if osc_clean and can_clean:
+                        # Plot data points
+                        plot_axes.plot(osc_clean, can_clean, 'bo', markersize=8, label='Data Points')
+                        
+                        # Add diagonal reference line (y=x) for ideal line
+                        plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                        
+                        # Add regression line if available
+                        slope = plot_data.get('slope')
+                        intercept = plot_data.get('intercept')
+                        if slope is not None and intercept is not None:
+                            # Calculate regression line points
+                            x_min = min(osc_clean)
+                            x_max = max(osc_clean)
+                            x_reg = [x_min, x_max]
+                            y_reg = [slope * x + intercept for x in x_reg]
+                            plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                        
+                        plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                        plot_axes.set_ylabel('DUT Measurement (A)')
+                        plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                        plot_axes.grid(True, alpha=0.3)
+                        plot_axes.legend()
+                        
+                        # Auto-scale axes to fit all data
+                        plot_axes.relim()
+                        plot_axes.autoscale()
+                        
+                        # Tight layout
+                        plot_figure.tight_layout()
+                        
+                        # Add canvas to layout
+                        layout.addWidget(plot_canvas)
+                        
+                        # Display gain error and adjustment factor
+                        gain_error = plot_data.get('gain_error')
+                        adjustment_factor = plot_data.get('adjustment_factor')
+                        tolerance_percent = plot_data.get('tolerance_percent')
+                        
+                        if gain_error is not None:
+                            gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
+                            layout.addWidget(gain_info_label)
+                            
+                            gain_info_text = QtWidgets.QTextEdit()
+                            gain_info_text.setReadOnly(True)
+                            gain_info_text.setMaximumHeight(120)
+                            
+                            gain_info = ""
+                            gain_info += f"Slope: {plot_data.get('slope', 'N/A'):.6f} (ideal: 1.0)\n"
+                            gain_info += f"Intercept: {plot_data.get('intercept', 'N/A'):.6f} A\n"
+                            gain_info += f"Gain Error: {gain_error:+.4f}%\n"
+                            if adjustment_factor is not None:
+                                gain_info += f"Adjustment Factor: {adjustment_factor:.6f}\n"
+                            if tolerance_percent is not None:
+                                gain_info += f"Tolerance: {tolerance_percent:.4f}%\n"
+                                passed = gain_error <= tolerance_percent
+                                gain_info += f"Result: {'PASS' if passed else 'FAIL'}\n"
+                            
+                            gain_info_text.setPlainText(gain_info)
+                            layout.addWidget(gain_info_text)
+                    
+                except Exception as e:
+                    logger.error(f"Error creating Output Current Calibration plot in test details dialog: {e}", exc_info=True)
+                    error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                    error_label.setStyleSheet('color: red;')
+                    layout.addWidget(error_label)
+        
         # Close button
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.addStretch()
@@ -1930,7 +2039,8 @@ Data Points Used: {data_points}"""
         
         # Adjust dialog size for plot and calibration parameters if present
         if (is_analog and (plot_data and matplotlib_available or calibration_params)) or \
-           (is_phase_current and plot_data and matplotlib_available):
+           (is_phase_current and plot_data and matplotlib_available) or \
+           (is_output_current_calibration and plot_data and matplotlib_available):
             dialog.setMinimumWidth(700)
             dialog.setMinimumHeight(650)
         else:
@@ -1984,6 +2094,13 @@ Data Points Used: {data_points}"""
         try:
             self.plot_dac_voltages = []
             self.plot_feedback_values = []
+            # Clear Output Current Calibration plot data if it exists
+            if hasattr(self, 'plot_osc_values'):
+                self.plot_osc_values = []
+            if hasattr(self, 'plot_can_values'):
+                self.plot_can_values = []
+            if hasattr(self, '_output_current_plot_initialized'):
+                self._output_current_plot_initialized = False
             self.plot_line.set_data([], [])
             self.plot_axes.relim()
             self.plot_axes.autoscale()
@@ -1995,8 +2112,8 @@ Data Points Used: {data_points}"""
         """Update the plot with a new data point (DAC voltage, feedback value).
         
         Args:
-            dac_voltage: DAC output voltage in millivolts
-            feedback_value: IPC feedback signal value
+            dac_voltage: DAC output voltage in millivolts (or oscilloscope value for Output Current Calibration)
+            feedback_value: IPC feedback signal value (or CAN value for Output Current Calibration)
             test_name: Optional test name for plot title
         """
         if not matplotlib_available:
@@ -2009,26 +2126,69 @@ Data Points Used: {data_points}"""
             logger.debug("Plot canvas not initialized, skipping plot update")
             return
         try:
+            # Detect Output Current Calibration test by checking current test type
+            is_output_current_calibration = False
+            if hasattr(self, '_current_test_index') and self._current_test_index is not None:
+                if self._current_test_index < len(self._tests):
+                    current_test = self._tests[self._current_test_index]
+                    is_output_current_calibration = current_test.get('type') == 'Output Current Calibration'
+            
             # Add new data point
             if dac_voltage is not None and feedback_value is not None:
-                self.plot_dac_voltages.append(float(dac_voltage))
-                self.plot_feedback_values.append(float(feedback_value))
-                
-                logger.debug(
-                    f"Plot update: Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
-                    f"total points: {len(self.plot_dac_voltages)}"
-                )
-                
-                # Update plot line
-                self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
+                if is_output_current_calibration:
+                    # For Output Current Calibration: X = oscilloscope (dac_voltage param), Y = CAN (feedback_value param)
+                    # Initialize plot for Output Current Calibration if not already done
+                    if not hasattr(self, '_output_current_plot_initialized') or not self._output_current_plot_initialized:
+                        self.plot_axes.clear()
+                        self.plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                        self.plot_axes.set_ylabel('DUT Measurement (A)')
+                        self.plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                        self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+                        # Add diagonal reference line (y=x) for ideal line
+                        self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                        # Create scatter plot for Output Current Calibration
+                        self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+                        self.plot_axes.legend()
+                        self.plot_figure.tight_layout()
+                        self._output_current_plot_initialized = True
+                        logger.debug("Initialized plot for Output Current Calibration")
+                    
+                    # Store data points (oscilloscope as X, CAN as Y)
+                    if not hasattr(self, 'plot_osc_values'):
+                        self.plot_osc_values = []
+                    if not hasattr(self, 'plot_can_values'):
+                        self.plot_can_values = []
+                    
+                    self.plot_osc_values.append(float(dac_voltage))
+                    self.plot_can_values.append(float(feedback_value))
+                    
+                    logger.debug(
+                        f"Plot update (Output Current): Added point (Osc={dac_voltage}A, CAN={feedback_value}A), "
+                        f"total points: {len(self.plot_osc_values)}"
+                    )
+                    
+                    # Update plot line
+                    self.plot_line.set_data(self.plot_osc_values, self.plot_can_values)
+                else:
+                    # For other tests: X = DAC voltage, Y = feedback value
+                    self.plot_dac_voltages.append(float(dac_voltage))
+                    self.plot_feedback_values.append(float(feedback_value))
+                    
+                    logger.debug(
+                        f"Plot update: Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
+                        f"total points: {len(self.plot_dac_voltages)}"
+                    )
+                    
+                    # Update plot line
+                    self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
+                    
+                    # Update title if test name provided (for non-Output Current tests)
+                    if test_name and not self.plot_axes.get_title():
+                        self.plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
                 
                 # Auto-scale axes to fit all data
                 self.plot_axes.relim()
                 self.plot_axes.autoscale()
-                
-                # Update title if test name provided
-                if test_name and not self.plot_axes.get_title():
-                    self.plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
                 
                 # Force immediate redraw (draw_idle may not refresh fast enough)
                 self.plot_canvas.draw()
@@ -2497,6 +2657,111 @@ Data Points Used: {data_points}"""
                         
                         test_item.addChild(plot_item)
             
+            # For Output Current Calibration tests, add calibration results and plot sections
+            is_output_current_calibration = (test_type == 'Output Current Calibration' or 
+                                           (test_config and test_config.get('type') == 'Output Current Calibration'))
+            if is_output_current_calibration and test_config:
+                exec_data_full = self._test_execution_data.get(test_name, exec_data)
+                plot_data = exec_data_full.get('plot_data')
+                
+                if plot_data:
+                    # Calibration results data
+                    slope = plot_data.get('slope')
+                    intercept = plot_data.get('intercept')
+                    gain_error = plot_data.get('gain_error')
+                    adjustment_factor = plot_data.get('adjustment_factor')
+                    tolerance_percent = plot_data.get('tolerance_percent')
+                    
+                    if (slope is not None or intercept is not None or gain_error is not None or 
+                        adjustment_factor is not None or tolerance_percent is not None):
+                        calib_item = QtWidgets.QTreeWidgetItem(['Calibration Results', '', '', ''])
+                        calib_item.setExpanded(False)
+                        
+                        if slope is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Slope', f"{slope:.6f} (ideal: 1.0)", '', '']))
+                        if intercept is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Intercept (A)', f"{intercept:.6f}", '', '']))
+                        if gain_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error (%)', f"{gain_error:+.4f}%", '', '']))
+                        if adjustment_factor is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Adjustment Factor', f"{adjustment_factor:.6f}", '', '']))
+                        if tolerance_percent is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance (%)', f"{tolerance_percent:.4f}%", '', '']))
+                            if gain_error is not None:
+                                passed = abs(gain_error) <= tolerance_percent
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Result', 'PASS' if passed else 'FAIL', '', '']))
+                        
+                        test_item.addChild(calib_item)
+                    
+                    # Add plot widget if plot data is available
+                    if matplotlib_available:
+                        plot_item = QtWidgets.QTreeWidgetItem(['Plot: DUT vs Oscilloscope', '', '', ''])
+                        plot_item.setExpanded(False)
+                        
+                        osc_averages = plot_data.get('osc_averages', [])
+                        can_averages = plot_data.get('can_averages', [])
+                        
+                        if osc_averages and can_averages:
+                            try:
+                                # Create plot widget
+                                plot_widget = QtWidgets.QWidget()
+                                plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                plot_layout.setContentsMargins(0, 0, 0, 0)
+                                
+                                plot_figure = Figure(figsize=(8, 6))
+                                plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                plot_axes = plot_figure.add_subplot(111)
+                                
+                                # Filter out NaN values
+                                osc_clean = []
+                                can_clean = []
+                                min_len = min(len(osc_averages), len(can_averages))
+                                for i in range(min_len):
+                                    osc_val = osc_averages[i]
+                                    can_val = can_averages[i]
+                                    if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                        not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                        not (isinstance(can_val, float) and can_val != can_val)):
+                                        osc_clean.append(osc_val)
+                                        can_clean.append(can_val)
+                                
+                                if osc_clean and can_clean:
+                                    # Plot data points
+                                    plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+                                    
+                                    # Add diagonal reference line (y=x) for ideal line
+                                    plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                    
+                                    # Add regression line if available
+                                    if slope is not None and intercept is not None:
+                                        # Calculate regression line points
+                                        x_min = min(osc_clean)
+                                        x_max = max(osc_clean)
+                                        x_reg = [x_min, x_max]
+                                        y_reg = [slope * x + intercept for x in x_reg]
+                                        plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                    
+                                    plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                                    plot_axes.set_ylabel('DUT Measurement (A)')
+                                    plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                                    plot_axes.grid(True, alpha=0.3)
+                                    plot_axes.legend()
+                                    
+                                    # Auto-scale axes to fit all data
+                                    plot_axes.relim()
+                                    plot_axes.autoscale()
+                                
+                                plot_figure.tight_layout()
+                                plot_layout.addWidget(plot_canvas)
+                                
+                                # Set widget as item widget
+                                self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                            except Exception as e:
+                                logger.error(f"Error creating Output Current Calibration plot in report: {e}", exc_info=True)
+                                plot_item.setText(1, f"Plot error: {e}")
+                        
+                        test_item.addChild(plot_item)
+            
             self.report_tree.addTopLevelItem(test_item)
         
         # Expand all items by default (user can collapse)
@@ -2672,6 +2937,108 @@ Data Points Used: {data_points}"""
             Base64-encoded image string if successful, None otherwise
         """
         image_bytes = self._generate_phase_current_plot_image(test_name, osc_v, can_v, osc_w, can_w, 'png')
+        if image_bytes:
+            return base64.b64encode(image_bytes).decode('utf-8')
+        return None
+    
+    def _generate_output_current_calibration_plot_image(self, test_name: str, osc_averages: list, 
+                                                        can_averages: list, slope: Optional[float] = None,
+                                                        intercept: Optional[float] = None,
+                                                        output_format: str = 'png') -> Optional[bytes]:
+        """Generate an Output Current Calibration plot image for export (DUT vs Oscilloscope).
+        
+        Args:
+            test_name: Name of the test
+            osc_averages: List of oscilloscope average current values
+            can_averages: List of CAN average current values
+            slope: Optional regression slope
+            intercept: Optional regression intercept
+            output_format: Image format ('png', 'svg', etc.)
+            
+        Returns:
+            Image bytes if successful, None otherwise
+        """
+        if not matplotlib_available:
+            return None
+        
+        # Filter out NaN values
+        osc_clean = []
+        can_clean = []
+        if osc_averages and can_averages:
+            min_len = min(len(osc_averages), len(can_averages))
+            for i in range(min_len):
+                osc_val = osc_averages[i]
+                can_val = can_averages[i]
+                if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                    not (isinstance(osc_val, float) and osc_val != osc_val) and
+                    not (isinstance(can_val, float) and can_val != can_val)):
+                    osc_clean.append(osc_val)
+                    can_clean.append(can_val)
+        
+        if not (osc_clean and can_clean):
+            return None
+        
+        try:
+            import io
+            from matplotlib.figure import Figure
+            
+            fig = Figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            
+            # Plot data points
+            ax.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+            
+            # Add diagonal reference line (y=x) for ideal line
+            ax.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            
+            # Add regression line if available
+            if slope is not None and intercept is not None:
+                x_min = min(osc_clean)
+                x_max = max(osc_clean)
+                x_reg = [x_min, x_max]
+                y_reg = [slope * x + intercept for x in x_reg]
+                ax.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+            
+            ax.set_xlabel('Oscilloscope Measurement (A)')
+            ax.set_ylabel('DUT Measurement (A)')
+            ax.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            
+            # Auto-scale axes to fit all data
+            ax.relim()
+            ax.autoscale()
+            
+            fig.tight_layout()
+            
+            # Save to bytes buffer
+            buf = io.BytesIO()
+            fig.savefig(buf, format=output_format, dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            image_bytes = buf.read()
+            buf.close()
+            
+            return image_bytes
+        except Exception as e:
+            logger.error(f"Error generating Output Current Calibration plot image: {e}", exc_info=True)
+            return None
+    
+    def _generate_output_current_calibration_plot_base64(self, test_name: str, osc_averages: list,
+                                                          can_averages: list, slope: Optional[float] = None,
+                                                          intercept: Optional[float] = None) -> Optional[str]:
+        """Generate a base64-encoded Output Current Calibration plot image for HTML embedding.
+        
+        Args:
+            test_name: Name of the test
+            osc_averages: List of oscilloscope average current values
+            can_averages: List of CAN average current values
+            slope: Optional regression slope
+            intercept: Optional regression intercept
+            
+        Returns:
+            Base64-encoded image string if successful, None otherwise
+        """
+        image_bytes = self._generate_output_current_calibration_plot_image(test_name, osc_averages, can_averages, slope, intercept, 'png')
         if image_bytes:
             return base64.b64encode(image_bytes).decode('utf-8')
         return None
@@ -3039,6 +3406,51 @@ Data Points Used: {data_points}"""
                             if plot_base64:
                                 html_parts.append('<h3>Plot: Average Phase Current (CAN vs Oscilloscope)</h3>')
                                 html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Phase Current Plot for {test_name}" class="plot-image">')
+                
+                # Output Current Calibration test results
+                elif test_type == 'Output Current Calibration' or (test_config and test_config.get('type') == 'Output Current Calibration'):
+                    plot_data = exec_data.get('plot_data')
+                    if plot_data:
+                        # Calibration results data
+                        slope = plot_data.get('slope')
+                        intercept = plot_data.get('intercept')
+                        gain_error = plot_data.get('gain_error')
+                        adjustment_factor = plot_data.get('adjustment_factor')
+                        tolerance_percent = plot_data.get('tolerance_percent')
+                        
+                        if (slope is not None or intercept is not None or gain_error is not None or 
+                            adjustment_factor is not None or tolerance_percent is not None):
+                            html_parts.append('<h3>Calibration Results</h3>')
+                            html_parts.append('<table class="calibration-table">')
+                            html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
+                            
+                            if slope is not None:
+                                html_parts.append(f'<tr><td>Slope</td><td>{slope:.6f} (ideal: 1.0)</td></tr>')
+                            if intercept is not None:
+                                html_parts.append(f'<tr><td>Intercept (A)</td><td>{intercept:.6f}</td></tr>')
+                            if gain_error is not None:
+                                html_parts.append(f'<tr><td>Gain Error (%)</td><td>{gain_error:+.4f}%</td></tr>')
+                            if adjustment_factor is not None:
+                                html_parts.append(f'<tr><td>Adjustment Factor</td><td>{adjustment_factor:.6f}</td></tr>')
+                            if tolerance_percent is not None:
+                                html_parts.append(f'<tr><td>Tolerance (%)</td><td>{tolerance_percent:.4f}%</td></tr>')
+                                if gain_error is not None:
+                                    passed = abs(gain_error) <= tolerance_percent
+                                    result_class = 'status-pass' if passed else 'status-fail'
+                                    html_parts.append(f'<tr><td>Result</td><td class="{result_class}">{"PASS" if passed else "FAIL"}</td></tr>')
+                            
+                            html_parts.append('</table>')
+                        
+                        # Plot image (DUT vs Oscilloscope)
+                        osc_averages = plot_data.get('osc_averages', [])
+                        can_averages = plot_data.get('can_averages', [])
+                        
+                        if osc_averages and can_averages:
+                            plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                test_name, osc_averages, can_averages, slope, intercept)
+                            if plot_base64:
+                                html_parts.append('<h3>Plot: Output Current Calibration (DUT vs Oscilloscope)</h3>')
+                                html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Output Current Calibration Plot for {test_name}" class="plot-image">')
                 
                 html_parts.append('</div>')
             
@@ -10556,6 +10968,9 @@ Data Points Used: {data_points}"""
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Running test: {test_name}')
         
+        # Store current test index for plot detection
+        self._current_test_index = test_index
+        
         # Update Test Plan status to "Running..."
         try:
             if test_index < len(self._tests):
@@ -10606,6 +11021,28 @@ Data Points Used: {data_points}"""
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (phase current test)")
+                elif test_type == 'Output Current Calibration':
+                    # Retrieve plot data for Output Current Calibration tests
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (Output Current Calibration test)")
+                    # Also retrieve result data for statistics
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'slope': result_data.get('slope'),
+                            'intercept': result_data.get('intercept'),
+                            'gain_error': result_data.get('gain_error'),
+                            'adjustment_factor': result_data.get('adjustment_factor'),
+                            'tolerance_percent': result_data.get('tolerance_percent'),
+                            'data_points': result_data.get('data_points'),
+                            'passed': result_data.get('gain_error', float('inf')) <= result_data.get('tolerance_percent', 0)
+                        }
                 elif test_type == 'Analog Static Test':
                     # Retrieve result data for analog_static tests
                     if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
@@ -10723,6 +11160,11 @@ Data Points Used: {data_points}"""
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (error case, phase current)")
+                elif test_type == 'Output Current Calibration':
+                    # Retrieve plot data for Output Current Calibration tests
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (error case, Output Current Calibration)")
                 self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error, plot_data)
         except Exception:
             pass

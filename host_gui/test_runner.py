@@ -2670,6 +2670,21 @@ class TestRunner:
                         'channel_number': channel_num
                     }
                     
+                    # Store plot data for reports (osc_averages as X, can_averages as Y)
+                    if self.gui is not None:
+                        if not hasattr(self.gui, '_test_plot_data_temp'):
+                            self.gui._test_plot_data_temp = {}
+                        self.gui._test_plot_data_temp[test_name] = {
+                            'osc_averages': list(osc_averages),
+                            'can_averages': list(can_averages),
+                            'setpoint_values': list(setpoint_values),
+                            'slope': slope,
+                            'intercept': intercept,
+                            'gain_error': gain_error,
+                            'adjustment_factor': adjustment_factor,
+                            'tolerance_percent': tolerance_percent
+                        }
+                    
                     if self.gui is not None:
                         if not hasattr(self.gui, '_test_result_data_temp'):
                             self.gui._test_result_data_temp = {}
