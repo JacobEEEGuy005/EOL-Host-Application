@@ -7,10 +7,10 @@ from typing import Optional, Dict, Any, List
 
 @dataclass
 class ActuationConfig:
-    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, Temperature Validation Test, or Fan Control Test).
+    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, Analog PWM Sensor, Temperature Validation Test, or Fan Control Test).
     
     Attributes:
-        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', or 'Fan Control Test')
+        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', or 'Fan Control Test')
         can_id: CAN message ID for actuation commands (digital tests)
         signal: Signal name for actuation (optional)
         value_low: Low value for digital tests
@@ -56,6 +56,16 @@ class ActuationConfig:
         tolerance_c: Tolerance in degrees Celsius for pass/fail determination
         dwell_time_ms: Dwell time in milliseconds (data collection period)
         
+        For Analog PWM Sensor Test:
+        feedback_signal_source: CAN message ID containing PWM frequency and duty signals
+        feedback_pwm_frequency_signal: Signal name for PWM frequency measurement (in Hz)
+        feedback_duty_signal: Signal name for PWM duty cycle measurement (in percentage %)
+        reference_pwm_frequency: Reference PWM frequency in Hz
+        reference_duty: Reference duty cycle in percentage (%)
+        pwm_frequency_tolerance: Tolerance for PWM frequency in Hz
+        duty_tolerance: Tolerance for duty cycle in percentage (%)
+        acquisition_time_ms: Time to collect PWM data in milliseconds
+        
         For Fan Control Test:
         fan_test_trigger_source: CAN message ID for fan test trigger command
         fan_test_trigger_signal: Signal name for fan test trigger
@@ -100,7 +110,7 @@ class ActuationConfig:
         acquisition_time_ms: Time to collect data from both CAN and oscilloscope
         tolerance_percent: Maximum allowed gain error percentage
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -144,6 +154,16 @@ class ActuationConfig:
     # Temperature Validation Test fields
     reference_temperature_c: Optional[float] = None  # Reference temperature in degrees Celsius
     tolerance_c: Optional[float] = None  # Tolerance in degrees Celsius
+    
+    # Analog PWM Sensor Test fields
+    feedback_pwm_frequency_signal: Optional[str] = None  # Signal name for PWM frequency measurement (in Hz)
+    feedback_duty_signal: Optional[str] = None  # Signal name for PWM duty cycle measurement (in percentage %)
+    reference_pwm_frequency: Optional[float] = None  # Reference PWM frequency in Hz
+    reference_duty: Optional[float] = None  # Reference duty cycle in percentage (%)
+    pwm_frequency_tolerance: Optional[float] = None  # Tolerance for PWM frequency in Hz
+    duty_tolerance: Optional[float] = None  # Tolerance for duty cycle in percentage (%)
+    # Note: feedback_signal_source is already defined for Analog Static Test
+    # Note: acquisition_time_ms is already defined for Output Current Calibration
     
     # Fan Control Test fields
     fan_test_trigger_source: Optional[int] = None  # CAN message ID for fan test trigger
@@ -265,6 +285,23 @@ class ActuationConfig:
                 result['tolerance_c'] = self.tolerance_c
             if self.dwell_time_ms is not None:
                 result['dwell_time_ms'] = self.dwell_time_ms
+        elif self.type == 'Analog PWM Sensor':
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.feedback_pwm_frequency_signal:
+                result['feedback_pwm_frequency_signal'] = self.feedback_pwm_frequency_signal
+            if self.feedback_duty_signal:
+                result['feedback_duty_signal'] = self.feedback_duty_signal
+            if self.reference_pwm_frequency is not None:
+                result['reference_pwm_frequency'] = self.reference_pwm_frequency
+            if self.reference_duty is not None:
+                result['reference_duty'] = self.reference_duty
+            if self.pwm_frequency_tolerance is not None:
+                result['pwm_frequency_tolerance'] = self.pwm_frequency_tolerance
+            if self.duty_tolerance is not None:
+                result['duty_tolerance'] = self.duty_tolerance
+            if self.acquisition_time_ms is not None:
+                result['acquisition_time_ms'] = self.acquisition_time_ms
         elif self.type == 'Fan Control Test':
             if self.fan_test_trigger_source is not None:
                 result['fan_test_trigger_source'] = self.fan_test_trigger_source

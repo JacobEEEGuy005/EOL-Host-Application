@@ -1328,6 +1328,148 @@ class TestRunner:
                 
                 logger.info(f"Temperature Validation Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            elif act.get('type') == 'Analog PWM Sensor':
+                # Analog PWM Sensor Test execution:
+                # 1) Collect PWM frequency and duty cycle signals during acquisition time
+                # 2) Calculate averages for both signals
+                # 3) Compare both averages with reference values
+                # 4) PASS if both parameters are within tolerance, FAIL otherwise
+                
+                # Extract parameters
+                feedback_msg_id = act.get('feedback_signal_source')
+                pwm_frequency_signal = act.get('feedback_pwm_frequency_signal')
+                duty_signal = act.get('feedback_duty_signal')
+                reference_pwm_frequency = float(act.get('reference_pwm_frequency', 0))
+                reference_duty = float(act.get('reference_duty', 0))
+                pwm_frequency_tolerance = float(act.get('pwm_frequency_tolerance', 0))
+                duty_tolerance = float(act.get('duty_tolerance', 0))
+                acquisition_ms = int(act.get('acquisition_time_ms', 0))
+                
+                # Validate parameters
+                if not all([feedback_msg_id, pwm_frequency_signal, duty_signal]):
+                    return False, "Missing required Analog PWM Sensor Test parameters (feedback_signal_source, feedback_pwm_frequency_signal, feedback_duty_signal)"
+                
+                if pwm_frequency_tolerance < 0:
+                    return False, "PWM frequency tolerance must be non-negative"
+                
+                if duty_tolerance < 0:
+                    return False, "Duty tolerance must be non-negative"
+                
+                if acquisition_ms <= 0:
+                    return False, "Acquisition time must be positive"
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events.
+                    
+                    Args:
+                        sec: Sleep duration in seconds
+                    """
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Step 1: Collect data during acquisition time
+                pwm_frequency_values = []
+                duty_values = []
+                start_time = time.time()
+                end_time = start_time + (acquisition_ms / 1000.0)
+                
+                logger.info(f"Analog PWM Sensor Test: Collecting PWM frequency and duty cycle data for {acquisition_ms}ms...")
+                
+                while time.time() < end_time:
+                    # Read PWM frequency signal
+                    try:
+                        if self.signal_service is not None:
+                            ts_freq, freq_val = self.signal_service.get_latest_signal(feedback_msg_id, pwm_frequency_signal)
+                        elif self.gui is not None:
+                            ts_freq, freq_val = self.gui.get_latest_signal(feedback_msg_id, pwm_frequency_signal)
+                        else:
+                            ts_freq, freq_val = (None, None)
+                        
+                        if freq_val is not None:
+                            try:
+                                freq_float = float(freq_val)
+                                pwm_frequency_values.append(freq_float)
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading PWM frequency signal: {e}")
+                    
+                    # Read duty signal
+                    try:
+                        if self.signal_service is not None:
+                            ts_duty, duty_val = self.signal_service.get_latest_signal(feedback_msg_id, duty_signal)
+                        elif self.gui is not None:
+                            ts_duty, duty_val = self.gui.get_latest_signal(feedback_msg_id, duty_signal)
+                        else:
+                            ts_duty, duty_val = (None, None)
+                        
+                        if duty_val is not None:
+                            try:
+                                duty_float = float(duty_val)
+                                duty_values.append(duty_float)
+                                
+                                # Update real-time display with both values (use latest frequency if available)
+                                latest_freq = pwm_frequency_values[-1] if pwm_frequency_values else None
+                                if latest_freq is not None:
+                                    display_text = f"Freq: {latest_freq:.2f} Hz, Duty: {duty_float:.2f} %"
+                                    if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
+                                        try:
+                                            self.gui.feedback_signal_label.setText(display_text)
+                                        except Exception as e:
+                                            logger.debug(f"Failed to update feedback signal label: {e}")
+                                    elif self.label_update_callback:
+                                        try:
+                                            self.label_update_callback(display_text)
+                                        except Exception as e:
+                                            logger.debug(f"Failed to update label: {e}")
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading duty signal: {e}")
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 2: Check if data was collected for both signals
+                if not pwm_frequency_values:
+                    return False, f"No PWM frequency data received during acquisition time ({acquisition_ms}ms). Check CAN connection and signal configuration."
+                
+                if not duty_values:
+                    return False, f"No duty cycle data received during acquisition time ({acquisition_ms}ms). Check CAN connection and signal configuration."
+                
+                # Step 3: Calculate averages
+                pwm_frequency_avg = sum(pwm_frequency_values) / len(pwm_frequency_values)
+                duty_avg = sum(duty_values) / len(duty_values)
+                
+                # Step 4: Compare with reference values and determine pass/fail
+                frequency_difference = abs(pwm_frequency_avg - reference_pwm_frequency)
+                duty_difference = abs(duty_avg - reference_duty)
+                
+                frequency_ok = frequency_difference <= pwm_frequency_tolerance
+                duty_ok = duty_difference <= duty_tolerance
+                
+                passed = frequency_ok and duty_ok
+                
+                # Build info string
+                info = f"PWM Frequency: Ref={reference_pwm_frequency:.2f} Hz, Measured={pwm_frequency_avg:.2f} Hz, "
+                info += f"Diff={frequency_difference:.2f} Hz, Tol={pwm_frequency_tolerance:.2f} Hz ({'PASS' if frequency_ok else 'FAIL'}) | "
+                info += f"Duty: Ref={reference_duty:.2f} %, Measured={duty_avg:.2f} %, "
+                info += f"Diff={duty_difference:.2f} %, Tol={duty_tolerance:.2f} % ({'PASS' if duty_ok else 'FAIL'})"
+                
+                logger.info(f"Analog PWM Sensor Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             elif act.get('type') == 'External 5V Test':
                 # External 5V Test execution:
                 # 1) Send trigger with value 0 (disable External 5V)

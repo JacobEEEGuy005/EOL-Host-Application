@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
@@ -76,6 +76,29 @@
                   "tolerance_mv",
                   "pre_dwell_time_ms",
                   "dwell_time_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Analog PWM Sensor"},
+                  "feedback_signal_source": {"type":"integer"},
+                  "feedback_pwm_frequency_signal": {"type":"string"},
+                  "feedback_duty_signal": {"type":"string"},
+                  "reference_pwm_frequency": {"type":"number"},
+                  "reference_duty": {"type":"number"},
+                  "pwm_frequency_tolerance": {"type":"number", "minimum":0},
+                  "duty_tolerance": {"type":"number", "minimum":0},
+                  "acquisition_time_ms": {"type":"integer", "minimum":1}
+                },
+                "required": [
+                  "feedback_signal_source",
+                  "feedback_pwm_frequency_signal",
+                  "feedback_duty_signal",
+                  "reference_pwm_frequency",
+                  "reference_duty",
+                  "pwm_frequency_tolerance",
+                  "duty_tolerance",
+                  "acquisition_time_ms"
                 ]
               },
               {

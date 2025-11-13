@@ -1212,6 +1212,23 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Pre-dwell: {act['pre_dwell_time_ms']} ms")
             if act.get('dwell_time_ms') is not None:
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
+        elif test_type == 'Analog PWM Sensor':
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_pwm_frequency_signal'):
+                params.append(f"PWM Frequency Signal: {act['feedback_pwm_frequency_signal']}")
+            if act.get('feedback_duty_signal'):
+                params.append(f"Duty Signal: {act['feedback_duty_signal']}")
+            if act.get('reference_pwm_frequency') is not None:
+                params.append(f"Reference Frequency: {act['reference_pwm_frequency']:.2f} Hz")
+            if act.get('reference_duty') is not None:
+                params.append(f"Reference Duty: {act['reference_duty']:.2f} %")
+            if act.get('pwm_frequency_tolerance') is not None:
+                params.append(f"Frequency Tolerance: {act['pwm_frequency_tolerance']:.2f} Hz")
+            if act.get('duty_tolerance') is not None:
+                params.append(f"Duty Tolerance: {act['duty_tolerance']:.2f} %")
+            if act.get('acquisition_time_ms') is not None:
+                params.append(f"Acquisition: {act['acquisition_time_ms']} ms")
         elif test_type == 'Temperature Validation Test':
             if act.get('feedback_signal_source'):
                 params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
@@ -2290,7 +2307,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Analog PWM Sensor', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -2394,6 +2411,8 @@ Data Points Used: {data_points}"""
                     continue
                 elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
                     continue
+                elif type_filter == 'Analog PWM Sensor' and test_type != 'Analog PWM Sensor':
+                    continue
                 elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                     continue
                 elif type_filter == 'Fan Control Test' and test_type != 'Fan Control Test':
@@ -2420,6 +2439,8 @@ Data Points Used: {data_points}"""
                         elif type_filter == 'Analog Static Test' and test_type != 'Analog Static Test':
                             continue
                         elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
+                            continue
+                        elif type_filter == 'Analog PWM Sensor' and test_type != 'Analog PWM Sensor':
                             continue
                         elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                             continue
@@ -5828,7 +5849,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -5843,6 +5864,8 @@ Data Points Used: {data_points}"""
         analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
         temperature_validation_widget = QtWidgets.QWidget()
         temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
+        analog_pwm_sensor_widget = QtWidgets.QWidget()
+        analog_pwm_sensor_layout = QtWidgets.QFormLayout(analog_pwm_sensor_widget)
         fan_control_widget = QtWidgets.QWidget()
         fan_control_layout = QtWidgets.QFormLayout(fan_control_widget)
         ext_5v_test_widget = QtWidgets.QWidget()
@@ -5850,6 +5873,7 @@ Data Points Used: {data_points}"""
         
         # Initialize analog_static variables to None (will be set in if/else blocks)
         # Initialize temperature_validation variables to None (will be set in if/else blocks)
+        # Initialize analog_pwm_sensor variables to None (will be set in if/else blocks)
         # Initialize fan_control variables to None (will be set in if/else blocks)
         temp_val_fb_msg_combo = None
         temp_val_fb_signal_combo = None
@@ -5861,6 +5885,22 @@ Data Points Used: {data_points}"""
         temp_val_reference_edit_fallback = None
         temp_val_tolerance_edit_fallback = None
         temp_val_dwell_time_edit_fallback = None
+        analog_pwm_fb_msg_combo = None
+        analog_pwm_frequency_signal_combo = None
+        analog_pwm_duty_signal_combo = None
+        analog_pwm_reference_frequency_edit = None
+        analog_pwm_reference_duty_edit = None
+        analog_pwm_frequency_tolerance_edit = None
+        analog_pwm_duty_tolerance_edit = None
+        analog_pwm_acquisition_time_edit = None
+        analog_pwm_fb_msg_edit = None
+        analog_pwm_frequency_signal_edit = None
+        analog_pwm_duty_signal_edit = None
+        analog_pwm_reference_frequency_edit_fallback = None
+        analog_pwm_reference_duty_edit_fallback = None
+        analog_pwm_frequency_tolerance_edit_fallback = None
+        analog_pwm_duty_tolerance_edit_fallback = None
+        analog_pwm_acquisition_time_edit_fallback = None
         fan_control_trigger_msg_combo = None
         fan_control_trigger_signal_combo = None
         fan_control_feedback_msg_combo = None
@@ -6272,6 +6312,78 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit)
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit)
+            
+            # Analog PWM Sensor Test fields (DBC mode)
+            # Feedback Signal Source: dropdown of CAN Messages
+            analog_pwm_fb_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_pwm_fb_msg_combo.addItem(label, fid)
+            
+            # PWM Frequency Signal: dropdown based on selected message
+            analog_pwm_frequency_signal_combo = QtWidgets.QComboBox()
+            # Duty Signal: dropdown based on selected message
+            analog_pwm_duty_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_analog_pwm_signals(idx=0):
+                """Update both signal dropdowns based on selected message."""
+                analog_pwm_frequency_signal_combo.clear()
+                analog_pwm_duty_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_pwm_frequency_signal_combo.addItems(sigs)
+                    analog_pwm_duty_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_analog_pwm_signals(0)
+            analog_pwm_fb_msg_combo.currentIndexChanged.connect(_update_analog_pwm_signals)
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit = QtWidgets.QLineEdit()
+            analog_pwm_reference_frequency_edit.setValidator(pwm_freq_reference_validator)
+            analog_pwm_reference_frequency_edit.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit = QtWidgets.QLineEdit()
+            analog_pwm_reference_duty_edit.setValidator(duty_reference_validator)
+            analog_pwm_reference_duty_edit.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit = QtWidgets.QLineEdit()
+            analog_pwm_frequency_tolerance_edit.setValidator(pwm_freq_tolerance_validator)
+            analog_pwm_frequency_tolerance_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit = QtWidgets.QLineEdit()
+            analog_pwm_duty_tolerance_edit.setValidator(duty_tolerance_validator)
+            analog_pwm_duty_tolerance_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit = QtWidgets.QLineEdit()
+            analog_pwm_acquisition_time_edit.setValidator(pwm_acquisition_time_validator)
+            analog_pwm_acquisition_time_edit.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor sub-widget
+            analog_pwm_sensor_layout.addRow('Feedback Signal Source:', analog_pwm_fb_msg_combo)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_combo)
+            analog_pwm_sensor_layout.addRow('Duty Signal:', analog_pwm_duty_signal_combo)
+            analog_pwm_sensor_layout.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit)
+            analog_pwm_sensor_layout.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit)
+            analog_pwm_sensor_layout.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit)
+            analog_pwm_sensor_layout.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit)
             
             # Fan Control Test fields (DBC mode)
             # Fan Test Trigger Source: dropdown of CAN Messages
@@ -6815,6 +6927,55 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback)
             
+            # Analog PWM Sensor Test fields (fallback when no DBC)
+            analog_pwm_fb_msg_edit = QtWidgets.QLineEdit()
+            analog_pwm_frequency_signal_edit = QtWidgets.QLineEdit()
+            analog_pwm_duty_signal_edit = QtWidgets.QLineEdit()
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator_fallback = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_reference_frequency_edit_fallback.setValidator(pwm_freq_reference_validator_fallback)
+            analog_pwm_reference_frequency_edit_fallback.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator_fallback = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_reference_duty_edit_fallback.setValidator(duty_reference_validator_fallback)
+            analog_pwm_reference_duty_edit_fallback.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_frequency_tolerance_edit_fallback.setValidator(pwm_freq_tolerance_validator_fallback)
+            analog_pwm_frequency_tolerance_edit_fallback.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_duty_tolerance_edit_fallback.setValidator(duty_tolerance_validator_fallback)
+            analog_pwm_duty_tolerance_edit_fallback.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_acquisition_time_edit_fallback.setValidator(pwm_acquisition_time_validator_fallback)
+            analog_pwm_acquisition_time_edit_fallback.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor sub-widget (fallback)
+            analog_pwm_sensor_layout.addRow('Feedback Signal Source (CAN ID):', analog_pwm_fb_msg_edit)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_edit)
+            analog_pwm_sensor_layout.addRow('Duty Signal:', analog_pwm_duty_signal_edit)
+            analog_pwm_sensor_layout.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit_fallback)
+            analog_pwm_sensor_layout.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit_fallback)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit_fallback)
+            analog_pwm_sensor_layout.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit_fallback)
+            analog_pwm_sensor_layout.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit_fallback)
+            
             # Fan Control Test fields (fallback when no DBC)
             fan_control_trigger_msg_edit = QtWidgets.QLineEdit()
             fan_control_trigger_signal_edit = QtWidgets.QLineEdit()
@@ -6946,6 +7107,7 @@ Data Points Used: {data_points}"""
         test_type_to_index['Analog Sweep Test'] = act_stacked.addWidget(analog_widget)
         test_type_to_index['Phase Current Test'] = act_stacked.addWidget(phase_current_widget)
         test_type_to_index['Analog Static Test'] = act_stacked.addWidget(analog_static_widget)
+        test_type_to_index['Analog PWM Sensor'] = act_stacked.addWidget(analog_pwm_sensor_widget)
         test_type_to_index['Temperature Validation Test'] = act_stacked.addWidget(temperature_validation_widget)
         test_type_to_index['Fan Control Test'] = act_stacked.addWidget(fan_control_widget)
         test_type_to_index['External 5V Test'] = act_stacked.addWidget(ext_5v_test_widget)
@@ -6973,7 +7135,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -7243,6 +7405,76 @@ Data Points Used: {data_points}"""
                         'reference_temperature_c': reference_temp_val,
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
+                    }
+                elif t == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = analog_pwm_fb_msg_combo.currentData()
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_combo.currentText().strip() if analog_pwm_frequency_signal_combo.count() else ''
+                    duty_signal = analog_pwm_duty_signal_combo.currentText().strip() if analog_pwm_duty_signal_combo.count() else ''
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference(analog_pwm_reference_frequency_edit)
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference(analog_pwm_reference_duty_edit)
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance(analog_pwm_frequency_tolerance_edit)
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance(analog_pwm_duty_tolerance_edit)
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition(analog_pwm_acquisition_time_edit)
+                    
+                    act = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
                     }
                 elif t == 'Fan Control Test':
                     # Fan Control Test: read all fields (DBC mode)
@@ -7716,6 +7948,76 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(analog_pwm_fb_msg_edit.text().strip(), 0) if analog_pwm_fb_msg_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_edit.text().strip()
+                    duty_signal = analog_pwm_duty_signal_edit.text().strip()
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference_fallback(analog_pwm_reference_frequency_edit_fallback)
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference_fallback(analog_pwm_reference_duty_edit_fallback)
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance_fallback(analog_pwm_frequency_tolerance_edit_fallback)
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance_fallback(analog_pwm_duty_tolerance_edit_fallback)
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition_fallback(analog_pwm_acquisition_time_edit_fallback)
+                    
+                    act = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
+                    }
                 elif t == 'Fan Control Test':
                     # Fan Control Test (no DBC): read from text fields
                     try:
@@ -7859,7 +8161,7 @@ Data Points Used: {data_points}"""
             # if using DBC-driven fields, read feedback from combo
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
-            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
                                           'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration')
             
             fb_msg_id = None
@@ -7969,8 +8271,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -8026,6 +8328,30 @@ Data Points Used: {data_points}"""
                 return False, "Analog Static test requires dwell time (ms)"
             if actuation.get('dwell_time_ms', 0) <= 0:
                 return False, "Dwell time must be positive"
+        elif test_type == 'Analog PWM Sensor':
+            # Validate required fields
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Analog PWM Sensor test requires feedback signal source (CAN ID)"
+            if not actuation.get('feedback_pwm_frequency_signal'):
+                return False, "Analog PWM Sensor test requires feedback PWM frequency signal name"
+            if not actuation.get('feedback_duty_signal'):
+                return False, "Analog PWM Sensor test requires feedback duty signal name"
+            if actuation.get('reference_pwm_frequency') is None:
+                return False, "Analog PWM Sensor test requires reference PWM frequency (Hz)"
+            if actuation.get('reference_duty') is None:
+                return False, "Analog PWM Sensor test requires reference duty (%)"
+            if actuation.get('pwm_frequency_tolerance') is None:
+                return False, "Analog PWM Sensor test requires PWM frequency tolerance (Hz)"
+            if actuation.get('pwm_frequency_tolerance', 0) < 0:
+                return False, "PWM frequency tolerance must be non-negative"
+            if actuation.get('duty_tolerance') is None:
+                return False, "Analog PWM Sensor test requires duty tolerance (%)"
+            if actuation.get('duty_tolerance', 0) < 0:
+                return False, "Duty tolerance must be non-negative"
+            if actuation.get('acquisition_time_ms') is None:
+                return False, "Analog PWM Sensor test requires acquisition time (ms)"
+            if actuation.get('acquisition_time_ms', 0) <= 0:
+                return False, "Acquisition time must be positive"
         elif test_type == 'Temperature Validation Test':
             # Validate required fields
             if actuation.get('feedback_signal_source') is None:
@@ -8565,7 +8891,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -8623,6 +8949,7 @@ Data Points Used: {data_points}"""
         phase_current_widget = QtWidgets.QWidget(); phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
         analog_static_widget = QtWidgets.QWidget(); analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
         temperature_validation_widget = QtWidgets.QWidget(); temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
+        analog_pwm_sensor_widget_edit = QtWidgets.QWidget(); analog_pwm_sensor_layout_edit = QtWidgets.QFormLayout(analog_pwm_sensor_widget_edit)
 
         # populate actuation controls from stored data
         act = data.get('actuation', {}) or {}
@@ -9080,6 +9407,97 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Reference Temperature (°C):', temp_val_reference_edit_edit)
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_edit)
+            
+            # Analog PWM Sensor Test fields (DBC mode) - for edit dialog
+            analog_pwm_fb_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_pwm_fb_msg_combo_edit.addItem(label, fid)
+            
+            analog_pwm_frequency_signal_combo_edit = QtWidgets.QComboBox()
+            analog_pwm_duty_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_analog_pwm_signals_edit(idx=0):
+                """Update both signal dropdowns based on selected message."""
+                analog_pwm_frequency_signal_combo_edit.clear()
+                analog_pwm_duty_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_pwm_frequency_signal_combo_edit.addItems(sigs)
+                    analog_pwm_duty_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_analog_pwm_signals_edit(0)
+            analog_pwm_fb_msg_combo_edit.currentIndexChanged.connect(_update_analog_pwm_signals_edit)
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit_edit = QtWidgets.QLineEdit(str(act.get('reference_pwm_frequency', '')))
+            analog_pwm_reference_frequency_edit_edit.setValidator(pwm_freq_reference_validator_edit)
+            analog_pwm_reference_frequency_edit_edit.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit_edit = QtWidgets.QLineEdit(str(act.get('reference_duty', '')))
+            analog_pwm_reference_duty_edit_edit.setValidator(duty_reference_validator_edit)
+            analog_pwm_reference_duty_edit_edit.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('pwm_frequency_tolerance', '')))
+            analog_pwm_frequency_tolerance_edit_edit.setValidator(pwm_freq_tolerance_validator_edit)
+            analog_pwm_frequency_tolerance_edit_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('duty_tolerance', '')))
+            analog_pwm_duty_tolerance_edit_edit.setValidator(duty_tolerance_validator_edit)
+            analog_pwm_duty_tolerance_edit_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit_edit = QtWidgets.QLineEdit(str(act.get('acquisition_time_ms', '')))
+            analog_pwm_acquisition_time_edit_edit.setValidator(pwm_acquisition_time_validator_edit)
+            analog_pwm_acquisition_time_edit_edit.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor fields from stored data
+            try:
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(analog_pwm_fb_msg_combo_edit.count()):
+                        if analog_pwm_fb_msg_combo_edit.itemData(i) == fb_msg_id:
+                            analog_pwm_fb_msg_combo_edit.setCurrentIndex(i)
+                            _update_analog_pwm_signals_edit(i)
+                            break
+                if act.get('feedback_pwm_frequency_signal') and analog_pwm_frequency_signal_combo_edit.count():
+                    try:
+                        analog_pwm_frequency_signal_combo_edit.setCurrentText(str(act.get('feedback_pwm_frequency_signal')))
+                    except Exception:
+                        pass
+                if act.get('feedback_duty_signal') and analog_pwm_duty_signal_combo_edit.count():
+                    try:
+                        analog_pwm_duty_signal_combo_edit.setCurrentText(str(act.get('feedback_duty_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Analog PWM Sensor sub-widget
+            analog_pwm_sensor_layout_edit.addRow('Feedback Signal Source:', analog_pwm_fb_msg_combo_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_combo_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Signal:', analog_pwm_duty_signal_combo_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit_edit)
             
             # Fan Control Test fields (DBC mode) - for edit dialog
             # Create container for Fan Control Test (edit)
@@ -9787,6 +10205,55 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback_edit)
             
+            # Analog PWM Sensor Test fields (fallback when no DBC) - for edit dialog
+            analog_pwm_fb_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_signal_source', '')))
+            analog_pwm_frequency_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_pwm_frequency_signal', '')))
+            analog_pwm_duty_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_duty_signal', '')))
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('reference_pwm_frequency', '')))
+            analog_pwm_reference_frequency_edit_fallback_edit.setValidator(pwm_freq_reference_validator_fallback_edit)
+            analog_pwm_reference_frequency_edit_fallback_edit.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('reference_duty', '')))
+            analog_pwm_reference_duty_edit_fallback_edit.setValidator(duty_reference_validator_fallback_edit)
+            analog_pwm_reference_duty_edit_fallback_edit.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('pwm_frequency_tolerance', '')))
+            analog_pwm_frequency_tolerance_edit_fallback_edit.setValidator(pwm_freq_tolerance_validator_fallback_edit)
+            analog_pwm_frequency_tolerance_edit_fallback_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('duty_tolerance', '')))
+            analog_pwm_duty_tolerance_edit_fallback_edit.setValidator(duty_tolerance_validator_fallback_edit)
+            analog_pwm_duty_tolerance_edit_fallback_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator_fallback_edit = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('acquisition_time_ms', '')))
+            analog_pwm_acquisition_time_edit_fallback_edit.setValidator(pwm_acquisition_time_validator_fallback_edit)
+            analog_pwm_acquisition_time_edit_fallback_edit.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor sub-widget (fallback)
+            analog_pwm_sensor_layout_edit.addRow('Feedback Signal Source (CAN ID):', analog_pwm_fb_msg_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Signal:', analog_pwm_duty_signal_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit_fallback_edit)
+            
             # Fan Control Test fields (fallback when no DBC) - for edit dialog
             fan_control_trigger_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_test_trigger_source', '')))
             fan_control_trigger_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_test_trigger_signal', '')))
@@ -9841,6 +10308,7 @@ Data Points Used: {data_points}"""
         test_type_to_index_edit['Analog Sweep Test'] = act_stacked_edit.addWidget(analog_widget)
         test_type_to_index_edit['Phase Current Test'] = act_stacked_edit.addWidget(phase_current_widget)
         test_type_to_index_edit['Analog Static Test'] = act_stacked_edit.addWidget(analog_static_widget)
+        test_type_to_index_edit['Analog PWM Sensor'] = act_stacked_edit.addWidget(analog_pwm_sensor_widget_edit)
         test_type_to_index_edit['Temperature Validation Test'] = act_stacked_edit.addWidget(temperature_validation_widget)
         test_type_to_index_edit['Fan Control Test'] = act_stacked_edit.addWidget(fan_control_widget_edit)
         test_type_to_index_edit['External 5V Test'] = act_stacked_edit.addWidget(ext_5v_test_widget_edit)
@@ -9868,7 +10336,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -9902,7 +10370,7 @@ Data Points Used: {data_points}"""
             # feedback
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
-            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
                                           'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration')
             
             if data['type'] not in test_types_with_own_feedback:
@@ -10149,6 +10617,76 @@ Data Points Used: {data_points}"""
                         'reference_temperature_c': reference_temp_val,
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
+                    }
+                elif data['type'] == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = analog_pwm_fb_msg_combo_edit.currentData() if 'analog_pwm_fb_msg_combo_edit' in locals() else None
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_combo_edit.currentText().strip() if 'analog_pwm_frequency_signal_combo_edit' in locals() and analog_pwm_frequency_signal_combo_edit.count() else ''
+                    duty_signal = analog_pwm_duty_signal_combo_edit.currentText().strip() if 'analog_pwm_duty_signal_combo_edit' in locals() and analog_pwm_duty_signal_combo_edit.count() else ''
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference_edit(analog_pwm_reference_frequency_edit_edit) if 'analog_pwm_reference_frequency_edit_edit' in locals() else None
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference_edit(analog_pwm_reference_duty_edit_edit) if 'analog_pwm_reference_duty_edit_edit' in locals() else None
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance_edit(analog_pwm_frequency_tolerance_edit_edit) if 'analog_pwm_frequency_tolerance_edit_edit' in locals() else None
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance_edit(analog_pwm_duty_tolerance_edit_edit) if 'analog_pwm_duty_tolerance_edit_edit' in locals() else None
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition_edit(analog_pwm_acquisition_time_edit_edit) if 'analog_pwm_acquisition_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
                     }
                 elif data['type'] == 'Fan Control Test':
                     # Fan Control Test: read all fields (DBC mode)
@@ -10608,6 +11146,76 @@ Data Points Used: {data_points}"""
                         'reference_temperature_c': reference_temp_val,
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
+                    }
+                elif data['type'] == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(analog_pwm_fb_msg_edit_edit.text().strip(), 0) if 'analog_pwm_fb_msg_edit_edit' in locals() and analog_pwm_fb_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_edit_edit.text().strip() if 'analog_pwm_frequency_signal_edit_edit' in locals() else ''
+                    duty_signal = analog_pwm_duty_signal_edit_edit.text().strip() if 'analog_pwm_duty_signal_edit_edit' in locals() else ''
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference_fallback_edit(analog_pwm_reference_frequency_edit_fallback_edit) if 'analog_pwm_reference_frequency_edit_fallback_edit' in locals() else None
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference_fallback_edit(analog_pwm_reference_duty_edit_fallback_edit) if 'analog_pwm_reference_duty_edit_fallback_edit' in locals() else None
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance_fallback_edit(analog_pwm_frequency_tolerance_edit_fallback_edit) if 'analog_pwm_frequency_tolerance_edit_fallback_edit' in locals() else None
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance_fallback_edit(analog_pwm_duty_tolerance_edit_fallback_edit) if 'analog_pwm_duty_tolerance_edit_fallback_edit' in locals() else None
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition_fallback_edit(analog_pwm_acquisition_time_edit_fallback_edit) if 'analog_pwm_acquisition_time_edit_fallback_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
                     }
                 elif data['type'] == 'Fan Control Test':
                     # Fan Control Test (no DBC): read from text fields
