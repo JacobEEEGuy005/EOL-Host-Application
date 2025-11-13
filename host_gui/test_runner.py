@@ -2341,6 +2341,14 @@ class TestRunner:
                 if self.plot_clear_callback is not None:
                     self.plot_clear_callback()
                 
+                # Initialize plot labels and title for Output Current Calibration
+                test_name = test.get('name', '')
+                if self.gui is not None and hasattr(self.gui, '_initialize_output_current_plot'):
+                    try:
+                        self.gui._initialize_output_current_plot(test_name)
+                    except Exception as e:
+                        logger.debug(f"Failed to initialize Output Current Calibration plot: {e}")
+                
                 if self.label_update_callback is not None:
                     self.label_update_callback("Output Current Calibration: Initializing...")
                 

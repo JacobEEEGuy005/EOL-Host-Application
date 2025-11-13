@@ -2107,6 +2107,39 @@ Data Points Used: {data_points}"""
             self.plot_canvas.draw_idle()
         except Exception as e:
             logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
+    
+    def _initialize_output_current_plot(self, test_name: Optional[str] = None) -> None:
+        """Initialize the plot for Output Current Calibration test with proper labels and title.
+        
+        Args:
+            test_name: Optional test name to include in the plot title
+        """
+        if not matplotlib_available:
+            logger.debug("Matplotlib not available, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            logger.debug("Plot axes not initialized, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+            logger.debug("Plot canvas not initialized, skipping plot initialization")
+            return
+        try:
+            self.plot_axes.clear()
+            self.plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+            self.plot_axes.set_ylabel('DUT Measurement (A)')
+            self.plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+            # Add diagonal reference line (y=x) for ideal line
+            self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            # Create scatter plot for Output Current Calibration
+            self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+            self.plot_axes.legend()
+            self.plot_figure.tight_layout()
+            self.plot_canvas.draw_idle()
+            self._output_current_plot_initialized = True
+            logger.debug(f"Initialized plot for Output Current Calibration: {test_name}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
 
     def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
         """Update the plot with a new data point (DAC voltage, feedback value).
