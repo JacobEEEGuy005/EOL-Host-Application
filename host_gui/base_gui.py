@@ -989,7 +989,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         """Builds the Test Status tab widget and returns it.
         
         The Test Status tab provides:
-        - Test execution controls (Run Selected, Run Sequence)
+        - Test execution controls (Run Sequence, Pause Test, Resume Test)
         - Real-time monitoring of current and feedback signals
         - Live plot showing Feedback vs DAC Voltage (for analog tests)
         - Test results table with pass/fail status
@@ -1003,8 +1003,13 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         # Run buttons and DUT UID input
         btn_layout = QtWidgets.QHBoxLayout()
-        self.run_test_btn = QtWidgets.QPushButton('Run Selected Test')
         self.run_seq_btn = QtWidgets.QPushButton('Run Sequence')
+        
+        # Pause and Resume buttons for test sequences
+        self.pause_test_btn = QtWidgets.QPushButton('Pause Test')
+        self.resume_test_btn = QtWidgets.QPushButton('Resume Test')
+        self.pause_test_btn.setEnabled(False)  # Disabled by default
+        self.resume_test_btn.setEnabled(False)  # Disabled by default
         
         # DUT UID input field - required for test sequence execution
         # Located next to Run buttons for easy access
@@ -1022,8 +1027,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Connect text changed signal for visual feedback
         self.dut_uid_input.textChanged.connect(self._on_dut_uid_changed)
         
-        btn_layout.addWidget(self.run_test_btn)
         btn_layout.addWidget(self.run_seq_btn)
+        btn_layout.addWidget(self.pause_test_btn)
+        btn_layout.addWidget(self.resume_test_btn)
         btn_layout.addWidget(dut_uid_label)
         btn_layout.addWidget(self.dut_uid_input)
         btn_layout.addStretch()
@@ -1032,9 +1038,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Control buttons
         ctrl_layout = QtWidgets.QHBoxLayout()
         self.clear_results_btn = QtWidgets.QPushButton('Clear Results')
-        self.repeat_test_btn = QtWidgets.QPushButton('Repeat Last Test')
         ctrl_layout.addWidget(self.clear_results_btn)
-        ctrl_layout.addWidget(self.repeat_test_btn)
         ctrl_layout.addStretch()
         layout.addLayout(ctrl_layout)
 
@@ -1132,10 +1136,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         layout.addWidget(status_group)
 
         # Connect buttons
-        self.run_test_btn.clicked.connect(self._on_run_selected)
         self.run_seq_btn.clicked.connect(self._on_run_sequence)
+        self.pause_test_btn.clicked.connect(self._on_pause_test)
+        self.resume_test_btn.clicked.connect(self._on_resume_test)
         self.clear_results_btn.clicked.connect(self._on_clear_results)
-        self.repeat_test_btn.clicked.connect(self._on_repeat_test)
 
         return tab
 
@@ -11545,6 +11549,8 @@ Data Points Used: {data_points}"""
         self.test_execution_thread.sequence_progress.connect(self._on_sequence_progress)
         self.test_execution_thread.sequence_finished.connect(self._on_sequence_finished)
         self.test_execution_thread.sequence_cancelled.connect(self._on_sequence_cancelled)
+        self.test_execution_thread.sequence_paused.connect(self._on_sequence_paused)
+        self.test_execution_thread.sequence_resumed.connect(self._on_sequence_resumed)
         
         # Initialize UI
         self.progress_bar.setVisible(True)
@@ -11598,11 +11604,23 @@ Data Points Used: {data_points}"""
         self.progress_bar.setValue(0)
         self.status_label.setText(f'Running test sequence ({total_tests} tests)...')
         logger.debug(f"Sequence started: {total_tests} tests")
+        
+        # Enable pause button only if there's more than 1 test
+        if total_tests > 1:
+            self.pause_test_btn.setEnabled(True)
+        self.resume_test_btn.setEnabled(False)
     
     def _on_sequence_progress(self, current: int, total: int) -> None:
         """Handle sequence progress signal from TestExecutionThread."""
         self.progress_bar.setValue(current)
         self.status_label.setText(f'Running test {current}/{total}...')
+        
+        # Disable pause button when on the last test (no point in pausing)
+        if current >= total - 1:
+            self.pause_test_btn.setEnabled(False)
+        elif total > 1:
+            # Re-enable pause button if we're not on the last test and there's more than 1 test
+            self.pause_test_btn.setEnabled(True)
     
     def _on_test_started(self, test_index: int, test_name: str) -> None:
         """Handle test started signal from TestExecutionThread."""
@@ -11848,6 +11866,10 @@ Data Points Used: {data_points}"""
             self.test_execution_thread.wait(1000)  # Wait up to 1 second for thread to finish
             self.test_execution_thread = None
         
+        # Disable pause/resume buttons
+        self.pause_test_btn.setEnabled(False)
+        self.resume_test_btn.setEnabled(False)
+        
         logger.info(f"Test sequence finished: {pass_count}/{total} passed")
     
     def _on_sequence_cancelled(self) -> None:
@@ -11877,7 +11899,69 @@ Data Points Used: {data_points}"""
             self.test_execution_thread.wait(1000)  # Wait up to 1 second for thread to finish
             self.test_execution_thread = None
         
+        # Disable pause/resume buttons
+        self.pause_test_btn.setEnabled(False)
+        self.resume_test_btn.setEnabled(False)
+        
         logger.info("Test sequence cancelled")
+    
+    def _on_pause_test(self) -> None:
+        """Handle pause test button click.
+        
+        Requests the test sequence to pause after the current test completes.
+        Only works when a sequence is running and has more than 1 test.
+        """
+        if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+            # Check if there's more than 1 test
+            if len(self._tests) > 1:
+                self.test_execution_thread.pause()
+                logger.info("Pause test requested")
+            else:
+                logger.debug("Pause ignored - only single test in sequence")
+        else:
+            logger.debug("Pause ignored - no test sequence running")
+    
+    def _on_resume_test(self) -> None:
+        """Handle resume test button click.
+        
+        Resumes the paused test sequence. Only works when sequence is paused.
+        """
+        if self.test_execution_thread is not None:
+            if self.test_execution_thread.is_paused():
+                self.test_execution_thread.resume()
+                logger.info("Resume test requested")
+            else:
+                logger.debug("Resume ignored - test sequence not paused")
+        else:
+            logger.debug("Resume ignored - no test sequence running")
+    
+    def _on_sequence_paused(self) -> None:
+        """Handle sequence paused signal from TestExecutionThread."""
+        self.status_label.setText('Paused - waiting to resume...')
+        self.pause_test_btn.setEnabled(False)
+        self.resume_test_btn.setEnabled(True)
+        
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test sequence paused')
+        logger.info("Test sequence paused")
+    
+    def _on_sequence_resumed(self) -> None:
+        """Handle sequence resumed signal from TestExecutionThread."""
+        # Get current test index to update status
+        if self.test_execution_thread is not None:
+            current = getattr(self.test_execution_thread, '_current_test_index', -1) + 1
+            total = len(self._tests)
+            if current > 0 and current <= total:
+                self.status_label.setText(f'Running test {current}/{total}...')
+            else:
+                self.status_label.setText('Resuming test sequence...')
+        
+        self.pause_test_btn.setEnabled(True)
+        self.resume_test_btn.setEnabled(False)
+        
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test sequence resumed')
+        logger.info("Test sequence resumed")
     
     def closeEvent(self, event) -> None:
         """Handle window close event - cleanup services and resources.

@@ -37,6 +37,8 @@ class TestExecutionThread(QtCore.QThread):
         sequence_progress: Emitted for overall sequence progress (current, total)
         sequence_finished: Emitted when sequence completes (results, summary)
         sequence_cancelled: Emitted when sequence is cancelled
+        sequence_paused: Emitted when sequence is paused
+        sequence_resumed: Emitted when sequence is resumed
     """
     
     # Signals
@@ -48,6 +50,8 @@ class TestExecutionThread(QtCore.QThread):
     sequence_progress = QtCore.Signal(int, int)  # current, total
     sequence_finished = QtCore.Signal(list, str)  # results list, summary text
     sequence_cancelled = QtCore.Signal()
+    sequence_paused = QtCore.Signal()  # Emitted when sequence is paused
+    sequence_resumed = QtCore.Signal()  # Emitted when sequence is resumed
     
     def __init__(self, 
                  tests: List[Dict[str, Any]],
@@ -74,6 +78,10 @@ class TestExecutionThread(QtCore.QThread):
         self.signal_service = signal_service
         self.timeout = timeout
         self._stop_requested = False
+        self._pause_requested = False
+        self._is_paused = False
+        self._pause_lock = QtCore.QMutex()
+        self._pause_condition = QtCore.QWaitCondition()
         self._current_test_index = -1
     
     def stop(self):
@@ -81,11 +89,46 @@ class TestExecutionThread(QtCore.QThread):
         self._stop_requested = True
         logger.info("Test execution thread stop requested")
     
+    def pause(self):
+        """Request the thread to pause after current test completes.
+        
+        The current test will finish, then the sequence will pause before
+        starting the next test. Use resume() to continue.
+        """
+        if not self._is_paused:
+            self._pause_requested = True
+            logger.info("Test execution thread pause requested")
+    
+    def resume(self):
+        """Resume the paused test sequence.
+        
+        The sequence will continue from the next test in the sequence.
+        """
+        if self._is_paused:
+            self._pause_lock.lock()
+            self._pause_requested = False
+            self._is_paused = False
+            self._pause_condition.wakeAll()
+            self._pause_lock.unlock()
+            logger.info("Test execution thread resumed")
+    
+    def is_paused(self) -> bool:
+        """Check if thread is currently paused.
+        
+        Returns:
+            True if thread is paused, False otherwise
+        """
+        return self._is_paused
+    
     def run(self):
         """Execute all tests in sequence (runs in background thread)."""
         if not self.tests:
             logger.warning("TestExecutionThread.run() called but tests list is empty")
             return
+        
+        # Reset pause flags at start
+        self._pause_requested = False
+        self._is_paused = False
         
         total_tests = len(self.tests)
         logger.info(f"TestExecutionThread.run() starting with {total_tests} tests")
@@ -140,6 +183,23 @@ class TestExecutionThread(QtCore.QThread):
                 # Emit progress update
                 progress = (i + 1) / total_tests
                 self.test_progress.emit(progress)
+                
+                # Check for pause request after test completes (but before next test starts)
+                # Only pause if there are more tests to run
+                if self._pause_requested and i < total_tests - 1:
+                    self._pause_lock.lock()
+                    self._is_paused = True
+                    self.sequence_paused.emit()
+                    logger.info(f"Test sequence paused after test {i+1}/{total_tests}")
+                    
+                    # Wait until resume is called
+                    while self._is_paused and not self._stop_requested:
+                        self._pause_condition.wait(self._pause_lock, 100)  # Wait 100ms at a time
+                    
+                    if not self._stop_requested:
+                        self.sequence_resumed.emit()
+                        logger.info(f"Test sequence resumed, continuing with test {i+2}/{total_tests}")
+                    self._pause_lock.unlock()
             
             # Generate summary
             if cancelled:
