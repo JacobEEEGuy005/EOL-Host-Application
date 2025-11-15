@@ -19,7 +19,7 @@
         "pfc_power_good_signal": "PFC_PGood_Filtered",
         "pcmc_signal": "PCMC_Flag",
         "psfb_fault_signal": "ChargerFaultNow",
-        "test_time_ms": 10000
+        "test_time_ms": 15000
       },
       "created_at": "2025-11-14T12:09:05.117075Z"
     }
