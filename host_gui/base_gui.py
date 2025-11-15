@@ -2006,6 +2006,8 @@ Data Points Used: {data_points}"""
                         
                         plot_osc_averages = plot_data_dict.get('osc_averages', [])
                         plot_can_averages = plot_data_dict.get('can_averages', [])
+                        slope = plot_data_dict.get('slope')
+                        intercept = plot_data_dict.get('intercept')
                         
                         if plot_osc_averages and plot_can_averages:
                             # Filter out NaN values and ensure matching lengths
@@ -2028,6 +2030,14 @@ Data Points Used: {data_points}"""
                                 
                                 # Add diagonal reference line (y=x) for ideal line
                                 plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                
+                                # Add regression line if slope and intercept are available
+                                if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                                    x_min = min(osc_clean)
+                                    x_max = max(osc_clean)
+                                    x_reg = [x_min, x_max]
+                                    y_reg = [slope * x + intercept for x in x_reg]
+                                    plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
                                 
                                 plot_axes.set_xlabel('Oscilloscope Measurement (A)')
                                 plot_axes.set_ylabel('DUT Measurement (A)')
@@ -2066,12 +2076,16 @@ Data Points Used: {data_points}"""
                     
                     gain_info = ""
                     # First sweep results
-                    first_avg_error = first_sweep_data.get('avg_gain_error')
+                    first_slope = first_sweep_data.get('slope')
+                    first_intercept = first_sweep_data.get('intercept')
+                    first_gain_error = first_sweep_data.get('gain_error')
                     first_adjustment = first_sweep_data.get('adjustment_factor')
                     first_trim = first_sweep_data.get('trim_value')
-                    if first_avg_error is not None:
+                    if first_slope is not None:
                         gain_info += f"First Sweep (Trim: {first_trim}%):\n"
-                        gain_info += f"  Average Gain Error: {first_avg_error:.4f}%\n"
+                        gain_info += f"  Linear Regression: Slope={first_slope:.6f}, Intercept={first_intercept:.6f}A\n"
+                    if first_gain_error is not None:
+                        gain_info += f"  Gain Error: {first_gain_error:.4f}%\n"
                     if first_adjustment is not None:
                         gain_info += f"  Adjustment Factor: {first_adjustment:.6f}\n"
                     
@@ -2081,15 +2095,19 @@ Data Points Used: {data_points}"""
                         gain_info += f"\nCalculated Trim Value: {calculated_trim:.4f}%\n"
                     
                     # Second sweep results
-                    second_avg_error = second_sweep_data.get('avg_gain_error')
+                    second_slope = second_sweep_data.get('slope')
+                    second_intercept = second_sweep_data.get('intercept')
+                    second_gain_error = second_sweep_data.get('gain_error')
                     second_trim = second_sweep_data.get('trim_value')
                     tolerance_percent = plot_data.get('tolerance_percent')
-                    if second_avg_error is not None:
+                    if second_slope is not None:
                         gain_info += f"\nSecond Sweep (Trim: {second_trim:.4f}%):\n"
-                        gain_info += f"  Average Gain Error: {second_avg_error:.4f}%\n"
+                        gain_info += f"  Linear Regression: Slope={second_slope:.6f}, Intercept={second_intercept:.6f}A\n"
+                    if second_gain_error is not None:
+                        gain_info += f"  Gain Error: {second_gain_error:.4f}%\n"
                     if tolerance_percent is not None:
                         gain_info += f"  Tolerance: {tolerance_percent:.4f}%\n"
-                        passed = second_avg_error is not None and second_avg_error <= tolerance_percent
+                        passed = second_gain_error is not None and abs(second_gain_error) <= tolerance_percent
                         gain_info += f"  Result: {'PASS' if passed else 'FAIL'}\n"
                     
                     gain_info_text.setPlainText(gain_info)
@@ -2891,12 +2909,17 @@ Data Points Used: {data_points}"""
                         calib_item.setExpanded(False)
                         
                         # First sweep results
-                        first_avg_error = first_sweep_data.get('avg_gain_error')
+                        first_slope = first_sweep_data.get('slope')
+                        first_intercept = first_sweep_data.get('intercept')
+                        first_gain_error = first_sweep_data.get('gain_error')
                         first_adjustment = first_sweep_data.get('adjustment_factor')
                         first_trim = first_sweep_data.get('trim_value')
-                        if first_avg_error is not None:
+                        if first_slope is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep (Trim Value)', f"{first_trim}%", '', '']))
-                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Avg Gain Error (%)', f"{first_avg_error:.4f}%", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Slope', f"{first_slope:.6f} (ideal: 1.0)", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Intercept', f"{first_intercept:.6f} A", '', '']))
+                        if first_gain_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Gain Error (%)', f"{first_gain_error:.4f}%", '', '']))
                         if first_adjustment is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Adjustment Factor', f"{first_adjustment:.6f}", '', '']))
                         
@@ -2906,16 +2929,21 @@ Data Points Used: {data_points}"""
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['Calculated Trim Value (%)', f"{calculated_trim:.4f}%", '', '']))
                         
                         # Second sweep results
-                        second_avg_error = second_sweep_data.get('avg_gain_error')
+                        second_slope = second_sweep_data.get('slope')
+                        second_intercept = second_sweep_data.get('intercept')
+                        second_gain_error = second_sweep_data.get('gain_error')
                         second_trim = second_sweep_data.get('trim_value')
                         tolerance_percent = plot_data.get('tolerance_percent')
-                        if second_avg_error is not None:
+                        if second_slope is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep (Trim Value)', f"{second_trim:.4f}%", '', '']))
-                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Avg Gain Error (%)', f"{second_avg_error:.4f}%", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Slope', f"{second_slope:.6f} (ideal: 1.0)", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Intercept', f"{second_intercept:.6f} A", '', '']))
+                        if second_gain_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Gain Error (%)', f"{second_gain_error:.4f}%", '', '']))
                         if tolerance_percent is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance (%)', f"{tolerance_percent:.4f}%", '', '']))
-                            if second_avg_error is not None:
-                                passed = second_avg_error <= tolerance_percent
+                            if second_gain_error is not None:
+                                passed = abs(second_gain_error) <= tolerance_percent
                                 calib_item.addChild(QtWidgets.QTreeWidgetItem(['Result', 'PASS' if passed else 'FAIL', '', '']))
                         
                         test_item.addChild(calib_item)
@@ -2929,6 +2957,8 @@ Data Points Used: {data_points}"""
                                 
                                 plot_osc_averages = plot_data_dict.get('osc_averages', [])
                                 plot_can_averages = plot_data_dict.get('can_averages', [])
+                                slope = plot_data_dict.get('slope')
+                                intercept = plot_data_dict.get('intercept')
                                 
                                 if plot_osc_averages and plot_can_averages:
                                     # Filter out NaN values
@@ -2947,6 +2977,15 @@ Data Points Used: {data_points}"""
                                     if osc_clean and can_clean:
                                         plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
                                         plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                        
+                                        # Add regression line if slope and intercept are available
+                                        if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                                            x_min = min(osc_clean)
+                                            x_max = max(osc_clean)
+                                            x_reg = [x_min, x_max]
+                                            y_reg = [slope * x + intercept for x in x_reg]
+                                            plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                        
                                         plot_axes.set_xlabel('Oscilloscope Measurement (A)')
                                         plot_axes.set_ylabel('DUT Measurement (A)')
                                         plot_axes.set_title(plot_title)

@@ -27,8 +27,9 @@
     * Collect data for the specified acquisition time
     * Stop data collection and calculate averages from both sources
     * Update live scatter plot (DUT measurement vs Oscilloscope measurement) for first sweep
-  - After all setpoints are tested, calculate gain error and correction factor for each data point, then average them (same method as Phase Current Test)
-  - Calculate the Gain Adjustment Factor (average gain correction) from the first sweep
+  - After all setpoints are tested, perform linear regression on all (oscilloscope_avg, can_avg) pairs
+  - Calculate slope and intercept from linear regression (same method as Analog Sweep Test)
+  - Calculate the Gain Adjustment Factor from regression slope: gain_adjustment_factor = 1.0 / slope
   - Convert Gain Adjustment Factor to trim value: calculated_trim_value = 100 * gain_adjustment_factor
   
   Second Sweep (Verification):
@@ -38,13 +39,14 @@
   - Re-enable test mode at DUT
   - Repeat the same sweep pattern through all current setpoints
   - For each setpoint, collect data and update a second scatter plot (DUT measurement vs Oscilloscope measurement) for second sweep
-  - After all setpoints are tested in second sweep, calculate gain error for each data point, then average them
-  - Test passes if average gain error from the second sweep is within specified tolerance
+  - After all setpoints are tested in second sweep, perform linear regression on all (oscilloscope_avg, can_avg) pairs
+  - Calculate slope from linear regression and gain error: gain_error = (slope - 1.0) * 100.0
+  - Test passes if gain error from the second sweep linear regression is within specified tolerance
   
   Results Display:
   - Both plots (first sweep and second sweep) are displayed in Test Detail window and in the report
   - Each plot is labeled with the trim value used (initial_trim_value for first sweep, calculated_trim_value for second sweep)
-  - Test report includes: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error, and both plots
+  - Test report includes: first sweep gain error (from regression), first sweep adjustment factor, calculated trim value, second sweep gain error (from regression), slope and intercept for both sweeps, and both plots
   
   Hardware Requirements:
   - Device Under Test (DUT)
@@ -57,7 +59,7 @@
   - Requires oscilloscope to be connected and configured before test execution
   - Test iterates through multiple current setpoints (sweep pattern)
   - Real-time scatter plot updates during test execution
-  - Calculates calibration parameters (average gain error, average gain correction/adjustment factor) for sensor trim using point-by-point calculation method
+  - Calculates calibration parameters (slope, intercept, gain error, adjustment factor) for sensor trim using linear regression method (same as Analog Sweep Test)
   ```
 
 ## Test Configuration Fields
@@ -213,16 +215,19 @@ Describe the step-by-step execution flow:
 8. First Sweep Post-Analysis
     - Action: 
      - Send test trigger signal with value 0 to disable test mode at DUT
-     - Calculate gain error and correction factor for each data point (same method as Phase Current Test)
-     - For each (oscilloscope_avg, can_avg) pair:
-       * Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
-       * Calculate gain correction: gain_correction = osc_avg / can_avg
-     - Calculate average gain error from all valid data points (first_sweep_avg_gain_error)
-     - Calculate average gain correction factor (adjustment factor) from all valid data points (first_sweep_gain_adjustment_factor)
+     - Perform linear regression on first sweep data:
+       * X-axis: oscilloscope_averages (reference measurements)
+       * Y-axis: can_averages (DUT measurements)
+       * Fit linear regression: can_avg = slope * osc_avg + intercept
+       * Calculate slope and intercept using least squares method
+     - Calculate gain error from regression slope:
+       * first_sweep_gain_error = (slope - 1.0) * 100.0
+     - Calculate adjustment factor from regression slope:
+       * first_sweep_gain_adjustment_factor = 1.0 / slope (if slope != 0)
      - Calculate trim value: calculated_trim_value = 100 * first_sweep_gain_adjustment_factor
-     - Store first sweep plot data with label indicating initial_trim_value
+     - Store first sweep plot data with label indicating initial_trim_value, including slope and intercept
    - Duration: As fast as possible
-   - Expected result: Test mode disabled, first sweep calibration parameters calculated, trim value calculated
+   - Expected result: Test mode disabled, first sweep linear regression completed, trim value calculated
 
 9. Initialize Second Sweep with Calculated Trim Value
     - Action: 
@@ -307,21 +312,24 @@ Describe the step-by-step execution flow:
 14. Second Sweep Post-Test Analysis
     - Action: 
      - Send test trigger signal with value 0 to disable test mode at DUT
-     - Calculate gain error for each data point from second sweep (same method as Phase Current Test)
-     - For each (oscilloscope_avg, can_avg) pair:
-       * Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
-     - Calculate average gain error from all valid data points (second_sweep_avg_gain_error)
-     - Store second sweep plot data with label indicating calculated_trim_value
-     - Determine pass/fail: pass if second_sweep_avg_gain_error <= tolerance_percent
+     - Perform linear regression on second sweep data:
+       * X-axis: oscilloscope_averages (reference measurements)
+       * Y-axis: can_averages (DUT measurements with calculated trim value applied)
+       * Fit linear regression: can_avg = slope * osc_avg + intercept
+       * Calculate slope and intercept using least squares method
+     - Calculate gain error from regression slope:
+       * second_sweep_gain_error = (slope - 1.0) * 100.0
+     - Store second sweep plot data with label indicating calculated_trim_value, including slope and intercept
+     - Determine pass/fail: pass if |second_sweep_gain_error| <= tolerance_percent
    - Duration: As fast as possible
-   - Expected result: Test mode disabled, second sweep gain error calculated, pass/fail determined based on second sweep
+   - Expected result: Test mode disabled, second sweep linear regression completed, pass/fail determined based on second sweep
 ```
 
 ### Pass/Fail Criteria
 Define how the test determines pass or fail:
 
-- **Pass Condition**: `Average gain error percentage from second sweep is within tolerance_percent (second_sweep_avg_gain_error <= tolerance_percent)`
-- **Fail Condition**: `Average gain error percentage from second sweep exceeds tolerance_percent (second_sweep_avg_gain_error > tolerance_percent)`
+- **Pass Condition**: `Gain error percentage from second sweep linear regression is within tolerance_percent (second_sweep_gain_error <= tolerance_percent)`
+- **Fail Condition**: `Gain error percentage from second sweep linear regression exceeds tolerance_percent (second_sweep_gain_error > tolerance_percent)`
 - **Calculation Method**: 
   ```
   First Sweep Analysis:
@@ -329,47 +337,51 @@ Define how the test determines pass or fail:
      - CAN average: average of all CAN feedback_signal readings during acquisition_time_ms
      - Oscilloscope average: result from "C{ch_num}:PAVA? MEAN" command
   
-  2. Calculate gain error and correction for each data point (same method as Phase Current Test):
-     - For each (oscilloscope_avg, can_avg) pair:
-       * If oscilloscope_avg is valid (not None and |osc_avg| > threshold):
-         - Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
-         - If can_avg is valid (not None and |can_avg| > threshold):
-           - Calculate gain correction: gain_correction = osc_avg / can_avg
-         - Store gain_error and gain_correction in lists
-       * Otherwise, store NaN for invalid points
+  2. Perform linear regression on first sweep data:
+     - X-axis: oscilloscope_averages (reference measurements)
+     - Y-axis: can_averages (DUT measurements)
+     - Fit linear regression: can_avg = slope * osc_avg + intercept
+     - Calculate slope using least squares method:
+       * slope = (n*Σ(osc_avg * can_avg) - Σ(osc_avg) * Σ(can_avg)) / (n*Σ(osc_avg²) - (Σ(osc_avg))²)
+     - Calculate intercept:
+       * intercept = (Σ(can_avg) - slope * Σ(osc_avg)) / n
+     - Ideal slope = 1.0 (perfect calibration)
   
-  3. Calculate average gain error and correction factor from first sweep:
-     - Filter out invalid values (NaN, infinity) from gain_errors and gain_corrections
-     - Calculate average gain error: first_sweep_avg_gain_error = |average(valid_gain_errors)|
-     - Calculate average gain correction: first_sweep_gain_adjustment_factor = average(valid_gain_corrections)
+  3. Calculate gain error and adjustment factor from first sweep:
+     - Gain error: first_sweep_gain_error = ((slope - 1.0) / 1.0) * 100.0 = (slope - 1.0) * 100.0
+     - Adjustment factor: first_sweep_gain_adjustment_factor = 1.0 / slope (if slope != 0)
+     - This adjustment factor corrects the DUT measurement to match oscilloscope reference
   
   4. Calculate trim value for second sweep:
      - calculated_trim_value = 100 * first_sweep_gain_adjustment_factor
+     - This converts the adjustment factor to a percentage trim value
   
   Second Sweep Analysis:
   5. Collect data points: For each current setpoint in second sweep, collect:
      - CAN average: average of all CAN feedback_signal readings during acquisition_time_ms
      - Oscilloscope average: result from "C{ch_num}:PAVA? MEAN" command
   
-  6. Calculate gain error for each data point from second sweep:
-     - For each (oscilloscope_avg, can_avg) pair:
-       * If oscilloscope_avg is valid (not None and |osc_avg| > threshold):
-         - Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
-         - Store gain_error in list
-       * Otherwise, store NaN for invalid points
+  6. Perform linear regression on second sweep data:
+     - X-axis: oscilloscope_averages (reference measurements)
+     - Y-axis: can_averages (DUT measurements with calculated trim value applied)
+     - Fit linear regression: can_avg = slope * osc_avg + intercept
+     - Calculate slope using least squares method:
+       * slope = (n*Σ(osc_avg * can_avg) - Σ(osc_avg) * Σ(can_avg)) / (n*Σ(osc_avg²) - (Σ(osc_avg))²)
+     - Calculate intercept:
+       * intercept = (Σ(can_avg) - slope * Σ(osc_avg)) / n
   
-  7. Calculate average gain error from second sweep:
-     - Filter out invalid values (NaN, infinity) from gain_errors
-     - Calculate average gain error: second_sweep_avg_gain_error = |average(valid_gain_errors)|
+  7. Calculate gain error from second sweep:
+     - Gain error: second_sweep_gain_error = ((slope - 1.0) / 1.0) * 100.0 = (slope - 1.0) * 100.0
+     - This measures how well the calibrated DUT matches the reference after applying trim value
   
   8. Determine pass/fail (based on second sweep only):
-     - PASS if second_sweep_avg_gain_error <= tolerance_percent
-     - FAIL if second_sweep_avg_gain_error > tolerance_percent
+     - PASS if |second_sweep_gain_error| <= tolerance_percent
+     - FAIL if |second_sweep_gain_error| > tolerance_percent
   
-  Note: This method matches the Phase Current Test approach, calculating point-by-point
-  corrections and averaging them, rather than using linear regression. The pass/fail
-  determination is based solely on the second sweep gain error after applying the
-  calculated trim value.
+  Note: This method uses linear regression (same as Analog Sweep Test) to fit a line through
+  all data points and calculate a single slope value. The gain error is calculated from the
+  deviation of the slope from the ideal value of 1.0. The pass/fail determination is based
+  solely on the second sweep gain error after applying the calculated trim value.
   ```
 
 ### Data Collection
@@ -400,12 +412,18 @@ Specify what data needs to be collected:
      - Query average using "C{ch_num}:PAVA? MEAN" command
      - Parse and store average value for this setpoint
   
-  3. First Sweep Analysis:
-     - Calculate gain error and correction factor for each (oscilloscope_avg, can_avg) pair
-     - Average all valid gain errors and gain corrections
-     - Store first_sweep_avg_gain_error and first_sweep_gain_adjustment_factor
+  3. First Sweep Linear Regression Analysis:
+     - Collect all (oscilloscope_avg, can_avg) pairs from first sweep
+     - Perform linear regression: can_avg = slope * osc_avg + intercept
+     - Calculate slope using least squares:
+       * n = number of data points
+       * slope = (n*Σ(osc_avg * can_avg) - Σ(osc_avg) * Σ(can_avg)) / (n*Σ(osc_avg²) - (Σ(osc_avg))²)
+     - Calculate intercept:
+       * intercept = (Σ(can_avg) - slope * Σ(osc_avg)) / n
+     - Calculate gain error: first_sweep_gain_error = (slope - 1.0) * 100.0
+     - Calculate adjustment factor: first_sweep_gain_adjustment_factor = 1.0 / slope (if slope != 0)
      - Calculate trim value: calculated_trim_value = 100 * first_sweep_gain_adjustment_factor
-     - Store first sweep plot data with label indicating initial_trim_value
+     - Store first sweep plot data with label indicating initial_trim_value, including slope and intercept
   
   Second Sweep Data Processing:
   4. CAN Data (Second Sweep):
@@ -420,12 +438,17 @@ Specify what data needs to be collected:
      - Query average using "C{ch_num}:PAVA? MEAN" command
      - Parse and store average value for this setpoint
   
-  6. Second Sweep Analysis:
-     - Calculate gain error for each (oscilloscope_avg, can_avg) pair
-     - Average all valid gain errors
-     - Store second_sweep_avg_gain_error
-     - Store second sweep plot data with label indicating calculated_trim_value
-     - Use second_sweep_avg_gain_error for pass/fail determination
+  6. Second Sweep Linear Regression Analysis:
+     - Collect all (oscilloscope_avg, can_avg) pairs from second sweep
+     - Perform linear regression: can_avg = slope * osc_avg + intercept
+     - Calculate slope using least squares:
+       * n = number of data points
+       * slope = (n*Σ(osc_avg * can_avg) - Σ(osc_avg) * Σ(can_avg)) / (n*Σ(osc_avg²) - (Σ(osc_avg))²)
+     - Calculate intercept:
+       * intercept = (Σ(can_avg) - slope * Σ(osc_avg)) / n
+     - Calculate gain error: second_sweep_gain_error = (slope - 1.0) * 100.0
+     - Store second sweep plot data with label indicating calculated_trim_value, including slope and intercept
+     - Use |second_sweep_gain_error| for pass/fail determination
   ```
 
 ### Timing Requirements
@@ -599,7 +622,8 @@ Specify the UI fields needed:
     - Each point represents one current setpoint from first sweep
     - Plot title/label should indicate: "First Sweep (Trim Value: {initial_trim_value}%)"
     - Ideal calibration line (Y = X) can be displayed for reference
-    - Plot shows data points and ideal line; no regression line is calculated
+    - Regression line (from linear regression) should be displayed showing slope and intercept
+    - Plot shows data points, ideal line, and regression line
   
   - **Second Sweep Plot**:
     - **Plot must be cleared before second sweep starts** (clear plot window after first sweep completes)
@@ -607,7 +631,8 @@ Specify the UI fields needed:
     - Each point represents one current setpoint from second sweep
     - Plot title/label should indicate: "Second Sweep (Trim Value: {calculated_trim_value}%)"
     - Ideal calibration line (Y = X) can be displayed for reference
-    - Plot shows data points and ideal line; no regression line is calculated
+    - Regression line (from linear regression) should be displayed showing slope and intercept
+    - Plot shows data points, ideal line, and regression line
   
   - **Display Requirements**:
     - Both plots must be displayed in the Test Detail window during and after test execution
@@ -728,12 +753,16 @@ List potential errors and how to handle them:
    - Handling: Return `False, "Failed to acquire oscilloscope data at setpoint {setpoint}A: {error}"`
 
 8. **Insufficient Data Points**
-   - Error: `"Insufficient data points for analysis"`
-   - Handling: Return `False, "Insufficient data points collected. Need at least 2 setpoints, got {count}. Check CAN connection and signal configuration."`
+   - Error: `"Insufficient data points for linear regression"`
+   - Handling: Return `False, "Insufficient data points collected. Need at least 2 setpoints for linear regression, got {count}. Check CAN connection and signal configuration."`
   
-9. **No Valid Gain Error Calculations (First Sweep)**
-   - Error: `"No valid gain error calculations in first sweep"`
-   - Handling: Return `False, "No valid gain error calculations in first sweep. Check data quality and ensure oscilloscope and CAN measurements are valid."`
+9. **Linear Regression Failure (First Sweep)**
+   - Error: `"Failed to perform linear regression on first sweep data"`
+   - Handling: Return `False, "Failed to perform linear regression on first sweep data. Check data quality and ensure oscilloscope and CAN measurements are valid. Need at least 2 valid data points."`
+   - Examples:
+     - Denominator too small (data may be constant)
+     - All data points are invalid (NaN or infinity)
+     - Slope calculation results in invalid value
 
 10. **Invalid Calculated Trim Value**
     - Error: `"Calculated trim value out of range"`
@@ -751,9 +780,13 @@ List potential errors and how to handle them:
     - Error: `"Insufficient data points for analysis in second sweep"`
     - Handling: Return `False, "Insufficient data points collected in second sweep. Need at least 2 setpoints, got {count}. Check CAN connection and signal configuration."`
   
-14. **No Valid Gain Error Calculations (Second Sweep)**
-    - Error: `"No valid gain error calculations in second sweep"`
-    - Handling: Return `False, "No valid gain error calculations in second sweep. Check data quality and ensure oscilloscope and CAN measurements are valid."`
+14. **Linear Regression Failure (Second Sweep)**
+    - Error: `"Failed to perform linear regression on second sweep data"`
+    - Handling: Return `False, "Failed to perform linear regression on second sweep data. Check data quality and ensure oscilloscope and CAN measurements are valid. Need at least 2 valid data points."`
+    - Examples:
+      - Denominator too small (data may be constant)
+      - All data points are invalid (NaN or infinity)
+      - Slope calculation results in invalid value
 
 15. **DBC Service Not Available**
     - Error: `"DBC service not available"`
@@ -822,14 +855,17 @@ List potential errors and how to handle them:
 - **Two-sweep calibration pattern**: Test performs two complete sweeps - first sweep calculates trim value, second sweep verifies calibration
 - **Multi-step test pattern**: Each sweep iterates through multiple current setpoints (similar to Analog Sweep Test)
 - **Real-time plotting**: Two scatter plots must update after each setpoint completes (one for each sweep)
-- **Point-by-point calculation**: Final analysis calculates gain error and correction for each data point, then averages them (same method as Phase Current Test)
+- **Linear regression calculation**: Final analysis uses linear regression to fit a line through all data points and calculate slope/intercept (same method as Analog Sweep Test)
 - **Calibration parameter calculation**: 
-  - First sweep: Calculates average gain error and average gain correction (adjustment factor) for sensor trim
+  - First sweep: Performs linear regression on (oscilloscope_avg, can_avg) pairs to calculate slope
+  - Calculates gain error from slope: first_sweep_gain_error = (slope - 1.0) * 100.0
+  - Calculates adjustment factor from slope: first_sweep_gain_adjustment_factor = 1.0 / slope
   - Converts adjustment factor to trim value: calculated_trim_value = 100 * gain_adjustment_factor
-  - Second sweep: Calculates average gain error using calculated trim value
-- **Pass/fail based on second sweep**: Test pass/fail determination uses only the second sweep gain error
+  - Second sweep: Performs linear regression on second sweep data to calculate slope and gain error
+- **Pass/fail based on second sweep**: Test pass/fail determination uses only the second sweep gain error from linear regression
 - **Dual plot display**: Both plots (first sweep and second sweep) must be displayed in Test Detail window and included in test report, each labeled with its trim value
-- **Test results reporting**: Report must include first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error, and both plots
+- **Regression line display**: Plots should optionally display the regression line (slope and intercept) for visualization
+- **Test results reporting**: Report must include first sweep gain error (from regression), first sweep adjustment factor, calculated trim value, second sweep gain error (from regression), and both plots
 - **DBC required**: Test requires DBC file to be loaded for proper CAN message encoding/decoding
 - **State management**: Test maintains state across multiple setpoints and two sweeps (oscilloscope setup, data collection, analysis, plot management)
 
@@ -838,12 +874,12 @@ List potential errors and how to handle them:
 - **can_service**: Required for sending CAN commands and receiving feedback
 - **dbc_service**: Required for encoding/decoding CAN messages (test requires DBC file)
 - **signal_service**: Required for reading CAN feedback signal during data collection
-- **numpy** (optional): Not required for calculation (uses simple arithmetic operations)
+- **numpy** (optional): Recommended for linear regression calculation, but can be implemented with simple arithmetic operations (least squares method)
 
 ### Similar Test Types
-- **Phase Current Test**: Similar oscilloscope integration pattern, multi-step current testing, real-time plotting
+- **Analog Sweep Test**: Similar linear regression calculation method, multi-step sweep pattern, iterates through values and collects feedback
 - **DC Bus Sensing**: Similar oscilloscope + CAN comparison pattern, uses PAVA? MEAN command
-- **Analog Sweep Test**: Similar multi-step sweep pattern, iterates through values and collects feedback
+- **Phase Current Test**: Similar oscilloscope integration pattern, multi-step current testing, real-time plotting (but uses point-by-point calculation, not linear regression)
 - **Temperature Validation Test**: Similar reference comparison pattern (though simpler, single measurement)
 
 ### Testing Requirements
@@ -855,34 +891,36 @@ List potential errors and how to handle them:
 - Test error cases (oscilloscope not connected, channel not found, no data collected)
 - Test error cases for second sweep (invalid calculated trim value, no data in second sweep)
 - Test with different oscilloscope timebase settings
-- Verify gain error and correction calculation accuracy for both sweeps
+- Verify linear regression calculation accuracy for both sweeps (slope, intercept)
+- Verify gain error calculation from regression slope for both sweeps
 - Verify trim value calculation (calculated_trim_value = 100 * gain_adjustment_factor)
 - Verify both plots update correctly during execution (first sweep and second sweep)
 - Verify both plots are displayed in Test Detail window with correct labels
 - Verify both plots are included in test report with correct labels
-- Verify test results include: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error
-- Verify pass/fail determination uses only second sweep gain error
+- Verify test results include: first sweep gain error (from regression), first sweep adjustment factor, calculated trim value, second sweep gain error (from regression), slope and intercept for both sweeps
+- Verify pass/fail determination uses only second sweep gain error from linear regression
 
 ## Reference Implementation
 
 ### Similar Test Type to Follow
-- **Test Type**: `Phase Current Test` and `DC Bus Sensing`
+- **Test Type**: `Analog Sweep Test` and `DC Bus Sensing`
 - **Why Similar**: 
-  - Phase Current Test: Similar pattern of oscilloscope integration, multi-step current testing, real-time plotting, and state machine approach
+  - Analog Sweep Test: Similar pattern of linear regression calculation, multi-step sweep pattern, and real-time plotting
   - DC Bus Sensing: Similar pattern of comparing oscilloscope measurements with CAN feedback, using PAVA? MEAN command, and scatter plot visualization
 - **Key Differences**: 
-  - Output Current Calibration focuses on output current (not phase current)
-  - Uses same point-by-point calculation method as Phase Current Test (not linear regression)
-  - Calculates calibration parameters (average gain error, average gain correction/adjustment factor) for sensor trim
-  - Iterates through current setpoints sent via CAN (not fixed Iq_ref values)
-  - Uses different CAN signals (output current specific)
+  - Output Current Calibration focuses on output current (not DAC voltage)
+  - Uses linear regression calculation method (same as Analog Sweep Test)
+  - Calculates calibration parameters (slope, intercept, gain error, adjustment factor) for sensor trim
+  - Iterates through current setpoints sent via CAN (not DAC voltage steps)
+  - Uses oscilloscope for reference measurement (not EOL hardware)
+  - Performs two sweeps (first calculates trim, second verifies)
 
 ### Code Patterns to Use
 - **Oscilloscope setup pattern**: Follow DC Bus Sensing pattern for oscilloscope verification (TDIV, TRA commands)
-- **Multi-step iteration pattern**: Follow Phase Current Test or Analog Sweep Test pattern for iterating through setpoints
+- **Multi-step iteration pattern**: Follow Analog Sweep Test pattern for iterating through setpoints
 - **CAN command + feedback pattern**: Send current setpoint via CAN, then read feedback signal
 - **Data collection pattern**: Follow DC Bus Sensing pattern for collecting CAN data and oscilloscope averages
-- **Gain calculation pattern**: Use Phase Current Test pattern for point-by-point gain error and correction calculation, then average results
+- **Linear regression pattern**: Use Analog Sweep Test pattern for linear regression calculation (slope, intercept, gain error)
 - **Plot update pattern**: Update scatter plot after each setpoint (similar to Phase Current Test)
 - **State management**: Consider using state machine pattern (like Phase Current Test) if test becomes complex
 
@@ -909,14 +947,15 @@ List potential errors and how to handle them:
 - [ ] Non-blocking sleep used (no `time.sleep()`)
 - [ ] DBC mode supported (required - test requires DBC file)
 - [ ] Oscilloscope integration implemented correctly
-- [ ] Point-by-point gain error and correction calculation implemented (same as Phase Current Test)
+- [ ] Linear regression calculation implemented (same as Analog Sweep Test) for both sweeps
 - [ ] Two-sweep execution pattern implemented correctly
 - [ ] Trim value calculation implemented: calculated_trim_value = 100 * gain_adjustment_factor
 - [ ] Real-time plot updates during execution (both sweeps)
 - [ ] Dual plot display implemented (first sweep and second sweep plots)
 - [ ] Plot labels include trim values (initial_trim_value for first sweep, calculated_trim_value for second sweep)
-- [ ] Test results include: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error
-- [ ] Pass/fail determination uses only second sweep gain error
+- [ ] Regression line optionally displayed on plots (slope and intercept)
+- [ ] Test results include: first sweep gain error (from regression), first sweep adjustment factor, calculated trim value, second sweep gain error (from regression), slope and intercept for both sweeps
+- [ ] Pass/fail determination uses only second sweep gain error from linear regression
 
 ### Testing Requirements
 - [ ] Test with valid configuration
@@ -927,13 +966,14 @@ List potential errors and how to handle them:
 - [ ] Error cases for second sweep handled gracefully (invalid calculated trim value, no data in second sweep)
 - [ ] Test with various current setpoint ranges and step sizes
 - [ ] Test with different tolerance values
-- [ ] Verify gain error and correction calculation accuracy for both sweeps
+- [ ] Verify linear regression calculation accuracy for both sweeps (slope, intercept)
+- [ ] Verify gain error calculation from regression slope for both sweeps
 - [ ] Verify trim value calculation accuracy
 - [ ] Verify both plots update correctly during execution (first sweep and second sweep)
 - [ ] Verify both plots are displayed in Test Detail window with correct labels
 - [ ] Verify both plots are included in test report with correct labels
-- [ ] Verify test results include all required values (first sweep gain error, adjustment factor, calculated trim value, second sweep gain error)
-- [ ] Verify pass/fail determination uses only second sweep gain error
+- [ ] Verify test results include all required values (first sweep gain error from regression, adjustment factor, calculated trim value, second sweep gain error from regression, slope and intercept for both sweeps)
+- [ ] Verify pass/fail determination uses only second sweep gain error from linear regression
 
 ---
 
@@ -967,11 +1007,17 @@ Please implement this new test type following the documentation in:
 - Follow existing code patterns and style
 - Verify oscilloscope connection before test execution
 - Implement two-sweep execution pattern:
-  - First sweep: Use initial_trim_value, calculate gain adjustment factor, convert to trim value (calculated_trim_value = 100 * gain_adjustment_factor)
-  - Second sweep: Use calculated_trim_value, calculate gain error for pass/fail determination
-- Implement point-by-point gain error and correction calculation (same method as Phase Current Test)
+  - First sweep: Use initial_trim_value, perform linear regression, calculate gain adjustment factor from slope, convert to trim value (calculated_trim_value = 100 * gain_adjustment_factor)
+  - Second sweep: Use calculated_trim_value, perform linear regression, calculate gain error from slope for pass/fail determination
+- Implement linear regression calculation (same method as Analog Sweep Test) for both sweeps:
+  - X-axis: oscilloscope_averages (reference)
+  - Y-axis: can_averages (DUT measurements)
+  - Calculate slope and intercept using least squares method
+  - Calculate gain error: gain_error = (slope - 1.0) * 100.0
+  - Calculate adjustment factor: adjustment_factor = 1.0 / slope
 - Update scatter plots after each setpoint completes (both first sweep and second sweep plots)
 - Display both plots in Test Detail window and include in test report, each labeled with its trim value
-- Test results must include: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error
-- Pass/fail determination uses only second sweep gain error
+- Optionally display regression line on plots (slope and intercept)
+- Test results must include: first sweep gain error (from regression), first sweep adjustment factor, calculated trim value, second sweep gain error (from regression), slope and intercept for both sweeps
+- Pass/fail determination uses only second sweep gain error from linear regression
 
