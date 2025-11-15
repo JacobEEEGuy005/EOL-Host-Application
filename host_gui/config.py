@@ -26,6 +26,42 @@ from host_gui.constants import (
 logger = logging.getLogger(__name__)
 
 
+def configure_logging(log_level: Optional[str] = None) -> None:
+    """Configure logging for the application.
+    
+    This is the single place where logging is configured. It should be called
+    early in the application startup, before any other modules that use logging.
+    
+    Args:
+        log_level: Optional log level string ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL').
+                   If None, will check LOG_LEVEL environment variable, then default to 'INFO'.
+    """
+    # Determine log level: parameter > environment variable > default
+    if log_level is None:
+        log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    else:
+        log_level = log_level.upper()
+    
+    # Convert string to logging constant
+    try:
+        log_level_constant = getattr(logging, log_level, logging.INFO)
+    except (AttributeError, TypeError):
+        log_level_constant = logging.INFO
+    
+    # Configure logging (only if not already configured)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=log_level_constant,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+    else:
+        # Update existing logger level
+        logging.getLogger().setLevel(log_level_constant)
+    
+    logger.debug(f"Logging configured with level: {log_level} ({log_level_constant})")
+
+
 @dataclass
 class CanSettings:
     """CAN bus configuration settings.

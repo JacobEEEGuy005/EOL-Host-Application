@@ -42,18 +42,8 @@ except Exception:
 
 import logging
 
-# Configure logging
-log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-try:
-    log_level = getattr(logging, log_level, logging.INFO)
-except (AttributeError, TypeError):
-    log_level = logging.INFO
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Logging is configured centrally in host_gui.config.configure_logging()
+# which is called early in main.py. No need to configure here.
 logger = logging.getLogger(__name__)
 
 # Ensure repo root on sys.path
@@ -273,16 +263,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Phase 4: Initialize ConfigManager first (must be early, before window sizing and services)
         try:
-            from host_gui.config import ConfigManager
+            from host_gui.config import ConfigManager, configure_logging
             self.config_manager = ConfigManager()
-            # Update log level if ConfigManager loaded it
+            # Update log level if ConfigManager loaded it from config file (overrides env var)
             if self.config_manager.app_settings.log_level:
-                try:
-                    new_level = getattr(logging, self.config_manager.app_settings.log_level.upper(), logging.INFO)
-                    logging.getLogger().setLevel(new_level)
-                    logger.info(f"Log level set to {self.config_manager.app_settings.log_level} from ConfigManager")
-                except Exception as e:
-                    logger.debug(f"Failed to update log level from ConfigManager: {e}")
+                configure_logging(self.config_manager.app_settings.log_level)
+                logger.info(f"Log level updated to {self.config_manager.app_settings.log_level} from ConfigManager")
         except Exception as e:
             logger.warning(f"Failed to initialize ConfigManager, using defaults: {e}", exc_info=True)
             self.config_manager = None
@@ -1478,6 +1464,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Store execution data for popup display
         params_str = self._get_test_parameters_string(test)
+        
+        # CRITICAL: Preserve existing execution data (especially statistics) if it exists
+        # This prevents overwriting statistics that were set immediately in test_runner.py
+        existing_exec_data = self._test_execution_data.get(test_name, {})
+        existing_statistics = existing_exec_data.get('statistics')
+        
         exec_data = {
             'status': status,
             'exec_time': exec_time,
@@ -1485,6 +1477,11 @@ class BaseGUI(QtWidgets.QMainWindow):
             'parameters': params_str,
             'test_type': test_type
         }
+        
+        # Preserve existing statistics if they exist (they may have been set immediately in test_runner.py)
+        if existing_statistics is not None:
+            exec_data['statistics'] = existing_statistics
+            logger.debug(f"_update_test_plan_row: Preserved existing statistics for '{test_name}'")
         
         # Add DUT UID metadata if available (from current test sequence)
         # Ensure type safety - always store as integer
@@ -12800,22 +12797,54 @@ Data Points Used: {data_points}"""
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (Output Current Calibration test)")
                     # Also retrieve result data for statistics
-                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                    # CRITICAL: Check if statistics already exist (they may have been set immediately in test_runner.py)
+                    # Only update if they don't exist or are None/invalid
+                    if not hasattr(self, '_test_execution_data'):
+                        self._test_execution_data = {}
+                    if test_name not in self._test_execution_data:
+                        self._test_execution_data[test_name] = {}
+                    
+                    existing_stats = self._test_execution_data[test_name].get('statistics')
+                    stats_already_valid = (existing_stats is not None and 
+                                          isinstance(existing_stats, dict) and 
+                                          existing_stats.get('adjustment_factor') is not None)
+                    
+                    if stats_already_valid:
+                        logger.debug(f"_on_test_finished: Statistics already exist for '{test_name}' with adjustment_factor={existing_stats.get('adjustment_factor')}, preserving them")
+                    elif hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
                         result_data = self._test_result_data_temp.pop(test_name)
-                        # Store statistics in exec_data for display
-                        if not hasattr(self, '_test_execution_data'):
-                            self._test_execution_data = {}
-                        if test_name not in self._test_execution_data:
-                            self._test_execution_data[test_name] = {}
+                        logger.debug(f"_on_test_finished: Processing result_data for '{test_name}' from temp storage")
+                        
+                        # Store statistics - use second sweep values for pass/fail (as per test logic)
+                        second_sweep_gain_error = result_data.get('second_sweep_gain_error')
+                        tolerance_percent = result_data.get('tolerance_percent', 0)
+                        # Pass/fail is based on second sweep gain error (from linear regression)
+                        passed = False
+                        if second_sweep_gain_error is not None and tolerance_percent is not None:
+                            passed = abs(second_sweep_gain_error) <= tolerance_percent
+                        
                         self._test_execution_data[test_name]['statistics'] = {
-                            'slope': result_data.get('slope'),
-                            'intercept': result_data.get('intercept'),
-                            'gain_error': result_data.get('gain_error'),
-                            'adjustment_factor': result_data.get('adjustment_factor'),
-                            'tolerance_percent': result_data.get('tolerance_percent'),
+                            # Store both sweeps' data for completeness
+                            'first_sweep_slope': result_data.get('first_sweep_slope'),
+                            'first_sweep_intercept': result_data.get('first_sweep_intercept'),
+                            'first_sweep_gain_error': result_data.get('first_sweep_gain_error'),
+                            'first_sweep_gain_adjustment_factor': result_data.get('first_sweep_gain_adjustment_factor'),
+                            'second_sweep_slope': result_data.get('second_sweep_slope'),
+                            'second_sweep_intercept': result_data.get('second_sweep_intercept'),
+                            'second_sweep_gain_error': second_sweep_gain_error,
+                            # Legacy fields for backward compatibility
+                            'slope': result_data.get('second_sweep_slope'),  # Use second sweep for legacy
+                            'intercept': result_data.get('second_sweep_intercept'),  # Use second sweep for legacy
+                            'gain_error': second_sweep_gain_error,  # Use second sweep gain error
+                            'adjustment_factor': result_data.get('adjustment_factor'),  # First sweep adjustment factor
+                            'tolerance_percent': tolerance_percent,
                             'data_points': result_data.get('data_points'),
-                            'passed': result_data.get('gain_error', float('inf')) <= result_data.get('tolerance_percent', 0)
+                            'calculated_trim_value': result_data.get('calculated_trim_value'),
+                            'passed': passed
                         }
+                        logger.info(f"_on_test_finished: Stored statistics for '{test_name}' (adjustment_factor={result_data.get('adjustment_factor')}, passed={passed})")
+                    else:
+                        logger.warning(f"_on_test_finished: No result_data found in temp storage for '{test_name}' and no existing valid statistics. Statistics may be missing.")
                 elif test_type == 'Analog Static Test':
                     # Retrieve result data for analog_static tests
                     if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:

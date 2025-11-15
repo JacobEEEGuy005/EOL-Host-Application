@@ -2483,65 +2483,207 @@ class TestRunner:
                     return data_bytes
                 
                 # Step 1: Get Output Current Trim Value
-                logger.info("Charged HV Bus Test: Getting output current trim value...")
+                logger.info("Charged HV Bus Test: Step 1 - Getting output current trim value...")
+                logger.info(f"Charged HV Bus Test: Fallback trim value from config: {fallback_trim:.2f}%")
                 trim_value = fallback_trim
+                trim_value_source = "fallback (config default)"
                 
                 # Try to get adjustment_factor from previous Output Current Calibration test
-                if self.gui is not None and hasattr(self.gui, '_test_execution_data'):
-                    # Search for Output Current Calibration test in execution history
-                    for test_name, exec_data in self.gui._test_execution_data.items():
-                        test_config = exec_data.get('test_config', {})
-                        actuation = test_config.get('actuation', {})
-                        if actuation.get('type') == 'Output Current Calibration':
-                            # Check if test passed and has adjustment_factor
-                            stats = exec_data.get('statistics', {})
-                            adjustment_factor = stats.get('adjustment_factor')
-                            if adjustment_factor is not None:
-                                trim_value = adjustment_factor * 100.0
-                                logger.info(f"Charged HV Bus Test: Using adjustment_factor {adjustment_factor} from Output Current Calibration test '{test_name}' -> trim_value = {trim_value:.2f}%")
-                                break
+                if self.gui is not None:
+                    # Strategy 1: Search through _tests list directly (most reliable)
+                    # This finds tests that have been executed and have statistics stored
+                    if hasattr(self.gui, '_tests') and hasattr(self.gui, '_test_execution_data'):
+                        logger.info(f"Charged HV Bus Test: Searching through {len(self.gui._tests)} tests for Output Current Calibration test...")
+                        
+                        # Search in reverse order to get the most recent test first
+                        found_calibration_test = False
+                        for test in reversed(self.gui._tests):
+                            test_name = test.get('name', '')
+                            actuation = test.get('actuation', {})
+                            test_type = actuation.get('type', '')
+                            
+                            if test_type == 'Output Current Calibration':
+                                # Check if this test has execution data
+                                if test_name in self.gui._test_execution_data:
+                                    found_calibration_test = True
+                                    exec_data = self.gui._test_execution_data[test_name]
+                                    logger.info(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' with execution data")
+                                    
+                                    # Check execution status
+                                    exec_status = exec_data.get('status', 'Not Run')
+                                    logger.info(f"Charged HV Bus Test: Test '{test_name}' execution status: {exec_status}")
+                                    
+                                    # Check if test passed and has adjustment_factor
+                                    stats = exec_data.get('statistics', {})
+                                    logger.info(f"Charged HV Bus Test: Statistics keys for '{test_name}': {list(stats.keys()) if stats else 'None'}")
+                                    
+                                    adjustment_factor = stats.get('adjustment_factor')
+                                    test_passed_in_stats = stats.get('passed', False)
+                                    
+                                    # Check both status field and statistics passed field
+                                    test_passed = (exec_status == 'PASS') or test_passed_in_stats
+                                    
+                                    logger.info(f"Charged HV Bus Test: adjustment_factor={adjustment_factor}, test_passed={test_passed} (status={exec_status}, stats.passed={test_passed_in_stats})")
+                                    
+                                    if adjustment_factor is not None:
+                                        if test_passed:
+                                            logger.info(f"Charged HV Bus Test: Extracted adjustment_factor = {adjustment_factor:.6f} from Output Current Calibration test '{test_name}'")
+                                            logger.info(f"Charged HV Bus Test: Converting adjustment_factor to trim_value: {adjustment_factor:.6f} * 100.0 = {adjustment_factor * 100.0:.4f}%")
+                                            trim_value = adjustment_factor * 100.0
+                                            trim_value_source = f"Output Current Calibration test '{test_name}' (adjustment_factor={adjustment_factor:.6f})"
+                                            logger.info(f"Charged HV Bus Test: ✓ Successfully extracted and calculated trim_value = {trim_value:.2f}% from passed Output Current Calibration test '{test_name}'")
+                                            break
+                                        else:
+                                            logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' but it did not pass (status={exec_status}). Using fallback trim value.")
+                                    else:
+                                        logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' but adjustment_factor is None. Statistics keys: {list(stats.keys()) if stats else 'None'}")
+                                else:
+                                    logger.debug(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' but no execution data yet.")
+                        
+                        if not found_calibration_test:
+                            logger.warning("Charged HV Bus Test: No Output Current Calibration test found in _tests list with execution data.")
+                    
+                    # Strategy 2: Fallback - search through _test_execution_data by name (legacy approach)
+                    if trim_value == fallback_trim and hasattr(self.gui, '_test_execution_data'):
+                        logger.info(f"Charged HV Bus Test: Fallback search through {len(self.gui._test_execution_data)} tests in execution history...")
+                        
+                        for test_name, exec_data in reversed(list(self.gui._test_execution_data.items())):
+                            # Look up test config from self._tests by name
+                            test_config = None
+                            if hasattr(self.gui, '_tests'):
+                                for test in self.gui._tests:
+                                    if test.get('name', '') == test_name:
+                                        test_config = test
+                                        break
+                            
+                            if test_config is None:
+                                continue
+                            
+                            actuation = test_config.get('actuation', {})
+                            if actuation.get('type') == 'Output Current Calibration':
+                                stats = exec_data.get('statistics', {})
+                                adjustment_factor = stats.get('adjustment_factor')
+                                exec_status = exec_data.get('status', 'Not Run')
+                                test_passed_in_stats = stats.get('passed', False)
+                                test_passed = (exec_status == 'PASS') or test_passed_in_stats
+                                
+                                if adjustment_factor is not None and test_passed:
+                                    logger.info(f"Charged HV Bus Test: Extracted adjustment_factor = {adjustment_factor:.6f} from Output Current Calibration test '{test_name}' (fallback search)")
+                                    logger.info(f"Charged HV Bus Test: Converting adjustment_factor to trim_value: {adjustment_factor:.6f} * 100.0 = {adjustment_factor * 100.0:.4f}%")
+                                    trim_value = adjustment_factor * 100.0
+                                    trim_value_source = f"Output Current Calibration test '{test_name}' (fallback search, adjustment_factor={adjustment_factor:.6f})"
+                                    logger.info(f"Charged HV Bus Test: ✓ Successfully extracted and calculated trim_value = {trim_value:.2f}% from passed Output Current Calibration test '{test_name}' (fallback search)")
+                                    break
+                    
+                    # Fallback: Also check _test_result_data_temp (in case test just finished but _on_test_finished hasn't processed it yet)
+                    if trim_value == fallback_trim and hasattr(self.gui, '_test_result_data_temp'):
+                        logger.info(f"Charged HV Bus Test: Checking _test_result_data_temp as fallback (found {len(self.gui._test_result_data_temp)} tests)...")
+                        for temp_test_name, result_data in self.gui._test_result_data_temp.items():
+                            logger.debug(f"Charged HV Bus Test: Checking temp test '{temp_test_name}'...")
+                            
+                            # Look up test config to verify it's Output Current Calibration
+                            test_config = None
+                            if hasattr(self.gui, '_tests'):
+                                for test in self.gui._tests:
+                                    if test.get('name', '') == temp_test_name:
+                                        test_config = test
+                                        break
+                            
+                            if test_config is None:
+                                logger.debug(f"Charged HV Bus Test: Test config not found for temp test '{temp_test_name}', skipping...")
+                                continue
+                            
+                            actuation = test_config.get('actuation', {})
+                            test_type = actuation.get('type', '')
+                            logger.debug(f"Charged HV Bus Test: Temp test '{temp_test_name}' has type '{test_type}'")
+                            
+                            if test_type == 'Output Current Calibration':
+                                logger.info(f"Charged HV Bus Test: Found Output Current Calibration test '{temp_test_name}' in temp storage")
+                                
+                                adjustment_factor = result_data.get('adjustment_factor')
+                                logger.info(f"Charged HV Bus Test: adjustment_factor from temp storage: {adjustment_factor}")
+                                
+                                if adjustment_factor is not None:
+                                    # Check if test passed (use second sweep gain error)
+                                    second_sweep_gain_error = result_data.get('second_sweep_gain_error')
+                                    tolerance_percent = result_data.get('tolerance_percent', 0)
+                                    test_passed = False
+                                    if second_sweep_gain_error is not None and tolerance_percent is not None:
+                                        test_passed = abs(second_sweep_gain_error) <= tolerance_percent
+                                    
+                                    logger.info(f"Charged HV Bus Test: test_passed={test_passed} (second_sweep_gain_error={second_sweep_gain_error}, tolerance_percent={tolerance_percent})")
+                                    
+                                    if test_passed:
+                                        logger.info(f"Charged HV Bus Test: Extracted adjustment_factor = {adjustment_factor:.6f} from Output Current Calibration test '{temp_test_name}' (temp storage)")
+                                        logger.info(f"Charged HV Bus Test: Converting adjustment_factor to trim_value: {adjustment_factor:.6f} * 100.0 = {adjustment_factor * 100.0:.4f}%")
+                                        trim_value = adjustment_factor * 100.0
+                                        trim_value_source = f"Output Current Calibration test '{temp_test_name}' (temp storage, adjustment_factor={adjustment_factor:.6f})"
+                                        logger.info(f"Charged HV Bus Test: ✓ Successfully extracted and calculated trim_value = {trim_value:.2f}% from passed Output Current Calibration test '{temp_test_name}' (temp storage)")
+                                        break
+                                    else:
+                                        logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{temp_test_name}' in temp storage but it did not pass.")
+                                else:
+                                    logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{temp_test_name}' in temp storage but adjustment_factor is None. Result data keys: {list(result_data.keys()) if result_data else 'None'}")
                 
                 if trim_value == fallback_trim:
-                    logger.info(f"Charged HV Bus Test: Using fallback trim value: {trim_value:.2f}%")
+                    logger.info(f"Charged HV Bus Test: No Output Current Calibration test found or test did not pass. Using fallback trim value: {trim_value:.2f}%")
+                
+                # Log summary of trim value determination
+                logger.info(f"Charged HV Bus Test: Trim value determination complete. Final trim_value = {trim_value:.2f}% (source: {trim_value_source})")
                 
                 # Step 2: Send Output Current Trim Value
-                logger.info(f"Charged HV Bus Test: Sending output current trim value ({trim_value:.2f}%)...")
+                logger.info(f"Charged HV Bus Test: Step 2 - Sending output current trim value to DUT...")
+                logger.info(f"Charged HV Bus Test: Preparing to send trim_value = {trim_value:.2f}% on signal '{trim_signal}' via CAN message 0x{cmd_msg_id:X}")
                 try:
                     signals = {trim_signal: trim_value}
+                    logger.debug(f"Charged HV Bus Test: Encoding signals for trim value: {signals}")
                     data_bytes = _encode_and_send_charged_hv_bus(signals, cmd_msg_id)
                     
                     if not data_bytes:
+                        logger.error(f"Charged HV Bus Test: Failed to encode output current trim message. Signal: '{trim_signal}', Value: {trim_value:.2f}%, CAN ID: 0x{cmd_msg_id:X}")
                         return False, "Failed to encode output current trim message"
+                    
+                    logger.debug(f"Charged HV Bus Test: Encoded trim value message: {data_bytes.hex() if data_bytes else 'None'} ({len(data_bytes) if data_bytes else 0} bytes)")
                     
                     if self.can_service is not None and self.can_service.is_connected():
                         f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                        logger.debug(f"Charged HV Bus Test: Created CAN frame - ID: 0x{cmd_msg_id:X}, Data: {data_bytes.hex()}, Length: {len(data_bytes)} bytes")
                         try:
+                            logger.info(f"Charged HV Bus Test: Attempting to send trim value frame via CAN service...")
                             success = self.can_service.send_frame(f)
                             if not success:
-                                logger.warning(f"send_frame returned False for trim value (can_id=0x{cmd_msg_id:X})")
+                                logger.error(f"Charged HV Bus Test: send_frame() returned False for trim value. CAN ID: 0x{cmd_msg_id:X}, Signal: '{trim_signal}', Value: {trim_value:.2f}%")
+                                return False, f"Failed to send output current trim value: send_frame returned False"
                             else:
-                                logger.info(f"Sent output current trim value ({trim_value:.2f}%) on message 0x{cmd_msg_id:X}, signal: {trim_signal}")
+                                logger.info(f"Charged HV Bus Test: ✓ Successfully sent output current trim value ({trim_value:.2f}%) on CAN message 0x{cmd_msg_id:X}, signal: '{trim_signal}'")
+                                logger.debug(f"Charged HV Bus Test: Trim value frame sent successfully. CAN ID: 0x{cmd_msg_id:X}, Data: {data_bytes.hex()}")
                         except Exception as e:
-                            logger.error(f"Failed to send trim value frame: {e}", exc_info=True)
+                            logger.error(f"Charged HV Bus Test: Exception while sending trim value frame: {e}", exc_info=True)
                             return False, f"Failed to send output current trim value: {e}"
                     elif self.gui is not None:
                         if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
                             f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                            logger.debug(f"Charged HV Bus Test: Created CAN frame via GUI service - ID: 0x{cmd_msg_id:X}, Data: {data_bytes.hex()}, Length: {len(data_bytes)} bytes")
                             try:
+                                logger.info(f"Charged HV Bus Test: Attempting to send trim value frame via GUI CAN service...")
                                 success = self.gui.can_service.send_frame(f)
                                 if not success:
-                                    logger.warning(f"send_frame returned False for trim value (can_id=0x{cmd_msg_id:X})")
+                                    logger.error(f"Charged HV Bus Test: send_frame() returned False for trim value via GUI service. CAN ID: 0x{cmd_msg_id:X}, Signal: '{trim_signal}', Value: {trim_value:.2f}%")
+                                    return False, f"Failed to send output current trim value: send_frame returned False"
                                 else:
-                                    logger.info(f"Sent output current trim value ({trim_value:.2f}%) on message 0x{cmd_msg_id:X}, signal: {trim_signal}")
+                                    logger.info(f"Charged HV Bus Test: ✓ Successfully sent output current trim value ({trim_value:.2f}%) on CAN message 0x{cmd_msg_id:X}, signal: '{trim_signal}' (via GUI service)")
+                                    logger.debug(f"Charged HV Bus Test: Trim value frame sent successfully via GUI service. CAN ID: 0x{cmd_msg_id:X}, Data: {data_bytes.hex()}")
                             except Exception as e:
-                                logger.error(f"Failed to send trim value frame via GUI service: {e}", exc_info=True)
+                                logger.error(f"Charged HV Bus Test: Exception while sending trim value frame via GUI service: {e}", exc_info=True)
                                 return False, f"Failed to send output current trim value: {e}"
                         else:
+                            logger.error(f"Charged HV Bus Test: GUI CAN service not available or not connected. Cannot send trim value.")
                             return False, "CAN service not available. Cannot send output current trim value."
                     else:
+                        logger.error(f"Charged HV Bus Test: No GUI reference available. Cannot send trim value.")
                         return False, "CAN service not available. Cannot send output current trim value."
                 except Exception as e:
-                    logger.error(f"Failed to send output current trim value: {e}")
+                    logger.error(f"Charged HV Bus Test: Exception during trim value encoding/sending: {e}", exc_info=True)
                     return False, f"Failed to send output current trim value: {e}"
                 
                 _nb_sleep(SLEEP_INTERVAL_MEDIUM)
@@ -3876,6 +4018,45 @@ class TestRunner:
                     if not hasattr(self.gui, '_test_result_data_temp'):
                         self.gui._test_result_data_temp = {}
                     self.gui._test_result_data_temp[test_name] = result_data
+                    
+                    # CRITICAL: Immediately process and store statistics in _test_execution_data
+                    # This ensures the statistics are available for the next test (e.g., Charged HV Bus Test)
+                    # before _on_test_finished processes the signal asynchronously
+                    if not hasattr(self.gui, '_test_execution_data'):
+                        self.gui._test_execution_data = {}
+                    if test_name not in self.gui._test_execution_data:
+                        self.gui._test_execution_data[test_name] = {}
+                    
+                    # Calculate pass/fail status
+                    second_sweep_gain_error = result_data.get('second_sweep_gain_error')
+                    tolerance_percent = result_data.get('tolerance_percent', 0)
+                    passed_status = False
+                    if second_sweep_gain_error is not None and tolerance_percent is not None:
+                        passed_status = abs(second_sweep_gain_error) <= tolerance_percent
+                    
+                    # Store statistics immediately so next test can access them
+                    self.gui._test_execution_data[test_name]['statistics'] = {
+                        # Store both sweeps' data for completeness
+                        'first_sweep_slope': result_data.get('first_sweep_slope'),
+                        'first_sweep_intercept': result_data.get('first_sweep_intercept'),
+                        'first_sweep_gain_error': result_data.get('first_sweep_gain_error'),
+                        'first_sweep_gain_adjustment_factor': result_data.get('first_sweep_gain_adjustment_factor'),
+                        'second_sweep_slope': result_data.get('second_sweep_slope'),
+                        'second_sweep_intercept': result_data.get('second_sweep_intercept'),
+                        'second_sweep_gain_error': second_sweep_gain_error,
+                        # Legacy fields for backward compatibility
+                        'slope': result_data.get('second_sweep_slope'),  # Use second sweep for legacy
+                        'intercept': result_data.get('second_sweep_intercept'),  # Use second sweep for legacy
+                        'gain_error': second_sweep_gain_error,  # Use second sweep gain error
+                        'adjustment_factor': result_data.get('adjustment_factor'),  # First sweep adjustment factor
+                        'tolerance_percent': tolerance_percent,
+                        'data_points': result_data.get('data_points'),
+                        'calculated_trim_value': result_data.get('calculated_trim_value'),
+                        'passed': passed_status
+                    }
+                    # Also set status immediately
+                    self.gui._test_execution_data[test_name]['status'] = 'PASS' if passed_status else 'FAIL'
+                    logger.info(f"Output Current Calibration: Immediately stored statistics in _test_execution_data for '{test_name}' (adjustment_factor={result_data.get('adjustment_factor')}, passed={passed_status})")
                 
                 logger.info(f"Output Current Calibration Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info

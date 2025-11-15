@@ -62,27 +62,22 @@ except Exception:
 
 import logging
 
-# Configure logging for host GUI - respect LOG_LEVEL environment variable
-# (ConfigManager will handle this later, but we need logging setup first)
-log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-try:
-    log_level = getattr(logging, log_level, logging.INFO)
-except (AttributeError, TypeError):
-    log_level = logging.INFO
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
-# Note: Log level will be updated by ConfigManager after it's initialized
-
-# Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
+# Ensure repo root on sys.path FIRST so imports work correctly
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
+
+# Configure logging early - this is the single place for logging configuration
+# Import config module to use centralized logging configuration
+try:
+    from host_gui.config import configure_logging
+except ImportError:
+    # Fallback: try relative import if running as module
+    from .config import configure_logging
+
+configure_logging()  # Uses LOG_LEVEL env var or defaults to 'INFO'
+
+logger = logging.getLogger(__name__)
 
 # Import constants - simplified import strategy
 # Try relative import first (works when host_gui is a package), then absolute import
