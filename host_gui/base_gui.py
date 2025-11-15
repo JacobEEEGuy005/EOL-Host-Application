@@ -2039,9 +2039,12 @@ Data Points Used: {data_points}"""
                         layout.addWidget(plot_canvas)
                         
                         # Display gain error and adjustment factor
-                        gain_error = plot_data.get('gain_error')
+                        # Support both old format (gain_error) and new format (avg_gain_error)
+                        gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
                         adjustment_factor = plot_data.get('adjustment_factor')
                         tolerance_percent = plot_data.get('tolerance_percent')
+                        slope = plot_data.get('slope')
+                        intercept = plot_data.get('intercept')
                         
                         if gain_error is not None:
                             gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
@@ -2052,14 +2055,21 @@ Data Points Used: {data_points}"""
                             gain_info_text.setMaximumHeight(120)
                             
                             gain_info = ""
-                            gain_info += f"Slope: {plot_data.get('slope', 'N/A'):.6f} (ideal: 1.0)\n"
-                            gain_info += f"Intercept: {plot_data.get('intercept', 'N/A'):.6f} A\n"
-                            gain_info += f"Gain Error: {gain_error:+.4f}%\n"
+                            # Only show slope/intercept if available (old format)
+                            if slope is not None:
+                                gain_info += f"Slope: {slope:.6f} (ideal: 1.0)\n"
+                            if intercept is not None:
+                                gain_info += f"Intercept: {intercept:.6f} A\n"
+                            # Show average gain error (new format) or gain error (old format)
+                            if plot_data.get('avg_gain_error') is not None:
+                                gain_info += f"Average Gain Error: {gain_error:.4f}%\n"
+                            else:
+                                gain_info += f"Gain Error: {gain_error:+.4f}%\n"
                             if adjustment_factor is not None:
                                 gain_info += f"Adjustment Factor: {adjustment_factor:.6f}\n"
                             if tolerance_percent is not None:
                                 gain_info += f"Tolerance: {tolerance_percent:.4f}%\n"
-                                passed = gain_error <= tolerance_percent
+                                passed = abs(gain_error) <= tolerance_percent
                                 gain_info += f"Result: {'PASS' if passed else 'FAIL'}\n"
                             
                             gain_info_text.setPlainText(gain_info)
@@ -2747,9 +2757,10 @@ Data Points Used: {data_points}"""
                 
                 if plot_data:
                     # Calibration results data
+                    # Support both old format (gain_error) and new format (avg_gain_error)
                     slope = plot_data.get('slope')
                     intercept = plot_data.get('intercept')
-                    gain_error = plot_data.get('gain_error')
+                    gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
                     adjustment_factor = plot_data.get('adjustment_factor')
                     tolerance_percent = plot_data.get('tolerance_percent')
                     
@@ -2763,7 +2774,11 @@ Data Points Used: {data_points}"""
                         if intercept is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['Intercept (A)', f"{intercept:.6f}", '', '']))
                         if gain_error is not None:
-                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error (%)', f"{gain_error:+.4f}%", '', '']))
+                            # Use appropriate label based on format
+                            if plot_data.get('avg_gain_error') is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Average Gain Error (%)', f"{gain_error:.4f}%", '', '']))
+                            else:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error (%)', f"{gain_error:+.4f}%", '', '']))
                         if adjustment_factor is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['Adjustment Factor', f"{adjustment_factor:.6f}", '', '']))
                         if tolerance_percent is not None:
@@ -3493,9 +3508,10 @@ Data Points Used: {data_points}"""
                     plot_data = exec_data.get('plot_data')
                     if plot_data:
                         # Calibration results data
+                        # Support both old format (gain_error) and new format (avg_gain_error)
                         slope = plot_data.get('slope')
                         intercept = plot_data.get('intercept')
-                        gain_error = plot_data.get('gain_error')
+                        gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
                         adjustment_factor = plot_data.get('adjustment_factor')
                         tolerance_percent = plot_data.get('tolerance_percent')
                         
@@ -3510,7 +3526,11 @@ Data Points Used: {data_points}"""
                             if intercept is not None:
                                 html_parts.append(f'<tr><td>Intercept (A)</td><td>{intercept:.6f}</td></tr>')
                             if gain_error is not None:
-                                html_parts.append(f'<tr><td>Gain Error (%)</td><td>{gain_error:+.4f}%</td></tr>')
+                                # Use appropriate label based on format
+                                if plot_data.get('avg_gain_error') is not None:
+                                    html_parts.append(f'<tr><td>Average Gain Error (%)</td><td>{gain_error:.4f}%</td></tr>')
+                                else:
+                                    html_parts.append(f'<tr><td>Gain Error (%)</td><td>{gain_error:+.4f}%</td></tr>')
                             if adjustment_factor is not None:
                                 html_parts.append(f'<tr><td>Adjustment Factor</td><td>{adjustment_factor:.6f}</td></tr>')
                             if tolerance_percent is not None:
@@ -6696,6 +6716,32 @@ Data Points Used: {data_points}"""
                 _update_output_current_setpoint_signals()
             output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_setpoint_signals)
             
+            # Output Current Trim Signal: dropdown based on same message as trigger
+            output_current_trim_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_trim_signals():
+                """Update trim signal dropdown based on trigger message selection."""
+                output_current_trim_signal_combo.clear()
+                try:
+                    idx = output_current_trigger_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trim_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trim_signals()
+            output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_trim_signals)
+            
+            # Initial Trim Value: double input (0.0000-200.0000, default 100.0000)
+            output_current_initial_trim_validator = QtGui.QDoubleValidator(0.0, 200.0, 4, self)
+            output_current_initial_trim_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_initial_trim_edit = QtWidgets.QLineEdit()
+            output_current_initial_trim_edit.setValidator(output_current_initial_trim_validator)
+            output_current_initial_trim_edit.setPlaceholderText('e.g., 100.0000')
+            output_current_initial_trim_edit.setText('100.0000')
+            
             # Feedback Signal Source: dropdown of CAN Messages
             output_current_feedback_msg_combo = QtWidgets.QComboBox()
             for m, label in msg_display:
@@ -6782,6 +6828,8 @@ Data Points Used: {data_points}"""
             output_current_calibration_layout.addRow('Test Trigger Signal:', output_current_trigger_signal_combo)
             output_current_calibration_layout.addRow('Test Trigger Signal Value:', output_current_trigger_value_edit)
             output_current_calibration_layout.addRow('Current Setpoint Signal:', output_current_setpoint_signal_combo)
+            output_current_calibration_layout.addRow('Output Current Trim Signal:', output_current_trim_signal_combo)
+            output_current_calibration_layout.addRow('Initial Trim Value (%):', output_current_initial_trim_edit)
             output_current_calibration_layout.addRow('Feedback Signal Source:', output_current_feedback_msg_combo)
             output_current_calibration_layout.addRow('Feedback Signal:', output_current_feedback_signal_combo)
             output_current_calibration_layout.addRow('Oscilloscope Channel:', output_current_osc_channel_combo)
@@ -7814,6 +7862,18 @@ Data Points Used: {data_points}"""
                     
                     setpoint_signal = output_current_setpoint_signal_combo.currentText().strip() if output_current_setpoint_signal_combo.count() else ''
                     
+                    trim_signal = output_current_trim_signal_combo.currentText().strip() if output_current_trim_signal_combo.count() else ''
+                    
+                    # Initial Trim Value (float, 0.0000-200.0000)
+                    def _to_float_or_none_output_current_initial_trim(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    initial_trim_value = _to_float_or_none_output_current_initial_trim(output_current_initial_trim_edit)
+                    
                     try:
                         feedback_msg_id = output_current_feedback_msg_combo.currentData()
                     except Exception:
@@ -7889,6 +7949,8 @@ Data Points Used: {data_points}"""
                         'test_trigger_signal': trigger_signal,
                         'test_trigger_signal_value': trigger_value,
                         'current_setpoint_signal': setpoint_signal,
+                        'output_current_trim_signal': trim_signal,
+                        'initial_trim_value': initial_trim_value,
                         'feedback_signal_source': feedback_msg_id,
                         'feedback_signal': feedback_signal,
                         'oscilloscope_channel': osc_channel,
@@ -8707,6 +8769,18 @@ Data Points Used: {data_points}"""
                 return False, "Test trigger signal value must be in range 0-255"
             if not actuation.get('current_setpoint_signal'):
                 return False, "Output Current Calibration test requires current setpoint signal name"
+            if not actuation.get('output_current_trim_signal'):
+                return False, "Output Current Calibration test requires output current trim signal name"
+            if actuation.get('initial_trim_value') is None:
+                return False, "Output Current Calibration test requires initial trim value (%)"
+            initial_trim = actuation.get('initial_trim_value')
+            if initial_trim is not None:
+                try:
+                    initial_trim_float = float(initial_trim)
+                    if not (0.0 <= initial_trim_float <= 200.0):
+                        return False, f"Initial trim value must be in range 0.0000-200.0000%, got {initial_trim_float}"
+                except (ValueError, TypeError):
+                    return False, f"Initial trim value must be a number, got {initial_trim}"
             if actuation.get('feedback_signal_source') is None:
                 return False, "Output Current Calibration test requires feedback signal source (CAN ID)"
             if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
@@ -10199,6 +10273,31 @@ Data Points Used: {data_points}"""
                 _update_output_current_setpoint_signals_edit()
             output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_setpoint_signals_edit)
             
+            # Output Current Trim Signal: dropdown based on same message as trigger
+            output_current_trim_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_trim_signals_edit():
+                """Update trim signal dropdown based on trigger message selection."""
+                output_current_trim_signal_combo_edit.clear()
+                try:
+                    idx = output_current_trigger_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trim_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trim_signals_edit()
+            output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_trim_signals_edit)
+            
+            # Initial Trim Value: double input (0.0000-200.0000, default 100.0000)
+            output_current_initial_trim_validator_edit = QtGui.QDoubleValidator(0.0, 200.0, 4, self)
+            output_current_initial_trim_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_initial_trim_edit_edit = QtWidgets.QLineEdit(str(act.get('initial_trim_value', '100.0000')))
+            output_current_initial_trim_edit_edit.setValidator(output_current_initial_trim_validator_edit)
+            output_current_initial_trim_edit_edit.setPlaceholderText('e.g., 100.0000')
+            
             # Feedback Signal Source: dropdown of CAN Messages
             output_current_feedback_msg_combo_edit = QtWidgets.QComboBox()
             for m, label in msg_display:
@@ -10295,6 +10394,12 @@ Data Points Used: {data_points}"""
                     except Exception:
                         pass
                 
+                if act.get('output_current_trim_signal') and output_current_trim_signal_combo_edit.count():
+                    try:
+                        output_current_trim_signal_combo_edit.setCurrentText(str(act.get('output_current_trim_signal')))
+                    except Exception:
+                        pass
+                
                 fb_msg_id = act.get('feedback_signal_source')
                 if fb_msg_id is not None:
                     for i in range(output_current_feedback_msg_combo_edit.count()):
@@ -10329,6 +10434,8 @@ Data Points Used: {data_points}"""
             output_current_calibration_layout_edit.addRow('Test Trigger Signal:', output_current_trigger_signal_combo_edit)
             output_current_calibration_layout_edit.addRow('Test Trigger Signal Value:', output_current_trigger_value_edit_edit)
             output_current_calibration_layout_edit.addRow('Current Setpoint Signal:', output_current_setpoint_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Output Current Trim Signal:', output_current_trim_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Initial Trim Value (%):', output_current_initial_trim_edit_edit)
             output_current_calibration_layout_edit.addRow('Feedback Signal Source:', output_current_feedback_msg_combo_edit)
             output_current_calibration_layout_edit.addRow('Feedback Signal:', output_current_feedback_signal_combo_edit)
             output_current_calibration_layout_edit.addRow('Oscilloscope Channel:', output_current_osc_channel_combo_edit)
@@ -11370,6 +11477,18 @@ Data Points Used: {data_points}"""
                     
                     setpoint_signal = output_current_setpoint_signal_combo_edit.currentText().strip() if 'output_current_setpoint_signal_combo_edit' in locals() and output_current_setpoint_signal_combo_edit.count() else ''
                     
+                    trim_signal = output_current_trim_signal_combo_edit.currentText().strip() if 'output_current_trim_signal_combo_edit' in locals() and output_current_trim_signal_combo_edit.count() else ''
+                    
+                    # Initial Trim Value (float, 0.0000-200.0000)
+                    def _to_float_or_none_output_current_initial_trim_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    initial_trim_value = _to_float_or_none_output_current_initial_trim_edit(output_current_initial_trim_edit_edit) if 'output_current_initial_trim_edit_edit' in locals() else None
+                    
                     try:
                         feedback_msg_id = output_current_feedback_msg_combo_edit.currentData() if 'output_current_feedback_msg_combo_edit' in locals() else None
                     except Exception:
@@ -11445,6 +11564,8 @@ Data Points Used: {data_points}"""
                         'test_trigger_signal': trigger_signal,
                         'test_trigger_signal_value': trigger_value,
                         'current_setpoint_signal': setpoint_signal,
+                        'output_current_trim_signal': trim_signal,
+                        'initial_trim_value': initial_trim_value,
                         'feedback_signal_source': feedback_msg_id,
                         'feedback_signal': feedback_signal,
                         'oscilloscope_channel': osc_channel,

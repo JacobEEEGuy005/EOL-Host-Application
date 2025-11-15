@@ -14,17 +14,18 @@
   
   How it works:
   - The test starts by verifying oscilloscope settings (timebase, channel enable, probe attenuation)
+  - The output current trim value is initialized in the DUT using the initial_trim_value
+  - The first current setpoint (from the test setpoints array) is sent to the DUT
   - A test trigger signal is sent to the DUT via CAN to initiate the calibration test mode
-  - The DUT outputs current at an initial setpoint (typically 5A)
-  - The EOL system sends current setpoints from minimum to maximum values in steps
-  - For each setpoint:
+  - The EOL system sends remaining current setpoints from minimum to maximum values in steps
+  - For each setpoint (including the first one that was sent before test trigger):
     * Wait for pre-acquisition time to allow current to stabilize
     * Start CAN data logging and oscilloscope acquisition
     * Collect data for the specified acquisition time
     * Stop data collection and calculate averages from both sources
     * Update live scatter plot (DUT measurement vs Oscilloscope measurement)
-  - After all setpoints are tested, calculate gain error (%) and gain adjustment factor
-  - Test passes if gain error is within specified tolerance
+  - After all setpoints are tested, calculate gain error and correction factor for each data point, then average them (same method as Phase Current Test)
+  - Test passes if average gain error is within specified tolerance
   
   Hardware Requirements:
   - Device Under Test (DUT)
@@ -37,7 +38,7 @@
   - Requires oscilloscope to be connected and configured before test execution
   - Test iterates through multiple current setpoints (sweep pattern)
   - Real-time scatter plot updates during test execution
-  - Calculates calibration parameters (gain error, adjustment factor) for sensor trim
+  - Calculates calibration parameters (average gain error, average gain correction/adjustment factor) for sensor trim using point-by-point calculation method
   ```
 
 ## Test Configuration Fields
@@ -51,6 +52,8 @@ List all fields that must be provided for this test type:
 | `test_trigger_signal` | `string` | `CAN signal name for test trigger (enable/disable test mode)` | `Non-empty, Required` | `"Output_Current_Test_Enable"` |
 | `test_trigger_signal_value` | `integer` | `Value to send for test trigger signal (typically 1 to enable, 0 to disable)` | `Range: 0-255, Required` | `1` |
 | `current_setpoint_signal` | `string` | `CAN signal name for setting output current setpoint` | `Non-empty, Required` | `"Output_Current_Setpoint"` |
+| `output_current_trim_signal` | `string` | `CAN signal name for output current trim value (initialization)` | `Non-empty, Required` | `"Output_Current_Trim"` |
+| `initial_trim_value` | `number` | `Initial trim value in percent to initialize DUT before test` | `Range: 0.0000-200.0000, Required, Default: 100.0000` | `100.0000` |
 | `feedback_signal_source` | `integer` | `CAN message ID for feedback signal (DUT current measurement)` | `Range: 0-0x1FFFFFFF, Required` | `0x201` |
 | `feedback_signal` | `string` | `CAN signal name for output current feedback from DUT` | `Non-empty, Required` | `"Output_Current_Measured"` |
 | `oscilloscope_channel` | `string` | `Oscilloscope channel name (from loaded profile) for current measurement` | `Non-empty, Required, Must be enabled in profile` | `"Channel 3"` |
@@ -68,9 +71,10 @@ If the test uses CAN communication, specify:
 - **Command Message** (sending commands to DUT):
   - Message ID: `test_trigger_source` (configurable, e.g., 0x200)
   - Signals used: 
+    - `output_current_trim_signal` - Set output current trim value in percent (value: `initial_trim_value`, range: 0.0000-200.0000%)
     - `test_trigger_signal` - Enable/disable output current test mode (value: `test_trigger_signal_value`, typically 1 to enable, 0 to disable)
     - `current_setpoint_signal` - Set output current setpoint value in Amperes
-  - Purpose: `Send test trigger and current setpoint commands to DUT`
+  - Purpose: `Send trim initialization, test trigger, and current setpoint commands to DUT`
 
 - **Feedback Messages** (reading measurements from DUT):
   - Message ID: `feedback_signal_source` (configurable, e.g., 0x201)
@@ -110,15 +114,41 @@ Describe the step-by-step execution flow:
    - Duration: As fast as possible
    - Expected result: Array of current setpoints ready, plot initialized with correct labels
 
-3. Trigger Test at DUT
+3. Initialize Trim Value at DUT
+    - Action: 
+     - Encode and send CAN message with output_current_trim_signal = initial_trim_value (in percent, range: 0.0000-200.0000%)
+       to initialize the output current trim value in the DUT before enabling test mode
+     - This sets the initial calibration trim value that will be used during the test
+   - Duration: As fast as possible
+   - Expected result: Trim value initialization command sent successfully, DUT trim value initialized
+
+4. Send Initial Current Setpoint
+    - Action: 
+     - Encode and send CAN message with current_setpoint_signal = first value from Test Current Setpoints Array
+       to set the initial output current setpoint before enabling test mode
+     - This ensures the DUT starts at the first test setpoint value (e.g., minimum_test_current)
+   - Duration: As fast as possible
+   - Expected result: Initial current setpoint command sent successfully, DUT configured with first setpoint
+
+5. Trigger Test at DUT
     - Action: 
      - Encode and send CAN message with test_trigger_signal = test_trigger_signal_value (typically 1)
        to enable output current test mode at DUT
-     - DUT should initialize and output current at default setpoint (typically 5A)
+     - DUT will use the previously set trim value and initial current setpoint
    - Duration: As fast as possible
    - Expected result: Test trigger command sent successfully, DUT enters test mode
 
-4. For each current setpoint in the array:
+6. Collect Data for First Setpoint
+   - Action: 
+     - Wait for pre_acquisition_time_ms to allow current to stabilize at the first setpoint
+     - Start CAN data logging and oscilloscope acquisition
+     - Collect data during acquisition_time_ms
+     - Stop data collection and calculate averages
+     - Update scatter plot with first data point
+   - Duration: pre_acquisition_time_ms + acquisition_time_ms + analysis time
+   - Expected result: Data collected for first setpoint, plot updated with first data point
+
+7. For each remaining current setpoint in the array (starting from the second setpoint, since first was already sent):
    a. Send Current Setpoint
       - Action: Encode and send CAN message with current_setpoint_signal = setpoint value (in Amperes)
     - Duration: As fast as possible
@@ -161,13 +191,16 @@ Describe the step-by-step execution flow:
     - Duration: As fast as possible
       - Expected result: Averages calculated and stored, plot updated with new data point
 
-5. Post-Test Analysis
+8. Post-Test Analysis
     - Action: 
      - Send test trigger signal with value 0 to disable test mode at DUT
-     - Perform linear regression on collected data points (CAN vs Oscilloscope)
-     - Calculate gain error: gain_error = |(slope - 1.0)| * 100%
-     - Calculate gain adjustment factor: adjustment_factor = 1.0 / slope
-     - Determine pass/fail: pass if gain_error <= tolerance_percent
+     - Calculate gain error and correction factor for each data point (same method as Phase Current Test)
+     - For each (oscilloscope_avg, can_avg) pair:
+       * Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+       * Calculate gain correction: gain_correction = osc_avg / can_avg
+     - Calculate average gain error from all valid data points
+     - Calculate average gain correction factor (adjustment factor) from all valid data points
+     - Determine pass/fail: pass if average_gain_error <= tolerance_percent
    - Duration: As fast as possible
    - Expected result: Test mode disabled, calibration parameters calculated, pass/fail determined
 ```
@@ -175,30 +208,35 @@ Describe the step-by-step execution flow:
 ### Pass/Fail Criteria
 Define how the test determines pass or fail:
 
-- **Pass Condition**: `Gain error percentage is within tolerance_percent (gain_error <= tolerance_percent)`
-- **Fail Condition**: `Gain error percentage exceeds tolerance_percent (gain_error > tolerance_percent)`
+- **Pass Condition**: `Average gain error percentage is within tolerance_percent (avg_gain_error <= tolerance_percent)`
+- **Fail Condition**: `Average gain error percentage exceeds tolerance_percent (avg_gain_error > tolerance_percent)`
 - **Calculation Method**: 
   ```
   1. Collect data points: For each current setpoint, collect:
      - CAN average: average of all CAN feedback_signal readings during acquisition_time_ms
      - Oscilloscope average: result from "C{ch_num}:PAVA? MEAN" command
   
-  2. Perform linear regression on data points:
-     - X values: Oscilloscope averages (reference measurements)
-     - Y values: CAN averages (DUT measurements)
-     - Calculate slope and intercept: Y = slope * X + intercept
+  2. Calculate gain error and correction for each data point (same method as Phase Current Test):
+     - For each (oscilloscope_avg, can_avg) pair:
+       * If oscilloscope_avg is valid (not None and |osc_avg| > threshold):
+         - Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+         - If can_avg is valid (not None and |can_avg| > threshold):
+           - Calculate gain correction: gain_correction = osc_avg / can_avg
+         - Store gain_error and gain_correction in lists
+       * Otherwise, store NaN for invalid points
   
-  3. Calculate gain error:
-     - Ideal slope = 1.0 (perfect calibration)
-     - gain_error = |(slope - 1.0)| * 100%
+  3. Calculate average gain error and correction factor:
+     - Filter out invalid values (NaN, infinity) from gain_errors and gain_corrections
+     - Calculate average gain error: avg_gain_error = |average(valid_gain_errors)|
+     - Calculate average gain correction: avg_gain_correction = average(valid_gain_corrections)
+     - Use avg_gain_correction as the adjustment_factor
   
-  4. Calculate gain adjustment factor:
-     - adjustment_factor = 1.0 / slope
-     - This factor can be used to adjust the sensor trim value
+  4. Determine pass/fail:
+     - PASS if avg_gain_error <= tolerance_percent
+     - FAIL if avg_gain_error > tolerance_percent
   
-  5. Determine pass/fail:
-     - PASS if gain_error <= tolerance_percent
-     - FAIL if gain_error > tolerance_percent
+  Note: This method matches the Phase Current Test approach, calculating point-by-point
+  corrections and averaging them, rather than using linear regression.
   ```
 
 ### Data Collection
@@ -229,8 +267,10 @@ Specify what data needs to be collected:
      - Parse and store average value for this setpoint
   
   3. Final Analysis:
-     - Perform linear regression on all (oscilloscope_avg, can_avg) pairs
-     - Calculate gain error and adjustment factor
+     - Calculate gain error and correction factor for each (oscilloscope_avg, can_avg) pair
+     - Average all valid gain errors and gain corrections
+     - Use average gain error for pass/fail determination
+     - Use average gain correction as adjustment factor
   ```
 
 ### Timing Requirements
@@ -243,14 +283,18 @@ Specify any timing requirements:
   ```
   Estimated total test duration:
   = oscilloscope_setup_time (≈1s)
+  + trim_initialization_time (≈0.1s)
+  + first_setpoint_send_time (≈0.1s)
   + trigger_time (≈0.1s)
-  + (number_of_setpoints × (setpoint_send_time + pre_acquisition_time_ms + acquisition_time_ms + analysis_time))
+  + first_setpoint_data_collection (pre_acquisition_time_ms + acquisition_time_ms + analysis_time)
+  + ((number_of_setpoints - 1) × (setpoint_send_time + pre_acquisition_time_ms + acquisition_time_ms + analysis_time))
   + post_test_analysis_time (≈0.5s)
   
   Example with 4 setpoints (5A, 10A, 15A, 20A), 1000ms pre-acq, 3000ms acq:
-  ≈ 1s + 0.1s + 4 × (0.1s + 1s + 3s + 0.2s) + 0.5s
-  ≈ 1.6s + 4 × 4.3s + 0.5s
-  ≈ 19.3 seconds
+  ≈ 1s + 0.1s + 0.1s + 0.1s + (1s + 3s + 0.2s) + 3 × (0.1s + 1s + 3s + 0.2s) + 0.5s
+  ≈ 1.3s + 4.2s + 3 × 4.3s + 0.5s
+  ≈ 1.3s + 4.2s + 12.9s + 0.5s
+  ≈ 18.9 seconds
   ```
 
 ## GUI Requirements
@@ -286,70 +330,84 @@ Specify the UI fields needed:
 - **DBC Mode**: `Dropdown (populated based on test trigger source message)`
 - **Required**: `Yes`
 
-#### Field 5: Feedback Signal Source
+#### Field 5: Output Current Trim Signal
+- **Type**: `QComboBox` (DBC mode) / `QLineEdit` (non-DBC mode)
+- **Placeholder**: `Select signal` / `Enter signal name`
+- **Validator**: `Non-empty string`
+- **DBC Mode**: `Dropdown (populated based on test trigger source message)`
+- **Required**: `Yes`
+
+#### Field 6: Initial Trim Value
+- **Type**: `QLineEdit` with QDoubleValidator
+- **Placeholder**: `Enter initial trim value in percent (e.g., 100.0000)`
+- **Validator**: `Double 0.0000-200.0000, Default: 100.0000`
+- **DBC Mode**: `Free-text (same for both modes)`
+- **Required**: `Yes`
+
+#### Field 7: Feedback Signal Source
 - **Type**: `QComboBox` (DBC mode) / `QLineEdit` (non-DBC mode)
 - **Placeholder**: `Select CAN message` / `Enter CAN ID (e.g., 0x201)`
 - **Validator**: `Integer 0-0x1FFFFFFF`
 - **DBC Mode**: `Dropdown`
 - **Required**: `Yes`
 
-#### Field 6: Feedback Signal
+#### Field 8: Feedback Signal
 - **Type**: `QComboBox` (DBC mode) / `QLineEdit` (non-DBC mode)
 - **Placeholder**: `Select signal` / `Enter signal name`
 - **Validator**: `Non-empty string`
 - **DBC Mode**: `Dropdown (populated based on selected message)`
 - **Required**: `Yes`
 
-#### Field 7: Oscilloscope Channel
+#### Field 9: Oscilloscope Channel
 - **Type**: `QComboBox`
 - **Placeholder**: `Select oscilloscope channel`
 - **Validator**: `Must be from enabled channels in loaded profile`
 - **DBC Mode**: `Dropdown (populated from oscilloscope profile)`
 - **Required**: `Yes`
 
-#### Field 8: Oscilloscope Timebase
+#### Field 10: Oscilloscope Timebase
 - **Type**: `QComboBox`
 - **Placeholder**: `Select timebase`
 - **Validator**: `One of: '10MS', '20MS', '100MS', '500MS'`
 - **DBC Mode**: `Dropdown (same for both modes)`
 - **Required**: `Yes`
 
-#### Field 9: Minimum Test Current
+#### Field 11: Minimum Test Current
 - **Type**: `QLineEdit` with QDoubleValidator
 - **Placeholder**: `Enter minimum current in Amperes (e.g., 5.0)`
 - **Validator**: `Double >= 0.0, Default: 5.0`
 - **DBC Mode**: `Free-text (same for both modes)`
 - **Required**: `Yes`
 
-#### Field 10: Maximum Test Current
+#### Field 12: Maximum Test Current
 - **Type**: `QLineEdit` with QDoubleValidator
 - **Placeholder**: `Enter maximum current in Amperes (e.g., 20.0)`
 - **Validator**: `Double >= minimum_test_current, Default: 20.0`
 - **DBC Mode**: `Free-text (same for both modes)`
 - **Required**: `Yes`
 
-#### Field 11: Step Current
+#### Field 13: Step Current
 - **Type**: `QLineEdit` with QDoubleValidator
 - **Placeholder**: `Enter step size in Amperes (e.g., 5.0)`
 - **Validator**: `Double >= 0.1, Default: 5.0`
 - **DBC Mode**: `Free-text (same for both modes)`
 - **Required**: `Yes`
 
-#### Field 12: Pre-Acquisition Time
+#### Field 14: Pre-Acquisition Time
 - **Type**: `QLineEdit` with QIntValidator
 - **Placeholder**: `Enter pre-acquisition time in milliseconds (e.g., 1000)`
 - **Validator**: `Integer >= 0, Default: 1000`
 - **DBC Mode**: `Free-text (same for both modes)`
 - **Required**: `Yes`
 
-#### Field 13: Acquisition Time
+#### Field 15: Acquisition Time
 - **Type**: `QLineEdit` with QIntValidator
 - **Placeholder**: `Enter acquisition time in milliseconds (e.g., 3000)`
 - **Validator**: `Integer >= 1, Default: 3000`
 - **DBC Mode**: `Free-text (same for both modes)`
 - **Required**: `Yes`
 
-#### Field 14: Tolerance
+#### Field 16: Tolerance
 - **Type**: `QLineEdit` with QDoubleValidator
 - **Placeholder**: `Enter tolerance in percent (e.g., 1.0)`
 - **Validator**: `Double >= 0.0, Default: 1.0`
@@ -370,7 +428,7 @@ Specify the UI fields needed:
   - Real-time scatter plot updates during test execution
   - Each point represents one current setpoint
   - Ideal calibration line (Y = X) can be displayed for reference
-  - Final linear regression line can be displayed after test completion
+  - Note: Plot shows data points and ideal line; no regression line is calculated
 
 ## Validation Rules
 
@@ -385,6 +443,8 @@ Specify JSON schema requirements:
     "test_trigger_signal": {"type": "string"},
     "test_trigger_signal_value": {"type": "integer", "minimum": 0, "maximum": 255},
     "current_setpoint_signal": {"type": "string"},
+    "output_current_trim_signal": {"type": "string"},
+    "initial_trim_value": {"type": "number", "minimum": 0.0, "maximum": 200.0},
     "feedback_signal_source": {"type": "integer", "minimum": 0, "maximum": 536870911},
     "feedback_signal": {"type": "string"},
     "oscilloscope_channel": {"type": "string"},
@@ -401,6 +461,8 @@ Specify JSON schema requirements:
     "test_trigger_signal",
     "test_trigger_signal_value",
     "current_setpoint_signal",
+    "output_current_trim_signal",
+    "initial_trim_value",
     "feedback_signal_source",
     "feedback_signal",
     "oscilloscope_channel",
@@ -424,6 +486,8 @@ List validation checks to perform in `_validate_test()`:
 - [x] `test_trigger_signal` is present and non-empty
 - [x] `test_trigger_signal_value` is present and in range (0-255)
 - [x] `current_setpoint_signal` is present and non-empty
+- [x] `output_current_trim_signal` is present and non-empty
+- [x] `initial_trim_value` is present and in range (0.0000-200.0000)
 - [x] `feedback_signal_source` is present and in valid range (0-0x1FFFFFFF)
 - [x] `feedback_signal` is present and non-empty
 - [x] `oscilloscope_channel` is present and non-empty
@@ -451,6 +515,7 @@ List potential errors and how to handle them:
    - Handling: Return `False, "Field value out of range: {field_name} expected {range}, got {value}"`
    - Examples:
      - `test_trigger_signal_value` must be 0-255
+     - `initial_trim_value` must be 0.0000-200.0000
      - `maximum_test_current` must be >= `minimum_test_current`
      - `step_current` must be >= 0.1
 
@@ -480,11 +545,11 @@ List potential errors and how to handle them:
 
 8. **Insufficient Data Points**
    - Error: `"Insufficient data points for analysis"`
-   - Handling: Return `False, "Insufficient data points collected. Need at least 2 setpoints for linear regression."`
-
-9. **Linear Regression Failure**
-   - Error: `"Failed to calculate calibration parameters"`
-   - Handling: Return `False, "Failed to calculate calibration parameters: {error}. Check data quality."`
+   - Handling: Return `False, "Insufficient data points collected. Need at least 2 setpoints, got {count}. Check CAN connection and signal configuration."`
+  
+9. **No Valid Gain Error Calculations**
+   - Error: `"No valid gain error calculations"`
+   - Handling: Return `False, "No valid gain error calculations. Check data quality and ensure oscilloscope and CAN measurements are valid."`
 
 10. **DBC Service Not Available**
     - Error: `"DBC service not available"`
@@ -503,6 +568,8 @@ List potential errors and how to handle them:
     "test_trigger_signal": "Output_Current_Test_Enable",
     "test_trigger_signal_value": 1,
     "current_setpoint_signal": "Output_Current_Setpoint",
+    "output_current_trim_signal": "Output_Current_Trim",
+    "initial_trim_value": 100.0000,
     "feedback_signal_source": 513,
     "feedback_signal": "Output_Current_Measured",
     "oscilloscope_channel": "Channel 3",
@@ -528,6 +595,8 @@ List potential errors and how to handle them:
     "test_trigger_signal": "Output_Current_Test_Enable",
     "test_trigger_signal_value": 1,
     "current_setpoint_signal": "Output_Current_Setpoint",
+    "output_current_trim_signal": "Output_Current_Trim",
+    "initial_trim_value": 100.0000,
     "feedback_signal_source": 513,
     "feedback_signal": "Output_Current_Measured",
     "oscilloscope_channel": "Channel 3",
@@ -548,8 +617,8 @@ List potential errors and how to handle them:
 - **Requires oscilloscope integration**: Test must verify oscilloscope connection and configuration before execution
 - **Multi-step test pattern**: Test iterates through multiple current setpoints (similar to Analog Sweep Test)
 - **Real-time plotting**: Scatter plot must update after each setpoint completes
-- **Linear regression analysis**: Final analysis requires linear regression on collected data points
-- **Calibration parameter calculation**: Test calculates gain error and adjustment factor for sensor trim
+- **Point-by-point calculation**: Final analysis calculates gain error and correction for each data point, then averages them (same method as Phase Current Test)
+- **Calibration parameter calculation**: Test calculates average gain error and average gain correction (adjustment factor) for sensor trim
 - **DBC required**: Test requires DBC file to be loaded for proper CAN message encoding/decoding
 - **State management**: Test maintains state across multiple setpoints (oscilloscope setup, data collection, analysis)
 
@@ -558,7 +627,7 @@ List potential errors and how to handle them:
 - **can_service**: Required for sending CAN commands and receiving feedback
 - **dbc_service**: Required for encoding/decoding CAN messages (test requires DBC file)
 - **signal_service**: Required for reading CAN feedback signal during data collection
-- **numpy** (optional but recommended): For linear regression calculation (can use built-in methods if numpy unavailable)
+- **numpy** (optional): Not required for calculation (uses simple arithmetic operations)
 
 ### Similar Test Types
 - **Phase Current Test**: Similar oscilloscope integration pattern, multi-step current testing, real-time plotting
@@ -586,8 +655,8 @@ List potential errors and how to handle them:
   - DC Bus Sensing: Similar pattern of comparing oscilloscope measurements with CAN feedback, using PAVA? MEAN command, and scatter plot visualization
 - **Key Differences**: 
   - Output Current Calibration focuses on output current (not phase current)
-  - Uses linear regression for gain error calculation (not just simple difference)
-  - Calculates calibration parameters (gain error, adjustment factor) for sensor trim
+  - Uses same point-by-point calculation method as Phase Current Test (not linear regression)
+  - Calculates calibration parameters (average gain error, average gain correction/adjustment factor) for sensor trim
   - Iterates through current setpoints sent via CAN (not fixed Iq_ref values)
   - Uses different CAN signals (output current specific)
 
@@ -596,7 +665,7 @@ List potential errors and how to handle them:
 - **Multi-step iteration pattern**: Follow Phase Current Test or Analog Sweep Test pattern for iterating through setpoints
 - **CAN command + feedback pattern**: Send current setpoint via CAN, then read feedback signal
 - **Data collection pattern**: Follow DC Bus Sensing pattern for collecting CAN data and oscilloscope averages
-- **Linear regression pattern**: Use numpy.polyfit or scipy.stats.linregress for calculating slope and intercept
+- **Gain calculation pattern**: Use Phase Current Test pattern for point-by-point gain error and correction calculation, then average results
 - **Plot update pattern**: Update scatter plot after each setpoint (similar to Phase Current Test)
 - **State management**: Consider using state machine pattern (like Phase Current Test) if test becomes complex
 
@@ -623,7 +692,7 @@ List potential errors and how to handle them:
 - [ ] Non-blocking sleep used (no `time.sleep()`)
 - [ ] DBC mode supported (required - test requires DBC file)
 - [ ] Oscilloscope integration implemented correctly
-- [ ] Linear regression calculation implemented
+- [ ] Point-by-point gain error and correction calculation implemented (same as Phase Current Test)
 - [ ] Real-time plot updates during execution
 
 ### Testing Requirements
@@ -634,7 +703,7 @@ List potential errors and how to handle them:
 - [ ] Error cases handled gracefully (oscilloscope not connected, channel not found, no data collected)
 - [ ] Test with various current setpoint ranges and step sizes
 - [ ] Test with different tolerance values
-- [ ] Verify linear regression calculation accuracy
+- [ ] Verify gain error and correction calculation accuracy
 - [ ] Verify plot updates correctly during execution
 
 ---
@@ -668,6 +737,6 @@ Please implement this new test type following the documentation in:
 - Add appropriate logging
 - Follow existing code patterns and style
 - Verify oscilloscope connection before test execution
-- Implement linear regression for gain error calculation
+- Implement point-by-point gain error and correction calculation (same method as Phase Current Test)
 - Update scatter plot after each setpoint completes
 

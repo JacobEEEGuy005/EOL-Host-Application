@@ -2826,24 +2826,28 @@ class TestRunner:
                 # Output Current Calibration Test execution:
                 # 1) Verify oscilloscope setup (TDIV, TRA, probe attenuation)
                 # 2) Generate current setpoints array
-                # 3) Initialize plot
-                # 4) Send test trigger to DUT
-                # 5) For each setpoint:
+                # 3) Initialize trim value at DUT
+                # 4) Send initial current setpoint (first from array)
+                # 5) Trigger test at DUT
+                # 6) Collect data for first setpoint (wait, acquire, collect, analyze)
+                # 7) For each remaining setpoint (starting from second):
                 #    a. Send current setpoint
                 #    b. Wait pre-acquisition time
                 #    c. Start CAN logging and oscilloscope acquisition
                 #    d. Collect data during acquisition time
                 #    e. Stop data collection
                 #    f. Calculate averages and update plot
-                # 6) Disable test mode
-                # 7) Perform linear regression and calculate gain error
-                # 8) Determine pass/fail
+                # 8) Disable test mode
+                # 9) Calculate gain error and adjustment factor (point-by-point method, same as Phase Current Test)
+                # 10) Determine pass/fail
                 
                 # Extract parameters
                 test_trigger_source = act.get('test_trigger_source')
                 test_trigger_signal = act.get('test_trigger_signal')
                 test_trigger_signal_value = act.get('test_trigger_signal_value')
                 current_setpoint_signal = act.get('current_setpoint_signal')
+                output_current_trim_signal = act.get('output_current_trim_signal')
+                initial_trim_value = act.get('initial_trim_value')
                 feedback_msg_id = act.get('feedback_signal_source')
                 feedback_signal = act.get('feedback_signal')
                 osc_channel_name = act.get('oscilloscope_channel')
@@ -2857,11 +2861,19 @@ class TestRunner:
                 
                 # Validate parameters
                 if not all([test_trigger_source, test_trigger_signal, test_trigger_signal_value is not None,
-                           current_setpoint_signal, feedback_msg_id, feedback_signal, osc_channel_name, osc_timebase]):
+                           current_setpoint_signal, output_current_trim_signal, initial_trim_value is not None,
+                           feedback_msg_id, feedback_signal, osc_channel_name, osc_timebase]):
                     return False, "Missing required Output Current Calibration Test parameters"
                 
                 if not (0 <= test_trigger_signal_value <= 255):
                     return False, f"Test trigger signal value must be in range 0-255, got {test_trigger_signal_value}"
+                
+                try:
+                    initial_trim_float = float(initial_trim_value)
+                    if not (0.0 <= initial_trim_float <= 200.0):
+                        return False, f"Initial trim value must be in range 0.0000-200.0000%, got {initial_trim_float}"
+                except (ValueError, TypeError):
+                    return False, f"Initial trim value must be a number, got {initial_trim_value}"
                 
                 if min_current < 0 or max_current < 0:
                     return False, "Minimum and maximum test current must be non-negative"
@@ -3033,18 +3045,15 @@ class TestRunner:
                 osc_averages = []
                 setpoint_values = []
                 
-                # Step 3: Send test trigger to DUT
-                logger.info(f"Sending test trigger to DUT (signal={test_trigger_signal}, value={test_trigger_signal_value})...")
-                try:
-                    # Find message and encode
-                    trigger_msg = self.dbc_service.find_message_by_id(test_trigger_source)
-                    if trigger_msg is None:
-                        return False, f"Test trigger message (ID: 0x{test_trigger_source:X}) not found in DBC"
-                    
-                    # Build signal values dict - include required signals (DeviceID, MessageType) if they exist
+                # Find message for encoding (used in multiple steps)
+                trigger_msg = self.dbc_service.find_message_by_id(test_trigger_source)
+                if trigger_msg is None:
+                    return False, f"Test trigger message (ID: 0x{test_trigger_source:X}) not found in DBC"
+                
+                # Helper function to build signal values dict with required signals
+                def _build_signal_values_dict(signals_to_set):
+                    """Build signal values dict with DeviceID, MessageType, and specified signals."""
                     signal_values = {}
-                    
-                    # Get all signals from the message to check for required ones
                     all_signals = self.dbc_service.get_message_signals(trigger_msg)
                     signal_names = [sig.name for sig in all_signals]
                     
@@ -3052,30 +3061,80 @@ class TestRunner:
                     if 'DeviceID' in signal_names:
                         signal_values['DeviceID'] = 0
                     
-                    # Check if test_trigger_signal is multiplexed and get MessageType from multiplexer_ids
+                    # Determine MessageType from multiplexed signals
                     mux_value = None
-                    for sig in all_signals:
-                        if sig.name == test_trigger_signal and getattr(sig, 'multiplexer_ids', None):
-                            mux_value = sig.multiplexer_ids[0]
+                    for sig_name in signals_to_set.keys():
+                        for sig in all_signals:
+                            if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                mux_value = sig.multiplexer_ids[0]
+                                break
+                        if mux_value is not None:
                             break
                     
                     # Only set MessageType if signal is actually multiplexed
                     if mux_value is not None:
                         signal_values['MessageType'] = mux_value
-                        logger.info(f"Using MessageType={mux_value} from multiplexor for {test_trigger_signal}")
                     elif 'MessageType' in signal_names:
                         # If MessageType exists but signal is not multiplexed, use default 0
                         signal_values['MessageType'] = 0
                     
-                    # Add the signal we actually want to set (only test_trigger_signal for initial trigger)
-                    signal_values[test_trigger_signal] = test_trigger_signal_value
-                    # Note: current_setpoint_signal is sent separately in the setpoint loop, not in the initial trigger
-                    
+                    # Add the signals we want to set
+                    signal_values.update(signals_to_set)
+                    return signal_values
+                
+                # Step 3: Initialize trim value at DUT
+                logger.info(f"Initializing trim value at DUT (signal={output_current_trim_signal}, value={initial_trim_value}%)...")
+                try:
+                    signal_values = _build_signal_values_dict({output_current_trim_signal: float(initial_trim_value)})
                     frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
                     if AdapterFrame is not None:
                         frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
                     else:
-                        # Fallback if AdapterFrame not available
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    
+                    if not self.can_service.send_frame(frame):
+                        return False, "Failed to send trim value initialization message to DUT"
+                    
+                    logger.info("Trim value initialized successfully")
+                    _nb_sleep(0.2)  # Small delay
+                except Exception as e:
+                    return False, f"Failed to initialize trim value: {e}"
+                
+                # Step 4: Send initial current setpoint (first from array)
+                first_setpoint = current_setpoints[0]
+                logger.info(f"Sending initial current setpoint: {first_setpoint}A...")
+                try:
+                    signal_values = _build_signal_values_dict({current_setpoint_signal: first_setpoint})
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    
+                    if not self.can_service.send_frame(frame):
+                        return False, "Failed to send initial current setpoint message to DUT"
+                    
+                    logger.info("Initial current setpoint sent successfully")
+                    _nb_sleep(0.2)  # Small delay
+                except Exception as e:
+                    return False, f"Failed to send initial current setpoint: {e}"
+                
+                # Step 5: Trigger test at DUT
+                logger.info(f"Sending test trigger to DUT (signal={test_trigger_signal}, value={test_trigger_signal_value})...")
+                try:
+                    signal_values = _build_signal_values_dict({test_trigger_signal: test_trigger_signal_value})
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
                         class Frame:
                             def __init__(self, can_id, data):
                                 self.can_id = can_id
@@ -3086,53 +3145,101 @@ class TestRunner:
                         return False, "Failed to send test trigger message to DUT"
                     
                     logger.info("Test trigger sent successfully")
-                    _nb_sleep(0.5)  # Small delay for DUT to initialize
+                    _nb_sleep(0.2)  # Small delay for DUT to initialize
                 except Exception as e:
                     return False, f"Failed to send test trigger: {e}"
                 
-                # Step 4: Iterate through current setpoints
+                # Step 6: Collect data for first setpoint
                 test_name = test.get('name', '<unnamed>')
-                for setpoint_idx, setpoint in enumerate(current_setpoints):
+                logger.info(f"Collecting data for first setpoint: {first_setpoint}A")
+                
+                # 6a. Wait for pre-acquisition time
+                logger.info(f"Waiting {pre_acq_ms}ms for current to stabilize...")
+                _nb_sleep(pre_acq_ms / 1000.0)
+                
+                # 6b. Start data acquisition
+                logger.info(f"Starting data acquisition for {acq_ms}ms...")
+                can_feedback_values = []
+                collecting_can_data = True
+                
+                try:
+                    # Start oscilloscope acquisition
+                    self.oscilloscope_service.send_command("TRMD AUTO")
+                    time.sleep(0.2)
+                except Exception as e:
+                    logger.warning(f"Failed to start oscilloscope acquisition: {e}, continuing...")
+                
+                # 6c. Collect data during acquisition time
+                start_time = time.time()
+                end_time = start_time + (acq_ms / 1000.0)
+                
+                while time.time() < end_time and collecting_can_data:
+                    try:
+                        if self.signal_service is not None:
+                            ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                        elif self.gui is not None:
+                            ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        else:
+                            ts_fb, fb_val = (None, None)
+                        
+                        if fb_val is not None:
+                            try:
+                                fb_float = float(fb_val)
+                                can_feedback_values.append(fb_float)
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading CAN feedback signal: {e}")
+                    
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # 6d. Stop data acquisition
+                collecting_can_data = False
+                logger.info("Stopping data acquisition...")
+                try:
+                    self.oscilloscope_service.send_command("STOP")
+                    time.sleep(0.5)  # Wait for acquisition to stop
+                except Exception as e:
+                    logger.warning(f"Failed to stop oscilloscope acquisition: {e}")
+                
+                # 6e. Analyze data and update plot for first setpoint
+                if not can_feedback_values:
+                    logger.warning(f"No CAN data collected at first setpoint {first_setpoint}A, skipping...")
+                else:
+                    # Calculate CAN average
+                    can_avg = sum(can_feedback_values) / len(can_feedback_values)
+                    
+                    # Query oscilloscope average
+                    time.sleep(0.3)  # Additional delay before querying PAVA
+                    osc_avg = self.oscilloscope_service.query_pava_mean(channel_num)
+                    if osc_avg is None:
+                        logger.warning(f"Failed to obtain oscilloscope average at first setpoint {first_setpoint}A, skipping...")
+                    else:
+                        # Store data
+                        can_averages.append(can_avg)
+                        osc_averages.append(osc_avg)
+                        setpoint_values.append(first_setpoint)
+                        
+                        logger.info(f"First setpoint {first_setpoint}A: CAN avg={can_avg:.4f}A, Osc avg={osc_avg:.4f}A")
+                        
+                        # Update plot
+                        if self.plot_update_callback is not None:
+                            self.plot_update_callback(osc_avg, can_avg, test_name)
+                        
+                        if self.label_update_callback is not None:
+                            self.label_update_callback(f"Output Current Calibration: Setpoint 1/{len(current_setpoints)} ({first_setpoint}A) - CAN: {can_avg:.3f}A, Osc: {osc_avg:.3f}A")
+                
+                # Step 7: Iterate through remaining current setpoints (starting from second)
+                for setpoint_idx, setpoint in enumerate(current_setpoints[1:], start=1):
                     logger.info(f"Testing setpoint {setpoint_idx + 1}/{len(current_setpoints)}: {setpoint}A")
                     
-                    # 4a. Send current setpoint
+                    # 7a. Send current setpoint
                     try:
-                        # Build signal values dict - include required signals (DeviceID, MessageType) if they exist
-                        signal_values = {}
-                        
-                        # Get all signals from the message to check for required ones
-                        all_signals = self.dbc_service.get_message_signals(trigger_msg)
-                        signal_names = [sig.name for sig in all_signals]
-                        
-                        # Include DeviceID if it exists (default to 0)
-                        if 'DeviceID' in signal_names:
-                            signal_values['DeviceID'] = 0
-                        
-                        # Check if current_setpoint_signal is multiplexed and get MessageType from multiplexer_ids
-                        # If not, check if test_trigger_signal is multiplexed (use same MessageType as trigger)
-                        mux_value = None
-                        for sig in all_signals:
-                            if sig.name == current_setpoint_signal and getattr(sig, 'multiplexer_ids', None):
-                                mux_value = sig.multiplexer_ids[0]
-                                break
-                        
-                        # If current_setpoint_signal is not multiplexed, check test_trigger_signal
-                        if mux_value is None:
-                            for sig in all_signals:
-                                if sig.name == test_trigger_signal and getattr(sig, 'multiplexer_ids', None):
-                                    mux_value = sig.multiplexer_ids[0]
-                                    break
-                        
-                        # Only set MessageType if signal is actually multiplexed
-                        if mux_value is not None:
-                            signal_values['MessageType'] = mux_value
-                        elif 'MessageType' in signal_names:
-                            # If MessageType exists but signal is not multiplexed, use default 0
-                            signal_values['MessageType'] = 0
-                        
-                        # Add the signal we actually want to set
-                        signal_values[current_setpoint_signal] = setpoint
-                        
+                        signal_values = _build_signal_values_dict({current_setpoint_signal: setpoint})
                         frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
                         if AdapterFrame is not None:
                             frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
@@ -3153,11 +3260,11 @@ class TestRunner:
                         logger.warning(f"Failed to send current setpoint {setpoint}A: {e}, continuing...")
                         continue
                     
-                    # 4b. Wait for pre-acquisition time
+                    # 7b. Wait for pre-acquisition time
                     logger.info(f"Waiting {pre_acq_ms}ms for current to stabilize...")
                     _nb_sleep(pre_acq_ms / 1000.0)
                     
-                    # 4c. Start data acquisition
+                    # 7c. Start data acquisition
                     logger.info(f"Starting data acquisition for {acq_ms}ms...")
                     can_feedback_values = []
                     collecting_can_data = True
@@ -3169,7 +3276,7 @@ class TestRunner:
                     except Exception as e:
                         logger.warning(f"Failed to start oscilloscope acquisition: {e}, continuing...")
                     
-                    # 4d. Collect data during acquisition time
+                    # 7d. Collect data during acquisition time
                     start_time = time.time()
                     end_time = start_time + (acq_ms / 1000.0)
                     
@@ -3197,7 +3304,7 @@ class TestRunner:
                             pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
-                    # 4e. Stop data acquisition
+                    # 7e. Stop data acquisition
                     collecting_can_data = False
                     logger.info("Stopping data acquisition...")
                     try:
@@ -3206,7 +3313,7 @@ class TestRunner:
                     except Exception as e:
                         logger.warning(f"Failed to stop oscilloscope acquisition: {e}")
                     
-                    # 4f. Analyze data and update plot
+                    # 7f. Analyze data and update plot
                     if not can_feedback_values:
                         logger.warning(f"No CAN data collected at setpoint {setpoint}A, skipping...")
                         continue
@@ -3235,37 +3342,10 @@ class TestRunner:
                     if self.label_update_callback is not None:
                         self.label_update_callback(f"Output Current Calibration: Setpoint {setpoint_idx + 1}/{len(current_setpoints)} ({setpoint}A) - CAN: {can_avg:.3f}A, Osc: {osc_avg:.3f}A")
                 
-                # Step 5: Disable test mode
+                # Step 8: Disable test mode
                 logger.info("Disabling test mode at DUT...")
                 try:
-                    # Build signal values dict - include required signals (DeviceID, MessageType) if they exist
-                    signal_values = {}
-                    
-                    # Get all signals from the message to check for required ones
-                    all_signals = self.dbc_service.get_message_signals(trigger_msg)
-                    signal_names = [sig.name for sig in all_signals]
-                    
-                    # Include DeviceID if it exists (default to 0)
-                    if 'DeviceID' in signal_names:
-                        signal_values['DeviceID'] = 0
-                    
-                    # Check if test_trigger_signal is multiplexed and get MessageType from multiplexer_ids
-                    mux_value = None
-                    for sig in all_signals:
-                        if sig.name == test_trigger_signal and getattr(sig, 'multiplexer_ids', None):
-                            mux_value = sig.multiplexer_ids[0]
-                            break
-                    
-                    # Only set MessageType if signal is actually multiplexed
-                    if mux_value is not None:
-                        signal_values['MessageType'] = mux_value
-                    elif 'MessageType' in signal_names:
-                        # If MessageType exists but signal is not multiplexed, use default 0
-                        signal_values['MessageType'] = 0
-                    
-                    # Add the signal we actually want to set
-                    signal_values[test_trigger_signal] = 0  # Disable test mode
-                    
+                    signal_values = _build_signal_values_dict({test_trigger_signal: 0})  # Disable test mode
                     frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
                     if AdapterFrame is not None:
                         frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
@@ -3281,105 +3361,101 @@ class TestRunner:
                 except Exception as e:
                     logger.warning(f"Failed to disable test mode: {e}")
                 
-                # Step 6: Perform linear regression and calculate gain error
+                # Step 9: Calculate gain error and adjustment factor (same method as Phase Current Test)
                 if len(can_averages) < 2:
                     return False, f"Insufficient data points collected. Need at least 2 setpoints, got {len(can_averages)}. Check CAN connection and signal configuration."
                 
-                logger.info(f"Performing linear regression on {len(can_averages)} data points...")
+                logger.info(f"Calculating gain error and adjustment factor from {len(can_averages)} data points...")
                 
-                # Linear regression: Y = slope * X + intercept
-                # X = oscilloscope averages (reference)
-                # Y = CAN averages (DUT measurements)
-                try:
-                    # Try using numpy if available
-                    try:
-                        import numpy as np
-                        # Use numpy polyfit for linear regression (degree 1)
-                        coeffs = np.polyfit(osc_averages, can_averages, 1)
-                        slope = float(coeffs[0])
-                        intercept = float(coeffs[1])
-                    except ImportError:
-                        # Manual linear regression calculation
-                        n = len(osc_averages)
-                        sum_x = sum(osc_averages)
-                        sum_y = sum(can_averages)
-                        sum_xy = sum(osc_averages[i] * can_averages[i] for i in range(n))
-                        sum_x2 = sum(x * x for x in osc_averages)
-                        
-                        denominator = n * sum_x2 - sum_x * sum_x
-                        if abs(denominator) < 1e-10:
-                            return False, "Cannot perform linear regression: data points are collinear or insufficient variation"
-                        
-                        slope = (n * sum_xy - sum_x * sum_y) / denominator
-                        intercept = (sum_y - slope * sum_x) / n
-                    
-                    # Calculate gain error
-                    ideal_slope = 1.0
-                    gain_error = abs(slope - ideal_slope) * 100.0
-                    adjustment_factor = 1.0 / slope if abs(slope) > 1e-10 else None
-                    
-                    # Determine pass/fail
-                    passed = gain_error <= tolerance_percent
-                    
-                    # Build info string
-                    info = f"Linear Regression Results:\n"
-                    info += f"  Slope: {slope:.6f} (ideal: 1.0)\n"
-                    info += f"  Intercept: {intercept:.6f} A\n"
-                    info += f"  Gain Error: {gain_error:.4f}%\n"
-                    if adjustment_factor is not None:
-                        info += f"  Adjustment Factor: {adjustment_factor:.6f}\n"
-                    info += f"  Tolerance: {tolerance_percent:.4f}%\n"
-                    info += f"  Data Points: {len(can_averages)}\n"
-                    info += f"\nSetpoint Results:\n"
-                    for i, (sp, can_avg, osc_avg) in enumerate(zip(setpoint_values, can_averages, osc_averages)):
-                        info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A\n"
-                    
-                    if passed:
-                        info += f"\nPASS: Gain error {gain_error:.4f}% within tolerance {tolerance_percent:.4f}%"
+                # Calculate gain error and correction factor for each data point (same method as Phase Current Test)
+                gain_errors = []
+                gain_corrections = []
+                
+                for osc_avg, can_avg in zip(osc_averages, can_averages):
+                    # Calculate gain error and correction for this point
+                    if osc_avg is not None and can_avg is not None and abs(osc_avg) > 1e-10:
+                        gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+                        gain_errors.append(gain_error)
+                        if abs(can_avg) > 1e-10:
+                            gain_correction = osc_avg / can_avg
+                            gain_corrections.append(gain_correction)
+                        else:
+                            gain_corrections.append(float('nan'))
                     else:
-                        info += f"\nFAIL: Gain error {gain_error:.4f}% exceeds tolerance {tolerance_percent:.4f}%"
-                    
-                    # Store results for display
-                    result_data = {
-                        'slope': slope,
-                        'intercept': intercept,
-                        'gain_error': gain_error,
-                        'adjustment_factor': adjustment_factor,
-                        'tolerance_percent': tolerance_percent,
-                        'data_points': len(can_averages),
-                        'setpoint_values': setpoint_values,
-                        'can_averages': can_averages,
-                        'osc_averages': osc_averages,
-                        'oscilloscope_channel': osc_channel_name,
-                        'channel_number': channel_num
+                        gain_errors.append(float('nan'))
+                        gain_corrections.append(float('nan'))
+                
+                # Calculate average gain error and correction factor
+                valid_errors = [e for e in gain_errors if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                valid_corrections = [c for c in gain_corrections if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                
+                if not valid_errors:
+                    return False, "No valid gain error calculations. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                
+                avg_gain_error = abs(sum(valid_errors) / len(valid_errors))
+                avg_gain_correction = sum(valid_corrections) / len(valid_corrections) if valid_corrections else None
+                
+                # Determine pass/fail
+                passed = avg_gain_error <= tolerance_percent
+                
+                # Build info string
+                info = f"Gain Calibration Results:\n"
+                info += f"  Average Gain Error: {avg_gain_error:.4f}%\n"
+                if avg_gain_correction is not None:
+                    info += f"  Average Gain Correction: {avg_gain_correction:.6f}\n"
+                    info += f"  Adjustment Factor: {avg_gain_correction:.6f}\n"
+                info += f"  Tolerance: {tolerance_percent:.4f}%\n"
+                info += f"  Data Points: {len(can_averages)} (valid: {len(valid_errors)})\n"
+                info += f"\nSetpoint Results:\n"
+                for i, (sp, can_avg, osc_avg, gain_err, gain_corr) in enumerate(zip(setpoint_values, can_averages, osc_averages, gain_errors, gain_corrections)):
+                    gain_err_str = f"{gain_err:.4f}%" if not (isinstance(gain_err, float) and (gain_err != gain_err or abs(gain_err) == float('inf'))) else "N/A"
+                    gain_corr_str = f"{gain_corr:.6f}" if not (isinstance(gain_corr, float) and (gain_corr != gain_corr or abs(gain_corr) == float('inf'))) else "N/A"
+                    info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A, Error={gain_err_str}, Correction={gain_corr_str}\n"
+                
+                if passed:
+                    info += f"\nPASS: Average gain error {avg_gain_error:.4f}% within tolerance {tolerance_percent:.4f}%"
+                else:
+                    info += f"\nFAIL: Average gain error {avg_gain_error:.4f}% exceeds tolerance {tolerance_percent:.4f}%"
+                
+                # Store results for display
+                result_data = {
+                    'avg_gain_error': avg_gain_error,
+                    'avg_gain_correction': avg_gain_correction,
+                    'adjustment_factor': avg_gain_correction,  # Same as avg_gain_correction for consistency
+                    'tolerance_percent': tolerance_percent,
+                    'data_points': len(can_averages),
+                    'valid_data_points': len(valid_errors),
+                    'setpoint_values': setpoint_values,
+                    'can_averages': can_averages,
+                    'osc_averages': osc_averages,
+                    'gain_errors': gain_errors,
+                    'gain_corrections': gain_corrections,
+                    'oscilloscope_channel': osc_channel_name,
+                    'channel_number': channel_num
+                }
+                
+                # Store plot data for reports (osc_averages as X, can_averages as Y)
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_plot_data_temp'):
+                        self.gui._test_plot_data_temp = {}
+                    self.gui._test_plot_data_temp[test_name] = {
+                        'osc_averages': list(osc_averages),
+                        'can_averages': list(can_averages),
+                        'setpoint_values': list(setpoint_values),
+                        'gain_errors': gain_errors,
+                        'gain_corrections': gain_corrections,
+                        'avg_gain_error': avg_gain_error,
+                        'adjustment_factor': avg_gain_correction,
+                        'tolerance_percent': tolerance_percent
                     }
-                    
-                    # Store plot data for reports (osc_averages as X, can_averages as Y)
-                    if self.gui is not None:
-                        if not hasattr(self.gui, '_test_plot_data_temp'):
-                            self.gui._test_plot_data_temp = {}
-                        self.gui._test_plot_data_temp[test_name] = {
-                            'osc_averages': list(osc_averages),
-                            'can_averages': list(can_averages),
-                            'setpoint_values': list(setpoint_values),
-                            'slope': slope,
-                            'intercept': intercept,
-                            'gain_error': gain_error,
-                            'adjustment_factor': adjustment_factor,
-                            'tolerance_percent': tolerance_percent
-                        }
-                    
-                    if self.gui is not None:
-                        if not hasattr(self.gui, '_test_result_data_temp'):
-                            self.gui._test_result_data_temp = {}
-                        self.gui._test_result_data_temp[test_name] = result_data
-                    
-                    logger.info(f"Output Current Calibration Test completed: {'PASS' if passed else 'FAIL'}")
-                    return passed, info
-                    
-                except Exception as e:
-                    logger.error(f"Failed to calculate calibration parameters: {e}", exc_info=True)
-                    return False, f"Failed to calculate calibration parameters: {e}. Check data quality."
+                
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"Output Current Calibration Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             else:
                 pass
         except Exception as e:

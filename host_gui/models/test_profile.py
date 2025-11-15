@@ -99,6 +99,8 @@ class ActuationConfig:
         test_trigger_signal: Signal name for test trigger (enable/disable test mode)
         test_trigger_signal_value: Value to send for test trigger signal (typically 1 to enable, 0 to disable)
         current_setpoint_signal: Signal name for setting output current setpoint
+        output_current_trim_signal: Signal name for output current trim value (initialization)
+        initial_trim_value: Initial trim value in percent to initialize DUT before test (0.0000-200.0000)
         feedback_signal_source: CAN message ID for feedback signal (DUT current measurement)
         feedback_signal: Signal name for output current feedback from DUT
         oscilloscope_channel: Channel name from oscilloscope configuration for current measurement
@@ -210,6 +212,8 @@ class ActuationConfig:
     test_trigger_signal: Optional[str] = None  # Signal name for test trigger
     test_trigger_signal_value: Optional[int] = None  # Value to send for test trigger signal (0-255)
     current_setpoint_signal: Optional[str] = None  # Signal name for setting output current setpoint
+    output_current_trim_signal: Optional[str] = None  # Signal name for output current trim value (initialization)
+    initial_trim_value: Optional[float] = None  # Initial trim value in percent (0.0000-200.0000)
     # Note: feedback_signal_source and feedback_signal are already defined
     # Note: oscilloscope_channel is already defined
     oscilloscope_timebase: Optional[str] = None  # Oscilloscope timebase setting ("10MS", "20MS", "100MS", or "500MS")
@@ -392,6 +396,10 @@ class ActuationConfig:
                 result['test_trigger_signal_value'] = self.test_trigger_signal_value
             if self.current_setpoint_signal:
                 result['current_setpoint_signal'] = self.current_setpoint_signal
+            if self.output_current_trim_signal:
+                result['output_current_trim_signal'] = self.output_current_trim_signal
+            if self.initial_trim_value is not None:
+                result['initial_trim_value'] = self.initial_trim_value
             if self.feedback_signal_source is not None:
                 result['feedback_signal_source'] = self.feedback_signal_source
             if self.feedback_signal:

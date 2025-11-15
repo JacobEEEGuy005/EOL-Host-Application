@@ -15,10 +15,10 @@
         "feedback_signal": "ChargerIout",
         "oscilloscope_channel": "Output Current",
         "oscilloscope_timebase": "10MS",
-        "minimum_test_current": 10.0,
-        "maximum_test_current": 30.0,
+        "minimum_test_current": 5.0,
+        "maximum_test_current": 20.0,
         "step_current": 5.0,
-        "pre_acquisition_time_ms": 2000,
+        "pre_acquisition_time_ms": 3000,
         "acquisition_time_ms": 3500,
         "tolerance_percent": 1.0
       },
