@@ -3342,8 +3342,8 @@ class TestRunner:
                     if self.label_update_callback is not None:
                         self.label_update_callback(f"Output Current Calibration: Setpoint {setpoint_idx + 1}/{len(current_setpoints)} ({setpoint}A) - CAN: {can_avg:.3f}A, Osc: {osc_avg:.3f}A")
                 
-                # Step 8: Disable test mode
-                logger.info("Disabling test mode at DUT...")
+                # Step 8: Disable test mode (end of first sweep)
+                logger.info("Disabling test mode at DUT (end of first sweep)...")
                 try:
                     signal_values = _build_signal_values_dict({test_trigger_signal: 0})  # Disable test mode
                     frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
@@ -3361,93 +3361,483 @@ class TestRunner:
                 except Exception as e:
                     logger.warning(f"Failed to disable test mode: {e}")
                 
-                # Step 9: Calculate gain error and adjustment factor (same method as Phase Current Test)
+                # Step 9: First Sweep Post-Analysis - Calculate gain error and adjustment factor
                 if len(can_averages) < 2:
-                    return False, f"Insufficient data points collected. Need at least 2 setpoints, got {len(can_averages)}. Check CAN connection and signal configuration."
+                    return False, f"Insufficient data points collected in first sweep. Need at least 2 setpoints, got {len(can_averages)}. Check CAN connection and signal configuration."
                 
-                logger.info(f"Calculating gain error and adjustment factor from {len(can_averages)} data points...")
+                logger.info(f"First Sweep: Calculating gain error and adjustment factor from {len(can_averages)} data points...")
                 
                 # Calculate gain error and correction factor for each data point (same method as Phase Current Test)
-                gain_errors = []
-                gain_corrections = []
+                first_sweep_gain_errors = []
+                first_sweep_gain_corrections = []
                 
                 for osc_avg, can_avg in zip(osc_averages, can_averages):
                     # Calculate gain error and correction for this point
                     if osc_avg is not None and can_avg is not None and abs(osc_avg) > 1e-10:
                         gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
-                        gain_errors.append(gain_error)
+                        first_sweep_gain_errors.append(gain_error)
                         if abs(can_avg) > 1e-10:
                             gain_correction = osc_avg / can_avg
-                            gain_corrections.append(gain_correction)
+                            first_sweep_gain_corrections.append(gain_correction)
                         else:
-                            gain_corrections.append(float('nan'))
+                            first_sweep_gain_corrections.append(float('nan'))
                     else:
-                        gain_errors.append(float('nan'))
-                        gain_corrections.append(float('nan'))
+                        first_sweep_gain_errors.append(float('nan'))
+                        first_sweep_gain_corrections.append(float('nan'))
                 
-                # Calculate average gain error and correction factor
-                valid_errors = [e for e in gain_errors if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
-                valid_corrections = [c for c in gain_corrections if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                # Calculate average gain error and correction factor from first sweep
+                valid_first_errors = [e for e in first_sweep_gain_errors if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                valid_first_corrections = [c for c in first_sweep_gain_corrections if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
                 
-                if not valid_errors:
-                    return False, "No valid gain error calculations. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                if not valid_first_errors:
+                    return False, "No valid gain error calculations in first sweep. Check data quality and ensure oscilloscope and CAN measurements are valid."
                 
-                avg_gain_error = abs(sum(valid_errors) / len(valid_errors))
-                avg_gain_correction = sum(valid_corrections) / len(valid_corrections) if valid_corrections else None
+                first_sweep_avg_gain_error = abs(sum(valid_first_errors) / len(valid_first_errors))
+                first_sweep_gain_adjustment_factor = sum(valid_first_corrections) / len(valid_first_corrections) if valid_first_corrections else None
                 
-                # Determine pass/fail
-                passed = avg_gain_error <= tolerance_percent
+                if first_sweep_gain_adjustment_factor is None:
+                    return False, "No valid gain correction calculations in first sweep. Cannot calculate trim value."
                 
-                # Build info string
-                info = f"Gain Calibration Results:\n"
-                info += f"  Average Gain Error: {avg_gain_error:.4f}%\n"
-                if avg_gain_correction is not None:
-                    info += f"  Average Gain Correction: {avg_gain_correction:.6f}\n"
-                    info += f"  Adjustment Factor: {avg_gain_correction:.6f}\n"
-                info += f"  Tolerance: {tolerance_percent:.4f}%\n"
-                info += f"  Data Points: {len(can_averages)} (valid: {len(valid_errors)})\n"
-                info += f"\nSetpoint Results:\n"
-                for i, (sp, can_avg, osc_avg, gain_err, gain_corr) in enumerate(zip(setpoint_values, can_averages, osc_averages, gain_errors, gain_corrections)):
-                    gain_err_str = f"{gain_err:.4f}%" if not (isinstance(gain_err, float) and (gain_err != gain_err or abs(gain_err) == float('inf'))) else "N/A"
-                    gain_corr_str = f"{gain_corr:.6f}" if not (isinstance(gain_corr, float) and (gain_corr != gain_corr or abs(gain_corr) == float('inf'))) else "N/A"
-                    info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A, Error={gain_err_str}, Correction={gain_corr_str}\n"
+                # Calculate trim value for second sweep: calculated_trim_value = 100 * gain_adjustment_factor
+                calculated_trim_value = 100.0 * first_sweep_gain_adjustment_factor
                 
-                if passed:
-                    info += f"\nPASS: Average gain error {avg_gain_error:.4f}% within tolerance {tolerance_percent:.4f}%"
-                else:
-                    info += f"\nFAIL: Average gain error {avg_gain_error:.4f}% exceeds tolerance {tolerance_percent:.4f}%"
+                # Validate calculated trim value
+                if not (0.0 <= calculated_trim_value <= 200.0):
+                    return False, f"Calculated trim value ({calculated_trim_value:.4f}%) is out of valid range (0.0000-200.0000%). Check first sweep data quality."
                 
-                # Store results for display
-                result_data = {
-                    'avg_gain_error': avg_gain_error,
-                    'avg_gain_correction': avg_gain_correction,
-                    'adjustment_factor': avg_gain_correction,  # Same as avg_gain_correction for consistency
-                    'tolerance_percent': tolerance_percent,
-                    'data_points': len(can_averages),
-                    'valid_data_points': len(valid_errors),
-                    'setpoint_values': setpoint_values,
-                    'can_averages': can_averages,
-                    'osc_averages': osc_averages,
-                    'gain_errors': gain_errors,
-                    'gain_corrections': gain_corrections,
-                    'oscilloscope_channel': osc_channel_name,
-                    'channel_number': channel_num
-                }
+                logger.info(f"First Sweep Results: Avg Gain Error={first_sweep_avg_gain_error:.4f}%, Adjustment Factor={first_sweep_gain_adjustment_factor:.6f}, Calculated Trim Value={calculated_trim_value:.4f}%")
                 
-                # Store plot data for reports (osc_averages as X, can_averages as Y)
+                # Store first sweep plot data with label
+                first_sweep_plot_label = f"First Sweep (Trim Value: {initial_trim_value}%)"
                 if self.gui is not None:
                     if not hasattr(self.gui, '_test_plot_data_temp'):
                         self.gui._test_plot_data_temp = {}
-                    self.gui._test_plot_data_temp[test_name] = {
+                    if test_name not in self.gui._test_plot_data_temp:
+                        self.gui._test_plot_data_temp[test_name] = {}
+                    self.gui._test_plot_data_temp[test_name]['first_sweep'] = {
                         'osc_averages': list(osc_averages),
                         'can_averages': list(can_averages),
                         'setpoint_values': list(setpoint_values),
-                        'gain_errors': gain_errors,
-                        'gain_corrections': gain_corrections,
-                        'avg_gain_error': avg_gain_error,
-                        'adjustment_factor': avg_gain_correction,
-                        'tolerance_percent': tolerance_percent
+                        'gain_errors': first_sweep_gain_errors,
+                        'gain_corrections': first_sweep_gain_corrections,
+                        'avg_gain_error': first_sweep_avg_gain_error,
+                        'adjustment_factor': first_sweep_gain_adjustment_factor,
+                        'trim_value': initial_trim_value,
+                        'plot_label': first_sweep_plot_label
                     }
+                
+                # ========== SECOND SWEEP STARTS HERE ==========
+                logger.info(f"Starting Second Sweep with calculated trim value: {calculated_trim_value:.4f}%")
+                
+                # Clear plot before second sweep
+                if self.plot_clear_callback is not None:
+                    self.plot_clear_callback()
+                    logger.info("Plot cleared for second sweep")
+                
+                # Re-initialize plot for second sweep
+                if self.gui is not None and hasattr(self.gui, '_initialize_output_current_plot'):
+                    try:
+                        self.gui._initialize_output_current_plot(test_name)
+                    except Exception as e:
+                        logger.debug(f"Failed to initialize Output Current Calibration plot for second sweep: {e}")
+                
+                if self.label_update_callback is not None:
+                    self.label_update_callback(f"Output Current Calibration: Starting Second Sweep (Trim: {calculated_trim_value:.4f}%)...")
+                
+                # Initialize data storage for second sweep
+                second_can_averages = []
+                second_osc_averages = []
+                second_setpoint_values = []
+                
+                # Step 10: Initialize Second Sweep with Calculated Trim Value
+                logger.info(f"Second Sweep: Initializing trim value at DUT (signal={output_current_trim_signal}, value={calculated_trim_value}%)...")
+                try:
+                    signal_values = _build_signal_values_dict({output_current_trim_signal: float(calculated_trim_value)})
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    
+                    if not self.can_service.send_frame(frame):
+                        return False, "Failed to send calculated trim value initialization message to DUT for second sweep"
+                    
+                    logger.info("Second Sweep: Trim value initialized successfully")
+                    _nb_sleep(0.2)  # Small delay
+                except Exception as e:
+                    return False, f"Failed to initialize calculated trim value for second sweep: {e}"
+                
+                # Step 11: Send Initial Current Setpoint for Second Sweep
+                first_setpoint = current_setpoints[0]
+                logger.info(f"Second Sweep: Sending initial current setpoint: {first_setpoint}A...")
+                try:
+                    signal_values = _build_signal_values_dict({current_setpoint_signal: first_setpoint})
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    
+                    if not self.can_service.send_frame(frame):
+                        return False, "Failed to send initial current setpoint message to DUT for second sweep"
+                    
+                    logger.info("Second Sweep: Initial current setpoint sent successfully")
+                    _nb_sleep(0.2)  # Small delay
+                except Exception as e:
+                    return False, f"Failed to send initial current setpoint for second sweep: {e}"
+                
+                # Step 12: Trigger Test at DUT for Second Sweep
+                logger.info(f"Second Sweep: Sending test trigger to DUT (signal={test_trigger_signal}, value={test_trigger_signal_value})...")
+                try:
+                    signal_values = _build_signal_values_dict({test_trigger_signal: test_trigger_signal_value})
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    
+                    if not self.can_service.send_frame(frame):
+                        return False, "Failed to send test trigger message to DUT for second sweep"
+                    
+                    logger.info("Second Sweep: Test trigger sent successfully")
+                    _nb_sleep(0.2)  # Small delay for DUT to initialize
+                except Exception as e:
+                    return False, f"Failed to send test trigger for second sweep: {e}"
+                
+                # Step 13: Collect Data for First Setpoint (Second Sweep)
+                logger.info(f"Second Sweep: Collecting data for first setpoint: {first_setpoint}A")
+                
+                # 13a. Wait for pre-acquisition time
+                logger.info(f"Second Sweep: Waiting {pre_acq_ms}ms for current to stabilize...")
+                _nb_sleep(pre_acq_ms / 1000.0)
+                
+                # 13b. Start data acquisition
+                logger.info(f"Second Sweep: Starting data acquisition for {acq_ms}ms...")
+                can_feedback_values = []
+                collecting_can_data = True
+                
+                try:
+                    # Start oscilloscope acquisition
+                    self.oscilloscope_service.send_command("TRMD AUTO")
+                    time.sleep(0.2)
+                except Exception as e:
+                    logger.warning(f"Failed to start oscilloscope acquisition: {e}, continuing...")
+                
+                # 13c. Collect data during acquisition time
+                start_time = time.time()
+                end_time = start_time + (acq_ms / 1000.0)
+                
+                while time.time() < end_time and collecting_can_data:
+                    try:
+                        if self.signal_service is not None:
+                            ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                        elif self.gui is not None:
+                            ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                        else:
+                            ts_fb, fb_val = (None, None)
+                        
+                        if fb_val is not None:
+                            try:
+                                fb_float = float(fb_val)
+                                can_feedback_values.append(fb_float)
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error reading CAN feedback signal: {e}")
+                    
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # 13d. Stop data acquisition
+                collecting_can_data = False
+                logger.info("Second Sweep: Stopping data acquisition...")
+                try:
+                    self.oscilloscope_service.send_command("STOP")
+                    time.sleep(0.5)  # Wait for acquisition to stop
+                except Exception as e:
+                    logger.warning(f"Failed to stop oscilloscope acquisition: {e}")
+                
+                # 13e. Analyze data and update plot for first setpoint (second sweep)
+                if not can_feedback_values:
+                    logger.warning(f"Second Sweep: No CAN data collected at first setpoint {first_setpoint}A, skipping...")
+                else:
+                    # Calculate CAN average
+                    can_avg = sum(can_feedback_values) / len(can_feedback_values)
+                    
+                    # Query oscilloscope average
+                    time.sleep(0.3)  # Additional delay before querying PAVA
+                    osc_avg = self.oscilloscope_service.query_pava_mean(channel_num)
+                    if osc_avg is None:
+                        logger.warning(f"Second Sweep: Failed to obtain oscilloscope average at first setpoint {first_setpoint}A, skipping...")
+                    else:
+                        # Store data
+                        second_can_averages.append(can_avg)
+                        second_osc_averages.append(osc_avg)
+                        second_setpoint_values.append(first_setpoint)
+                        
+                        logger.info(f"Second Sweep - First setpoint {first_setpoint}A: CAN avg={can_avg:.4f}A, Osc avg={osc_avg:.4f}A")
+                        
+                        # Update plot
+                        if self.plot_update_callback is not None:
+                            self.plot_update_callback(osc_avg, can_avg, test_name)
+                        
+                        if self.label_update_callback is not None:
+                            self.label_update_callback(f"Output Current Calibration (Second Sweep): Setpoint 1/{len(current_setpoints)} ({first_setpoint}A) - CAN: {can_avg:.3f}A, Osc: {osc_avg:.3f}A")
+                
+                # Step 14: For each remaining current setpoint in the array (second sweep, starting from the second setpoint)
+                for setpoint_idx, setpoint in enumerate(current_setpoints[1:], start=1):
+                    logger.info(f"Second Sweep: Testing setpoint {setpoint_idx + 1}/{len(current_setpoints)}: {setpoint}A")
+                    
+                    # 14a. Send current setpoint
+                    try:
+                        signal_values = _build_signal_values_dict({current_setpoint_signal: setpoint})
+                        frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                        if AdapterFrame is not None:
+                            frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                        else:
+                            # Fallback if AdapterFrame not available
+                            class Frame:
+                                def __init__(self, can_id, data):
+                                    self.can_id = can_id
+                                    self.data = data
+                            frame = Frame(can_id=test_trigger_source, data=frame_data)
+                        
+                        if not self.can_service.send_frame(frame):
+                            logger.warning(f"Second Sweep: Failed to send current setpoint {setpoint}A, continuing...")
+                            continue
+                        
+                        logger.info(f"Second Sweep: Sent current setpoint: {setpoint}A")
+                    except Exception as e:
+                        logger.warning(f"Second Sweep: Failed to send current setpoint {setpoint}A: {e}, continuing...")
+                        continue
+                    
+                    # 14b. Wait for pre-acquisition time
+                    logger.info(f"Second Sweep: Waiting {pre_acq_ms}ms for current to stabilize...")
+                    _nb_sleep(pre_acq_ms / 1000.0)
+                    
+                    # 14c. Start data acquisition
+                    logger.info(f"Second Sweep: Starting data acquisition for {acq_ms}ms...")
+                    can_feedback_values = []
+                    collecting_can_data = True
+                    
+                    try:
+                        # Start oscilloscope acquisition
+                        self.oscilloscope_service.send_command("TRMD AUTO")
+                        time.sleep(0.2)
+                    except Exception as e:
+                        logger.warning(f"Failed to start oscilloscope acquisition: {e}, continuing...")
+                    
+                    # 14d. Collect data during acquisition time
+                    start_time = time.time()
+                    end_time = start_time + (acq_ms / 1000.0)
+                    
+                    while time.time() < end_time and collecting_can_data:
+                        try:
+                            if self.signal_service is not None:
+                                ts_fb, fb_val = self.signal_service.get_latest_signal(feedback_msg_id, feedback_signal)
+                            elif self.gui is not None:
+                                ts_fb, fb_val = self.gui.get_latest_signal(feedback_msg_id, feedback_signal)
+                            else:
+                                ts_fb, fb_val = (None, None)
+                            
+                            if fb_val is not None:
+                                try:
+                                    fb_float = float(fb_val)
+                                    can_feedback_values.append(fb_float)
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading CAN feedback signal: {e}")
+                        
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                    
+                    # 14e. Stop data acquisition
+                    collecting_can_data = False
+                    logger.info("Second Sweep: Stopping data acquisition...")
+                    try:
+                        self.oscilloscope_service.send_command("STOP")
+                        time.sleep(0.5)  # Wait for acquisition to stop
+                    except Exception as e:
+                        logger.warning(f"Failed to stop oscilloscope acquisition: {e}")
+                    
+                    # 14f. Analyze data and update plot
+                    if not can_feedback_values:
+                        logger.warning(f"Second Sweep: No CAN data collected at setpoint {setpoint}A, skipping...")
+                        continue
+                    
+                    # Calculate CAN average
+                    can_avg = sum(can_feedback_values) / len(can_feedback_values)
+                    
+                    # Query oscilloscope average
+                    time.sleep(0.3)  # Additional delay before querying PAVA
+                    osc_avg = self.oscilloscope_service.query_pava_mean(channel_num)
+                    if osc_avg is None:
+                        logger.warning(f"Second Sweep: Failed to obtain oscilloscope average at setpoint {setpoint}A, skipping...")
+                        continue
+                    
+                    # Store data
+                    second_can_averages.append(can_avg)
+                    second_osc_averages.append(osc_avg)
+                    second_setpoint_values.append(setpoint)
+                    
+                    logger.info(f"Second Sweep - Setpoint {setpoint}A: CAN avg={can_avg:.4f}A, Osc avg={osc_avg:.4f}A")
+                    
+                    # Update plot
+                    if self.plot_update_callback is not None:
+                        self.plot_update_callback(osc_avg, can_avg, test_name)
+                    
+                    if self.label_update_callback is not None:
+                        self.label_update_callback(f"Output Current Calibration (Second Sweep): Setpoint {setpoint_idx + 1}/{len(current_setpoints)} ({setpoint}A) - CAN: {can_avg:.3f}A, Osc: {osc_avg:.3f}A")
+                
+                # Step 15: Disable test mode (end of second sweep)
+                logger.info("Disabling test mode at DUT (end of second sweep)...")
+                try:
+                    signal_values = _build_signal_values_dict({test_trigger_signal: 0})  # Disable test mode
+                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                    if AdapterFrame is not None:
+                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                    else:
+                        # Fallback if AdapterFrame not available
+                        class Frame:
+                            def __init__(self, can_id, data):
+                                self.can_id = can_id
+                                self.data = data
+                        frame = Frame(can_id=test_trigger_source, data=frame_data)
+                    self.can_service.send_frame(frame)
+                    logger.info("Test mode disabled")
+                except Exception as e:
+                    logger.warning(f"Failed to disable test mode: {e}")
+                
+                # Step 16: Second Sweep Post-Test Analysis - Calculate gain error (pass/fail based on this)
+                if len(second_can_averages) < 2:
+                    return False, f"Insufficient data points collected in second sweep. Need at least 2 setpoints, got {len(second_can_averages)}. Check CAN connection and signal configuration."
+                
+                logger.info(f"Second Sweep: Calculating gain error from {len(second_can_averages)} data points...")
+                
+                # Calculate gain error for each data point from second sweep
+                second_sweep_gain_errors = []
+                
+                for osc_avg, can_avg in zip(second_osc_averages, second_can_averages):
+                    # Calculate gain error for this point
+                    if osc_avg is not None and can_avg is not None and abs(osc_avg) > 1e-10:
+                        gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+                        second_sweep_gain_errors.append(gain_error)
+                    else:
+                        second_sweep_gain_errors.append(float('nan'))
+                
+                # Calculate average gain error from second sweep
+                valid_second_errors = [e for e in second_sweep_gain_errors if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                
+                if not valid_second_errors:
+                    return False, "No valid gain error calculations in second sweep. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                
+                second_sweep_avg_gain_error = abs(sum(valid_second_errors) / len(valid_second_errors))
+                
+                logger.info(f"Second Sweep Results: Avg Gain Error={second_sweep_avg_gain_error:.4f}%")
+                
+                # Store second sweep plot data with label
+                second_sweep_plot_label = f"Second Sweep (Trim Value: {calculated_trim_value:.4f}%)"
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_plot_data_temp'):
+                        self.gui._test_plot_data_temp = {}
+                    if test_name not in self.gui._test_plot_data_temp:
+                        self.gui._test_plot_data_temp[test_name] = {}
+                    self.gui._test_plot_data_temp[test_name]['second_sweep'] = {
+                        'osc_averages': list(second_osc_averages),
+                        'can_averages': list(second_can_averages),
+                        'setpoint_values': list(second_setpoint_values),
+                        'gain_errors': second_sweep_gain_errors,
+                        'avg_gain_error': second_sweep_avg_gain_error,
+                        'trim_value': calculated_trim_value,
+                        'plot_label': second_sweep_plot_label
+                    }
+                    # Also store calculated_trim_value and tolerance_percent at top level for easy access
+                    self.gui._test_plot_data_temp[test_name]['calculated_trim_value'] = calculated_trim_value
+                    self.gui._test_plot_data_temp[test_name]['tolerance_percent'] = tolerance_percent
+                
+                # Determine pass/fail based on second sweep gain error only
+                passed = second_sweep_avg_gain_error <= tolerance_percent
+                
+                # Build info string with both sweeps' results
+                info = f"Output Current Calibration Results:\n\n"
+                info += f"First Sweep (Trim Value: {initial_trim_value}%):\n"
+                info += f"  Average Gain Error: {first_sweep_avg_gain_error:.4f}%\n"
+                info += f"  Average Gain Adjustment Factor: {first_sweep_gain_adjustment_factor:.6f}\n"
+                info += f"  Data Points: {len(can_averages)} (valid: {len(valid_first_errors)})\n"
+                info += f"\nCalculated Trim Value: {calculated_trim_value:.4f}%\n\n"
+                info += f"Second Sweep (Trim Value: {calculated_trim_value:.4f}%):\n"
+                info += f"  Average Gain Error: {second_sweep_avg_gain_error:.4f}%\n"
+                info += f"  Data Points: {len(second_can_averages)} (valid: {len(valid_second_errors)})\n"
+                info += f"\nTolerance: {tolerance_percent:.4f}%\n"
+                info += f"\nFirst Sweep Setpoint Results:\n"
+                for i, (sp, can_avg, osc_avg, gain_err, gain_corr) in enumerate(zip(setpoint_values, can_averages, osc_averages, first_sweep_gain_errors, first_sweep_gain_corrections)):
+                    gain_err_str = f"{gain_err:.4f}%" if not (isinstance(gain_err, float) and (gain_err != gain_err or abs(gain_err) == float('inf'))) else "N/A"
+                    gain_corr_str = f"{gain_corr:.6f}" if not (isinstance(gain_corr, float) and (gain_corr != gain_corr or abs(gain_corr) == float('inf'))) else "N/A"
+                    info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A, Error={gain_err_str}, Correction={gain_corr_str}\n"
+                info += f"\nSecond Sweep Setpoint Results:\n"
+                for i, (sp, can_avg, osc_avg, gain_err) in enumerate(zip(second_setpoint_values, second_can_averages, second_osc_averages, second_sweep_gain_errors)):
+                    gain_err_str = f"{gain_err:.4f}%" if not (isinstance(gain_err, float) and (gain_err != gain_err or abs(gain_err) == float('inf'))) else "N/A"
+                    info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A, Error={gain_err_str}\n"
+                
+                if passed:
+                    info += f"\nPASS: Second sweep average gain error {second_sweep_avg_gain_error:.4f}% within tolerance {tolerance_percent:.4f}%"
+                else:
+                    info += f"\nFAIL: Second sweep average gain error {second_sweep_avg_gain_error:.4f}% exceeds tolerance {tolerance_percent:.4f}%"
+                
+                # Store results for display (includes both sweeps)
+                result_data = {
+                    # First sweep results
+                    'first_sweep_avg_gain_error': first_sweep_avg_gain_error,
+                    'first_sweep_gain_adjustment_factor': first_sweep_gain_adjustment_factor,
+                    'first_sweep_data_points': len(can_averages),
+                    'first_sweep_valid_data_points': len(valid_first_errors),
+                    'first_sweep_setpoint_values': setpoint_values,
+                    'first_sweep_can_averages': can_averages,
+                    'first_sweep_osc_averages': osc_averages,
+                    'first_sweep_gain_errors': first_sweep_gain_errors,
+                    'first_sweep_gain_corrections': first_sweep_gain_corrections,
+                    'initial_trim_value': initial_trim_value,
+                    # Calculated trim value
+                    'calculated_trim_value': calculated_trim_value,
+                    # Second sweep results
+                    'second_sweep_avg_gain_error': second_sweep_avg_gain_error,
+                    'second_sweep_data_points': len(second_can_averages),
+                    'second_sweep_valid_data_points': len(valid_second_errors),
+                    'second_sweep_setpoint_values': second_setpoint_values,
+                    'second_sweep_can_averages': second_can_averages,
+                    'second_sweep_osc_averages': second_osc_averages,
+                    'second_sweep_gain_errors': second_sweep_gain_errors,
+                    # Overall results
+                    'tolerance_percent': tolerance_percent,
+                    'oscilloscope_channel': osc_channel_name,
+                    'channel_number': channel_num,
+                    # Legacy fields for backward compatibility (use second sweep values)
+                    'avg_gain_error': second_sweep_avg_gain_error,
+                    'adjustment_factor': first_sweep_gain_adjustment_factor,
+                    'data_points': len(second_can_averages),
+                    'valid_data_points': len(valid_second_errors)
+                }
+                
+                # Plot data is already stored above in _test_plot_data_temp with 'first_sweep' and 'second_sweep' keys
                 
                 if self.gui is not None:
                     if not hasattr(self.gui, '_test_result_data_temp'):

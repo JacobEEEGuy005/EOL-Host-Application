@@ -13,6 +13,9 @@
   2. Oscilloscope measurement (reference measurement)
   
   How it works:
+  - The test performs two sweeps to calibrate the output current sensor:
+  
+  First Sweep (Initial Calibration):
   - The test starts by verifying oscilloscope settings (timebase, channel enable, probe attenuation)
   - The output current trim value is initialized in the DUT using the initial_trim_value
   - The first current setpoint (from the test setpoints array) is sent to the DUT
@@ -23,9 +26,25 @@
     * Start CAN data logging and oscilloscope acquisition
     * Collect data for the specified acquisition time
     * Stop data collection and calculate averages from both sources
-    * Update live scatter plot (DUT measurement vs Oscilloscope measurement)
+    * Update live scatter plot (DUT measurement vs Oscilloscope measurement) for first sweep
   - After all setpoints are tested, calculate gain error and correction factor for each data point, then average them (same method as Phase Current Test)
-  - Test passes if average gain error is within specified tolerance
+  - Calculate the Gain Adjustment Factor (average gain correction) from the first sweep
+  - Convert Gain Adjustment Factor to trim value: calculated_trim_value = 100 * gain_adjustment_factor
+  
+  Second Sweep (Verification):
+  - Disable test mode at DUT
+  - Initialize DUT with the calculated trim value (calculated_trim_value)
+  - Send the first current setpoint again
+  - Re-enable test mode at DUT
+  - Repeat the same sweep pattern through all current setpoints
+  - For each setpoint, collect data and update a second scatter plot (DUT measurement vs Oscilloscope measurement) for second sweep
+  - After all setpoints are tested in second sweep, calculate gain error for each data point, then average them
+  - Test passes if average gain error from the second sweep is within specified tolerance
+  
+  Results Display:
+  - Both plots (first sweep and second sweep) are displayed in Test Detail window and in the report
+  - Each plot is labeled with the trim value used (initial_trim_value for first sweep, calculated_trim_value for second sweep)
+  - Test report includes: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error, and both plots
   
   Hardware Requirements:
   - Device Under Test (DUT)
@@ -103,52 +122,52 @@ Describe the step-by-step execution flow:
    - Duration: As fast as possible (typically < 1 second)
    - Expected result: Oscilloscope is configured correctly with proper timebase, channel enabled, and probe attenuation verified
 
-2. Prepare Test Current Setpoints Array
+2. Prepare Test Current Setpoints Array (First Sweep)
    - Action: 
      - Generate array of current setpoints from minimum_test_current to maximum_test_current 
        with step_current increments (e.g., [5.0, 10.0, 15.0, 20.0] A)
-     - Clear plot window and initialize scatter plot
+     - Clear plot window and initialize first scatter plot
      - Set X-axis label: "Oscilloscope Measurement (A)"
      - Set Y-axis label: "DUT Measurement (A)"
-     - Initialize lists for storing CAN averages and oscilloscope averages
+     - Initialize lists for storing CAN averages and oscilloscope averages for first sweep
    - Duration: As fast as possible
-   - Expected result: Array of current setpoints ready, plot initialized with correct labels
+   - Expected result: Array of current setpoints ready, first plot initialized with correct labels
 
-3. Initialize Trim Value at DUT
+3. Initialize Trim Value at DUT (First Sweep)
     - Action: 
      - Encode and send CAN message with output_current_trim_signal = initial_trim_value (in percent, range: 0.0000-200.0000%)
-       to initialize the output current trim value in the DUT before enabling test mode
-     - This sets the initial calibration trim value that will be used during the test
+       to initialize the output current trim value in the DUT before enabling test mode for first sweep
+     - This sets the initial calibration trim value that will be used during the first sweep
    - Duration: As fast as possible
-   - Expected result: Trim value initialization command sent successfully, DUT trim value initialized
+   - Expected result: Trim value initialization command sent successfully, DUT trim value initialized for first sweep
 
-4. Send Initial Current Setpoint
+4. Send Initial Current Setpoint (First Sweep)
     - Action: 
      - Encode and send CAN message with current_setpoint_signal = first value from Test Current Setpoints Array
-       to set the initial output current setpoint before enabling test mode
+       to set the initial output current setpoint before enabling test mode for first sweep
      - This ensures the DUT starts at the first test setpoint value (e.g., minimum_test_current)
    - Duration: As fast as possible
-   - Expected result: Initial current setpoint command sent successfully, DUT configured with first setpoint
+   - Expected result: Initial current setpoint command sent successfully, DUT configured with first setpoint for first sweep
 
-5. Trigger Test at DUT
+5. Trigger Test at DUT (First Sweep)
     - Action: 
      - Encode and send CAN message with test_trigger_signal = test_trigger_signal_value (typically 1)
-       to enable output current test mode at DUT
+       to enable output current test mode at DUT for first sweep
      - DUT will use the previously set trim value and initial current setpoint
    - Duration: As fast as possible
-   - Expected result: Test trigger command sent successfully, DUT enters test mode
+   - Expected result: Test trigger command sent successfully, DUT enters test mode for first sweep
 
-6. Collect Data for First Setpoint
+6. Collect Data for First Setpoint (First Sweep)
    - Action: 
      - Wait for pre_acquisition_time_ms to allow current to stabilize at the first setpoint
      - Start CAN data logging and oscilloscope acquisition
      - Collect data during acquisition_time_ms
      - Stop data collection and calculate averages
-     - Update scatter plot with first data point
+     - Update first scatter plot with first data point
    - Duration: pre_acquisition_time_ms + acquisition_time_ms + analysis time
-   - Expected result: Data collected for first setpoint, plot updated with first data point
+   - Expected result: Data collected for first setpoint in first sweep, first plot updated with first data point
 
-7. For each remaining current setpoint in the array (starting from the second setpoint, since first was already sent):
+7. For each remaining current setpoint in the array (first sweep, starting from the second setpoint, since first was already sent):
    a. Send Current Setpoint
       - Action: Encode and send CAN message with current_setpoint_signal = setpoint value (in Amperes)
     - Duration: As fast as possible
@@ -187,32 +206,126 @@ Describe the step-by-step execution flow:
         - Calculate average from collected CAN feedback values
         - Query oscilloscope for average value using "C{ch_num}:PAVA? MEAN" command
         - Store both averages in lists for final analysis
-        - Update scatter plot with point (oscilloscope_avg, can_avg)
+        - Update first scatter plot with point (oscilloscope_avg, can_avg)
     - Duration: As fast as possible
-      - Expected result: Averages calculated and stored, plot updated with new data point
+      - Expected result: Averages calculated and stored, first plot updated with new data point
 
-8. Post-Test Analysis
+8. First Sweep Post-Analysis
     - Action: 
      - Send test trigger signal with value 0 to disable test mode at DUT
      - Calculate gain error and correction factor for each data point (same method as Phase Current Test)
      - For each (oscilloscope_avg, can_avg) pair:
        * Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
        * Calculate gain correction: gain_correction = osc_avg / can_avg
-     - Calculate average gain error from all valid data points
-     - Calculate average gain correction factor (adjustment factor) from all valid data points
-     - Determine pass/fail: pass if average_gain_error <= tolerance_percent
+     - Calculate average gain error from all valid data points (first_sweep_avg_gain_error)
+     - Calculate average gain correction factor (adjustment factor) from all valid data points (first_sweep_gain_adjustment_factor)
+     - Calculate trim value: calculated_trim_value = 100 * first_sweep_gain_adjustment_factor
+     - Store first sweep plot data with label indicating initial_trim_value
    - Duration: As fast as possible
-   - Expected result: Test mode disabled, calibration parameters calculated, pass/fail determined
+   - Expected result: Test mode disabled, first sweep calibration parameters calculated, trim value calculated
+
+9. Initialize Second Sweep with Calculated Trim Value
+    - Action: 
+     - Encode and send CAN message with output_current_trim_signal = calculated_trim_value (in percent, range: 0.0000-200.0000%)
+       to initialize the output current trim value in the DUT for the second sweep
+     - **Clear plot window** (remove all data points from first sweep plot) before initializing second scatter plot
+     - Initialize second scatter plot (fresh plot for second sweep)
+     - Set X-axis label: "Oscilloscope Measurement (A)"
+     - Set Y-axis label: "DUT Measurement (A)"
+     - Initialize lists for storing CAN averages and oscilloscope averages for second sweep
+   - Duration: As fast as possible
+   - Expected result: Calculated trim value sent successfully, plot cleared, second plot initialized
+
+10. Send Initial Current Setpoint for Second Sweep
+    - Action: 
+     - Encode and send CAN message with current_setpoint_signal = first value from Test Current Setpoints Array
+       to set the initial output current setpoint before enabling test mode for second sweep
+   - Duration: As fast as possible
+   - Expected result: Initial current setpoint command sent successfully for second sweep
+
+11. Trigger Test at DUT for Second Sweep
+    - Action: 
+     - Encode and send CAN message with test_trigger_signal = test_trigger_signal_value (typically 1)
+       to enable output current test mode at DUT for second sweep
+     - DUT will use the calculated trim value and initial current setpoint
+   - Duration: As fast as possible
+   - Expected result: Test trigger command sent successfully, DUT enters test mode for second sweep
+
+12. Collect Data for First Setpoint (Second Sweep)
+   - Action: 
+     - Wait for pre_acquisition_time_ms to allow current to stabilize at the first setpoint
+     - Start CAN data logging and oscilloscope acquisition
+     - Collect data during acquisition_time_ms
+     - Stop data collection and calculate averages
+     - Update second scatter plot with first data point
+   - Duration: pre_acquisition_time_ms + acquisition_time_ms + analysis time
+   - Expected result: Data collected for first setpoint in second sweep, second plot updated with first data point
+
+13. For each remaining current setpoint in the array (second sweep, starting from the second setpoint):
+   a. Send Current Setpoint
+      - Action: Encode and send CAN message with current_setpoint_signal = setpoint value (in Amperes)
+    - Duration: As fast as possible
+      - Expected result: Current setpoint command sent successfully
+   
+   b. Wait for Pre-Acquisition Time
+      - Action: Wait for pre_acquisition_time_ms to allow current to stabilize at new setpoint
+      - Duration: pre_acquisition_time_ms milliseconds
+      - Expected result: Current has stabilized at setpoint value
+   
+   c. Start Data Acquisition
+      - Action: 
+        - Start logging CAN feedback signal (feedback_signal from feedback_signal_source)
+        - Send "TRMD AUTO" command to oscilloscope to start acquisition
+        - Initialize data collection lists for this setpoint
+    - Duration: As fast as possible
+      - Expected result: CAN logging started, oscilloscope acquisition started
+   
+   d. Collect Data During Acquisition Time
+      - Action: 
+        - Continuously read feedback_signal from CAN during acquisition_time_ms
+        - Store all CAN readings in list
+        - Oscilloscope continues acquiring data
+      - Duration: acquisition_time_ms milliseconds
+      - Expected result: Multiple CAN samples collected, oscilloscope data acquired
+   
+   e. Stop Data Acquisition
+      - Action: 
+        - Stop logging CAN feedback signal
+        - Send "STOP" command to oscilloscope to stop acquisition
+    - Duration: As fast as possible
+      - Expected result: CAN logging stopped, oscilloscope acquisition stopped
+   
+   f. Analyze Data and Update Plot
+      - Action: 
+        - Calculate average from collected CAN feedback values
+        - Query oscilloscope for average value using "C{ch_num}:PAVA? MEAN" command
+        - Store both averages in lists for final analysis
+        - Update second scatter plot with point (oscilloscope_avg, can_avg)
+    - Duration: As fast as possible
+      - Expected result: Averages calculated and stored, second plot updated with new data point
+
+14. Second Sweep Post-Test Analysis
+    - Action: 
+     - Send test trigger signal with value 0 to disable test mode at DUT
+     - Calculate gain error for each data point from second sweep (same method as Phase Current Test)
+     - For each (oscilloscope_avg, can_avg) pair:
+       * Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+     - Calculate average gain error from all valid data points (second_sweep_avg_gain_error)
+     - Store second sweep plot data with label indicating calculated_trim_value
+     - Determine pass/fail: pass if second_sweep_avg_gain_error <= tolerance_percent
+   - Duration: As fast as possible
+   - Expected result: Test mode disabled, second sweep gain error calculated, pass/fail determined based on second sweep
 ```
 
 ### Pass/Fail Criteria
 Define how the test determines pass or fail:
 
-- **Pass Condition**: `Average gain error percentage is within tolerance_percent (avg_gain_error <= tolerance_percent)`
-- **Fail Condition**: `Average gain error percentage exceeds tolerance_percent (avg_gain_error > tolerance_percent)`
+- **Pass Condition**: `Average gain error percentage from second sweep is within tolerance_percent (second_sweep_avg_gain_error <= tolerance_percent)`
+- **Fail Condition**: `Average gain error percentage from second sweep exceeds tolerance_percent (second_sweep_avg_gain_error > tolerance_percent)`
 - **Calculation Method**: 
   ```
-  1. Collect data points: For each current setpoint, collect:
+  First Sweep Analysis:
+  1. Collect data points: For each current setpoint in first sweep, collect:
      - CAN average: average of all CAN feedback_signal readings during acquisition_time_ms
      - Oscilloscope average: result from "C{ch_num}:PAVA? MEAN" command
   
@@ -225,18 +338,38 @@ Define how the test determines pass or fail:
          - Store gain_error and gain_correction in lists
        * Otherwise, store NaN for invalid points
   
-  3. Calculate average gain error and correction factor:
+  3. Calculate average gain error and correction factor from first sweep:
      - Filter out invalid values (NaN, infinity) from gain_errors and gain_corrections
-     - Calculate average gain error: avg_gain_error = |average(valid_gain_errors)|
-     - Calculate average gain correction: avg_gain_correction = average(valid_gain_corrections)
-     - Use avg_gain_correction as the adjustment_factor
+     - Calculate average gain error: first_sweep_avg_gain_error = |average(valid_gain_errors)|
+     - Calculate average gain correction: first_sweep_gain_adjustment_factor = average(valid_gain_corrections)
   
-  4. Determine pass/fail:
-     - PASS if avg_gain_error <= tolerance_percent
-     - FAIL if avg_gain_error > tolerance_percent
+  4. Calculate trim value for second sweep:
+     - calculated_trim_value = 100 * first_sweep_gain_adjustment_factor
+  
+  Second Sweep Analysis:
+  5. Collect data points: For each current setpoint in second sweep, collect:
+     - CAN average: average of all CAN feedback_signal readings during acquisition_time_ms
+     - Oscilloscope average: result from "C{ch_num}:PAVA? MEAN" command
+  
+  6. Calculate gain error for each data point from second sweep:
+     - For each (oscilloscope_avg, can_avg) pair:
+       * If oscilloscope_avg is valid (not None and |osc_avg| > threshold):
+         - Calculate gain error: gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+         - Store gain_error in list
+       * Otherwise, store NaN for invalid points
+  
+  7. Calculate average gain error from second sweep:
+     - Filter out invalid values (NaN, infinity) from gain_errors
+     - Calculate average gain error: second_sweep_avg_gain_error = |average(valid_gain_errors)|
+  
+  8. Determine pass/fail (based on second sweep only):
+     - PASS if second_sweep_avg_gain_error <= tolerance_percent
+     - FAIL if second_sweep_avg_gain_error > tolerance_percent
   
   Note: This method matches the Phase Current Test approach, calculating point-by-point
-  corrections and averaging them, rather than using linear regression.
+  corrections and averaging them, rather than using linear regression. The pass/fail
+  determination is based solely on the second sweep gain error after applying the
+  calculated trim value.
   ```
 
 ### Data Collection
@@ -246,7 +379,7 @@ Specify what data needs to be collected:
   - `feedback_signal` from CAN (DUT current measurement)
   - Oscilloscope channel average (reference current measurement)
   
-- **Collection Duration**: `acquisition_time_ms` milliseconds per setpoint
+- **Collection Duration**: `acquisition_time_ms` milliseconds per setpoint (applies to both sweeps)
   
 - **Sampling Rate**: 
   - CAN data: Logged continuously during acquisition_time_ms (typically every 50-100ms via signal_service)
@@ -254,8 +387,9 @@ Specify what data needs to be collected:
   
 - **Data Processing**: 
   ```
+  First Sweep Data Processing:
   1. CAN Data:
-     - Collect all feedback_signal readings during acquisition_time_ms
+     - Collect all feedback_signal readings during acquisition_time_ms for each setpoint
      - Calculate arithmetic mean (average) of all collected values
      - Store average for this setpoint
   
@@ -266,35 +400,70 @@ Specify what data needs to be collected:
      - Query average using "C{ch_num}:PAVA? MEAN" command
      - Parse and store average value for this setpoint
   
-  3. Final Analysis:
+  3. First Sweep Analysis:
      - Calculate gain error and correction factor for each (oscilloscope_avg, can_avg) pair
      - Average all valid gain errors and gain corrections
-     - Use average gain error for pass/fail determination
-     - Use average gain correction as adjustment factor
+     - Store first_sweep_avg_gain_error and first_sweep_gain_adjustment_factor
+     - Calculate trim value: calculated_trim_value = 100 * first_sweep_gain_adjustment_factor
+     - Store first sweep plot data with label indicating initial_trim_value
+  
+  Second Sweep Data Processing:
+  4. CAN Data (Second Sweep):
+     - Collect all feedback_signal readings during acquisition_time_ms for each setpoint
+     - Calculate arithmetic mean (average) of all collected values
+     - Store average for this setpoint
+  
+  5. Oscilloscope Data (Second Sweep):
+     - Start acquisition with "TRMD AUTO"
+     - Let oscilloscope acquire data for acquisition_time_ms
+     - Stop acquisition with "STOP"
+     - Query average using "C{ch_num}:PAVA? MEAN" command
+     - Parse and store average value for this setpoint
+  
+  6. Second Sweep Analysis:
+     - Calculate gain error for each (oscilloscope_avg, can_avg) pair
+     - Average all valid gain errors
+     - Store second_sweep_avg_gain_error
+     - Store second sweep plot data with label indicating calculated_trim_value
+     - Use second_sweep_avg_gain_error for pass/fail determination
   ```
 
 ### Timing Requirements
 Specify any timing requirements:
 
-- **Pre-Acquisition Time**: `pre_acquisition_time_ms` (default: 1000ms) - Wait time after setting current setpoint before starting data collection
-- **Acquisition Time**: `acquisition_time_ms` (default: 3000ms) - Time to collect data from both CAN and oscilloscope per setpoint
+- **Pre-Acquisition Time**: `pre_acquisition_time_ms` (default: 1000ms) - Wait time after setting current setpoint before starting data collection (applies to both sweeps)
+- **Acquisition Time**: `acquisition_time_ms` (default: 3000ms) - Time to collect data from both CAN and oscilloscope per setpoint (applies to both sweeps)
 - **Post-Acquisition Time**: Not required - Analysis happens immediately after data collection
 - **Total Duration**: 
   ```
-  Estimated total test duration:
+  Estimated total test duration (includes both sweeps):
   = oscilloscope_setup_time (≈1s)
-  + trim_initialization_time (≈0.1s)
-  + first_setpoint_send_time (≈0.1s)
-  + trigger_time (≈0.1s)
-  + first_setpoint_data_collection (pre_acquisition_time_ms + acquisition_time_ms + analysis_time)
-  + ((number_of_setpoints - 1) × (setpoint_send_time + pre_acquisition_time_ms + acquisition_time_ms + analysis_time))
-  + post_test_analysis_time (≈0.5s)
+  + first_sweep_trim_initialization_time (≈0.1s)
+  + first_sweep_first_setpoint_send_time (≈0.1s)
+  + first_sweep_trigger_time (≈0.1s)
+  + first_sweep_first_setpoint_data_collection (pre_acquisition_time_ms + acquisition_time_ms + analysis_time)
+  + first_sweep_remaining_setpoints (number_of_setpoints - 1) × (setpoint_send_time + pre_acquisition_time_ms + acquisition_time_ms + analysis_time)
+  + first_sweep_post_analysis_time (≈0.5s)
+  + second_sweep_trim_initialization_time (≈0.1s)
+  + second_sweep_first_setpoint_send_time (≈0.1s)
+  + second_sweep_trigger_time (≈0.1s)
+  + second_sweep_first_setpoint_data_collection (pre_acquisition_time_ms + acquisition_time_ms + analysis_time)
+  + second_sweep_remaining_setpoints (number_of_setpoints - 1) × (setpoint_send_time + pre_acquisition_time_ms + acquisition_time_ms + analysis_time)
+  + second_sweep_post_analysis_time (≈0.5s)
   
   Example with 4 setpoints (5A, 10A, 15A, 20A), 1000ms pre-acq, 3000ms acq:
+  First Sweep:
   ≈ 1s + 0.1s + 0.1s + 0.1s + (1s + 3s + 0.2s) + 3 × (0.1s + 1s + 3s + 0.2s) + 0.5s
   ≈ 1.3s + 4.2s + 3 × 4.3s + 0.5s
   ≈ 1.3s + 4.2s + 12.9s + 0.5s
   ≈ 18.9 seconds
+  
+  Second Sweep:
+  ≈ 0.1s + 0.1s + 0.1s + (1s + 3s + 0.2s) + 3 × (0.1s + 1s + 3s + 0.2s) + 0.5s
+  ≈ 0.3s + 4.2s + 12.9s + 0.5s
+  ≈ 17.9 seconds
+  
+  Total: ≈ 18.9s + 17.9s ≈ 36.8 seconds
   ```
 
 ## GUI Requirements
@@ -419,16 +588,31 @@ Specify the UI fields needed:
 - **Custom Feedback Fields**: `Yes` - Uses feedback_signal_source and feedback_signal for DUT current measurement
 
 ### Plot Requirements
-- **Needs Plot**: `Yes`
-- **Plot Type**: `Scatter plot (X-Y plot)`
+- **Needs Plot**: `Yes` - Two plots required (one for each sweep)
+- **Plot Type**: `Scatter plot (X-Y plot)` - Two separate scatter plots
 - **X-Axis**: `Oscilloscope Measurement (A)` - Reference measurement from oscilloscope
 - **Y-Axis**: `DUT Measurement (A)` - DUT measurement from CAN feedback signal
 - **Update Frequency**: `After each setpoint completes (after calculating averages from CAN and oscilloscope)`
 - **Plot Features**: 
-  - Real-time scatter plot updates during test execution
-  - Each point represents one current setpoint
-  - Ideal calibration line (Y = X) can be displayed for reference
-  - Note: Plot shows data points and ideal line; no regression line is calculated
+  - **First Sweep Plot**:
+    - Real-time scatter plot updates during first sweep execution
+    - Each point represents one current setpoint from first sweep
+    - Plot title/label should indicate: "First Sweep (Trim Value: {initial_trim_value}%)"
+    - Ideal calibration line (Y = X) can be displayed for reference
+    - Plot shows data points and ideal line; no regression line is calculated
+  
+  - **Second Sweep Plot**:
+    - **Plot must be cleared before second sweep starts** (clear plot window after first sweep completes)
+    - Real-time scatter plot updates during second sweep execution
+    - Each point represents one current setpoint from second sweep
+    - Plot title/label should indicate: "Second Sweep (Trim Value: {calculated_trim_value}%)"
+    - Ideal calibration line (Y = X) can be displayed for reference
+    - Plot shows data points and ideal line; no regression line is calculated
+  
+  - **Display Requirements**:
+    - Both plots must be displayed in the Test Detail window during and after test execution
+    - Both plots must be included in the test report
+    - Each plot must be clearly labeled with the trim value used for that sweep
 
 ## Validation Rules
 
@@ -547,11 +731,31 @@ List potential errors and how to handle them:
    - Error: `"Insufficient data points for analysis"`
    - Handling: Return `False, "Insufficient data points collected. Need at least 2 setpoints, got {count}. Check CAN connection and signal configuration."`
   
-9. **No Valid Gain Error Calculations**
-   - Error: `"No valid gain error calculations"`
-   - Handling: Return `False, "No valid gain error calculations. Check data quality and ensure oscilloscope and CAN measurements are valid."`
+9. **No Valid Gain Error Calculations (First Sweep)**
+   - Error: `"No valid gain error calculations in first sweep"`
+   - Handling: Return `False, "No valid gain error calculations in first sweep. Check data quality and ensure oscilloscope and CAN measurements are valid."`
 
-10. **DBC Service Not Available**
+10. **Invalid Calculated Trim Value**
+    - Error: `"Calculated trim value out of range"`
+    - Handling: Return `False, "Calculated trim value ({calculated_trim_value}%) is out of valid range (0.0000-200.0000%). Check first sweep data quality."`
+
+11. **No CAN Data Collected (Second Sweep)**
+    - Error: `"No CAN data collected at setpoint {setpoint} in second sweep"`
+    - Handling: Return `False, "No CAN data collected at setpoint {setpoint}A in second sweep. Check CAN connection and signal configuration."`
+
+12. **Oscilloscope Data Acquisition Failure (Second Sweep)**
+    - Error: `"Failed to acquire oscilloscope data in second sweep"`
+    - Handling: Return `False, "Failed to acquire oscilloscope data at setpoint {setpoint}A in second sweep: {error}"`
+
+13. **Insufficient Data Points (Second Sweep)**
+    - Error: `"Insufficient data points for analysis in second sweep"`
+    - Handling: Return `False, "Insufficient data points collected in second sweep. Need at least 2 setpoints, got {count}. Check CAN connection and signal configuration."`
+  
+14. **No Valid Gain Error Calculations (Second Sweep)**
+    - Error: `"No valid gain error calculations in second sweep"`
+    - Handling: Return `False, "No valid gain error calculations in second sweep. Check data quality and ensure oscilloscope and CAN measurements are valid."`
+
+15. **DBC Service Not Available**
     - Error: `"DBC service not available"`
     - Handling: Return `False, "Output Current Calibration requires DBC file to be loaded"`
 
@@ -615,12 +819,19 @@ List potential errors and how to handle them:
 
 ### Special Considerations
 - **Requires oscilloscope integration**: Test must verify oscilloscope connection and configuration before execution
-- **Multi-step test pattern**: Test iterates through multiple current setpoints (similar to Analog Sweep Test)
-- **Real-time plotting**: Scatter plot must update after each setpoint completes
+- **Two-sweep calibration pattern**: Test performs two complete sweeps - first sweep calculates trim value, second sweep verifies calibration
+- **Multi-step test pattern**: Each sweep iterates through multiple current setpoints (similar to Analog Sweep Test)
+- **Real-time plotting**: Two scatter plots must update after each setpoint completes (one for each sweep)
 - **Point-by-point calculation**: Final analysis calculates gain error and correction for each data point, then averages them (same method as Phase Current Test)
-- **Calibration parameter calculation**: Test calculates average gain error and average gain correction (adjustment factor) for sensor trim
+- **Calibration parameter calculation**: 
+  - First sweep: Calculates average gain error and average gain correction (adjustment factor) for sensor trim
+  - Converts adjustment factor to trim value: calculated_trim_value = 100 * gain_adjustment_factor
+  - Second sweep: Calculates average gain error using calculated trim value
+- **Pass/fail based on second sweep**: Test pass/fail determination uses only the second sweep gain error
+- **Dual plot display**: Both plots (first sweep and second sweep) must be displayed in Test Detail window and included in test report, each labeled with its trim value
+- **Test results reporting**: Report must include first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error, and both plots
 - **DBC required**: Test requires DBC file to be loaded for proper CAN message encoding/decoding
-- **State management**: Test maintains state across multiple setpoints (oscilloscope setup, data collection, analysis)
+- **State management**: Test maintains state across multiple setpoints and two sweeps (oscilloscope setup, data collection, analysis, plot management)
 
 ### Dependencies
 - **oscilloscope_service**: Required for oscilloscope communication (TDIV, TRA, TRMD, STOP, PAVA commands)
@@ -642,9 +853,15 @@ List potential errors and how to handle them:
 - Test with various current setpoint ranges and step sizes
 - Test with different tolerance values
 - Test error cases (oscilloscope not connected, channel not found, no data collected)
+- Test error cases for second sweep (invalid calculated trim value, no data in second sweep)
 - Test with different oscilloscope timebase settings
-- Verify linear regression calculation accuracy
-- Verify plot updates correctly during execution
+- Verify gain error and correction calculation accuracy for both sweeps
+- Verify trim value calculation (calculated_trim_value = 100 * gain_adjustment_factor)
+- Verify both plots update correctly during execution (first sweep and second sweep)
+- Verify both plots are displayed in Test Detail window with correct labels
+- Verify both plots are included in test report with correct labels
+- Verify test results include: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error
+- Verify pass/fail determination uses only second sweep gain error
 
 ## Reference Implementation
 
@@ -687,24 +904,36 @@ List potential errors and how to handle them:
 ### Technical Requirements
 - [ ] All files updated according to documentation
 - [ ] Code follows existing patterns and style
-- [ ] Error handling implemented
+- [ ] Error handling implemented (including second sweep error cases)
 - [ ] Logging added for debugging
 - [ ] Non-blocking sleep used (no `time.sleep()`)
 - [ ] DBC mode supported (required - test requires DBC file)
 - [ ] Oscilloscope integration implemented correctly
 - [ ] Point-by-point gain error and correction calculation implemented (same as Phase Current Test)
-- [ ] Real-time plot updates during execution
+- [ ] Two-sweep execution pattern implemented correctly
+- [ ] Trim value calculation implemented: calculated_trim_value = 100 * gain_adjustment_factor
+- [ ] Real-time plot updates during execution (both sweeps)
+- [ ] Dual plot display implemented (first sweep and second sweep plots)
+- [ ] Plot labels include trim values (initial_trim_value for first sweep, calculated_trim_value for second sweep)
+- [ ] Test results include: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error
+- [ ] Pass/fail determination uses only second sweep gain error
 
 ### Testing Requirements
 - [ ] Test with valid configuration
 - [ ] Test with invalid configuration (should fail validation)
 - [ ] Test with DBC loaded (required)
-- [ ] Test execution produces correct results
+- [ ] Test execution produces correct results (both sweeps complete)
 - [ ] Error cases handled gracefully (oscilloscope not connected, channel not found, no data collected)
+- [ ] Error cases for second sweep handled gracefully (invalid calculated trim value, no data in second sweep)
 - [ ] Test with various current setpoint ranges and step sizes
 - [ ] Test with different tolerance values
-- [ ] Verify gain error and correction calculation accuracy
-- [ ] Verify plot updates correctly during execution
+- [ ] Verify gain error and correction calculation accuracy for both sweeps
+- [ ] Verify trim value calculation accuracy
+- [ ] Verify both plots update correctly during execution (first sweep and second sweep)
+- [ ] Verify both plots are displayed in Test Detail window with correct labels
+- [ ] Verify both plots are included in test report with correct labels
+- [ ] Verify test results include all required values (first sweep gain error, adjustment factor, calculated trim value, second sweep gain error)
+- [ ] Verify pass/fail determination uses only second sweep gain error
 
 ---
 
@@ -737,6 +966,12 @@ Please implement this new test type following the documentation in:
 - Add appropriate logging
 - Follow existing code patterns and style
 - Verify oscilloscope connection before test execution
+- Implement two-sweep execution pattern:
+  - First sweep: Use initial_trim_value, calculate gain adjustment factor, convert to trim value (calculated_trim_value = 100 * gain_adjustment_factor)
+  - Second sweep: Use calculated_trim_value, calculate gain error for pass/fail determination
 - Implement point-by-point gain error and correction calculation (same method as Phase Current Test)
-- Update scatter plot after each setpoint completes
+- Update scatter plots after each setpoint completes (both first sweep and second sweep plots)
+- Display both plots in Test Detail window and include in test report, each labeled with its trim value
+- Test results must include: first sweep gain error, first sweep adjustment factor, calculated trim value, second sweep gain error
+- Pass/fail determination uses only second sweep gain error
 

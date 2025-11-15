@@ -1575,16 +1575,27 @@ class BaseGUI(QtWidgets.QMainWindow):
                 }
             elif test_type == 'Output Current Calibration':
                 # Store plot data for Output Current Calibration tests
-                exec_data['plot_data'] = {
-                    'osc_averages': list(plot_data.get('osc_averages', [])),
-                    'can_averages': list(plot_data.get('can_averages', [])),
-                    'setpoint_values': list(plot_data.get('setpoint_values', [])),
-                    'slope': plot_data.get('slope'),
-                    'intercept': plot_data.get('intercept'),
-                    'gain_error': plot_data.get('gain_error'),
-                    'adjustment_factor': plot_data.get('adjustment_factor'),
-                    'tolerance_percent': plot_data.get('tolerance_percent')
-                }
+                # Check if we have dual sweep data (new format) or single plot data (old format)
+                if 'first_sweep' in plot_data and 'second_sweep' in plot_data:
+                    # New format: Dual sweep data
+                    exec_data['plot_data'] = {
+                        'first_sweep': plot_data.get('first_sweep', {}),
+                        'second_sweep': plot_data.get('second_sweep', {}),
+                        'calculated_trim_value': plot_data.get('calculated_trim_value'),
+                        'tolerance_percent': plot_data.get('tolerance_percent')
+                    }
+                else:
+                    # Old format: Single plot (backward compatibility)
+                    exec_data['plot_data'] = {
+                        'osc_averages': list(plot_data.get('osc_averages', [])),
+                        'can_averages': list(plot_data.get('can_averages', [])),
+                        'setpoint_values': list(plot_data.get('setpoint_values', [])),
+                        'slope': plot_data.get('slope'),
+                        'intercept': plot_data.get('intercept'),
+                        'gain_error': plot_data.get('gain_error'),
+                        'adjustment_factor': plot_data.get('adjustment_factor'),
+                        'tolerance_percent': plot_data.get('tolerance_percent')
+                    }
             elif test_type == 'Analog Static Test':
                 # Store plot data and statistics for analog_static tests
                 if plot_data:
@@ -1977,109 +1988,223 @@ Data Points Used: {data_points}"""
         # Plot section for Output Current Calibration tests
         is_output_current_calibration = test_config and test_config.get('type') == 'Output Current Calibration'
         if is_output_current_calibration and plot_data and matplotlib_available:
-            plot_osc_averages = plot_data.get('osc_averages', [])
-            plot_can_averages = plot_data.get('can_averages', [])
+            # Check if we have dual sweep data (new format) or single plot data (old format)
+            first_sweep_data = plot_data.get('first_sweep')
+            second_sweep_data = plot_data.get('second_sweep')
             
-            if plot_osc_averages and plot_can_averages:
-                plot_label = QtWidgets.QLabel(f'<b>Output Current Calibration: DUT vs Oscilloscope Comparison:</b>')
+            if first_sweep_data and second_sweep_data:
+                # New format: Dual sweep plots
+                plot_label = QtWidgets.QLabel(f'<b>Output Current Calibration: Dual Sweep Results</b>')
                 layout.addWidget(plot_label)
                 
                 try:
-                    # Create a new figure for the dialog
-                    plot_figure = Figure(figsize=(8, 6))
-                    plot_canvas = FigureCanvasQTAgg(plot_figure)
-                    plot_axes = plot_figure.add_subplot(111)
+                    # Helper function to create a plot
+                    def create_plot(plot_data_dict, plot_title):
+                        plot_figure = Figure(figsize=(8, 6))
+                        plot_canvas = FigureCanvasQTAgg(plot_figure)
+                        plot_axes = plot_figure.add_subplot(111)
+                        
+                        plot_osc_averages = plot_data_dict.get('osc_averages', [])
+                        plot_can_averages = plot_data_dict.get('can_averages', [])
+                        
+                        if plot_osc_averages and plot_can_averages:
+                            # Filter out NaN values and ensure matching lengths
+                            osc_clean = []
+                            can_clean = []
+                            min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                            for i in range(min_len):
+                                osc_val = plot_osc_averages[i]
+                                can_val = plot_can_averages[i]
+                                # Check if both are valid (not NaN)
+                                if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                    not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                    not (isinstance(can_val, float) and can_val != can_val)):
+                                    osc_clean.append(osc_val)
+                                    can_clean.append(can_val)
+                            
+                            if osc_clean and can_clean:
+                                # Plot data points
+                                plot_axes.plot(osc_clean, can_clean, 'bo', markersize=8, label='Data Points')
+                                
+                                # Add diagonal reference line (y=x) for ideal line
+                                plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                
+                                plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                                plot_axes.set_ylabel('DUT Measurement (A)')
+                                plot_axes.set_title(plot_title)
+                                plot_axes.grid(True, alpha=0.3)
+                                plot_axes.legend()
+                                
+                                # Auto-scale axes to fit all data
+                                plot_axes.relim()
+                                plot_axes.autoscale()
+                                
+                                # Tight layout
+                                plot_figure.tight_layout()
+                        
+                        return plot_canvas
                     
-                    # Filter out NaN values and ensure matching lengths
-                    osc_clean = []
-                    can_clean = []
-                    min_len = min(len(plot_osc_averages), len(plot_can_averages))
-                    for i in range(min_len):
-                        osc_val = plot_osc_averages[i]
-                        can_val = plot_can_averages[i]
-                        # Check if both are valid (not NaN)
-                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
-                            not (isinstance(osc_val, float) and osc_val != osc_val) and
-                            not (isinstance(can_val, float) and can_val != can_val)):
-                            osc_clean.append(osc_val)
-                            can_clean.append(can_val)
+                    # Create first sweep plot
+                    first_plot_label = QtWidgets.QLabel(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>')
+                    layout.addWidget(first_plot_label)
+                    first_plot_canvas = create_plot(first_sweep_data, first_sweep_data.get("plot_label", "First Sweep"))
+                    layout.addWidget(first_plot_canvas)
                     
-                    if osc_clean and can_clean:
-                        # Plot data points
-                        plot_axes.plot(osc_clean, can_clean, 'bo', markersize=8, label='Data Points')
-                        
-                        # Add diagonal reference line (y=x) for ideal line
-                        plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-                        
-                        # Add regression line if available
-                        slope = plot_data.get('slope')
-                        intercept = plot_data.get('intercept')
-                        if slope is not None and intercept is not None:
-                            # Calculate regression line points
-                            x_min = min(osc_clean)
-                            x_max = max(osc_clean)
-                            x_reg = [x_min, x_max]
-                            y_reg = [slope * x + intercept for x in x_reg]
-                            plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
-                        
-                        plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-                        plot_axes.set_ylabel('DUT Measurement (A)')
-                        plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
-                        plot_axes.grid(True, alpha=0.3)
-                        plot_axes.legend()
-                        
-                        # Auto-scale axes to fit all data
-                        plot_axes.relim()
-                        plot_axes.autoscale()
-                        
-                        # Tight layout
-                        plot_figure.tight_layout()
-                        
-                        # Add canvas to layout
-                        layout.addWidget(plot_canvas)
-                        
-                        # Display gain error and adjustment factor
-                        # Support both old format (gain_error) and new format (avg_gain_error)
-                        gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
-                        adjustment_factor = plot_data.get('adjustment_factor')
-                        tolerance_percent = plot_data.get('tolerance_percent')
-                        slope = plot_data.get('slope')
-                        intercept = plot_data.get('intercept')
-                        
-                        if gain_error is not None:
-                            gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
-                            layout.addWidget(gain_info_label)
-                            
-                            gain_info_text = QtWidgets.QTextEdit()
-                            gain_info_text.setReadOnly(True)
-                            gain_info_text.setMaximumHeight(120)
-                            
-                            gain_info = ""
-                            # Only show slope/intercept if available (old format)
-                            if slope is not None:
-                                gain_info += f"Slope: {slope:.6f} (ideal: 1.0)\n"
-                            if intercept is not None:
-                                gain_info += f"Intercept: {intercept:.6f} A\n"
-                            # Show average gain error (new format) or gain error (old format)
-                            if plot_data.get('avg_gain_error') is not None:
-                                gain_info += f"Average Gain Error: {gain_error:.4f}%\n"
-                            else:
-                                gain_info += f"Gain Error: {gain_error:+.4f}%\n"
-                            if adjustment_factor is not None:
-                                gain_info += f"Adjustment Factor: {adjustment_factor:.6f}\n"
-                            if tolerance_percent is not None:
-                                gain_info += f"Tolerance: {tolerance_percent:.4f}%\n"
-                                passed = abs(gain_error) <= tolerance_percent
-                                gain_info += f"Result: {'PASS' if passed else 'FAIL'}\n"
-                            
-                            gain_info_text.setPlainText(gain_info)
-                            layout.addWidget(gain_info_text)
+                    # Create second sweep plot
+                    second_plot_label = QtWidgets.QLabel(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>')
+                    layout.addWidget(second_plot_label)
+                    second_plot_canvas = create_plot(second_sweep_data, second_sweep_data.get("plot_label", "Second Sweep"))
+                    layout.addWidget(second_plot_canvas)
+                    
+                    # Display calibration results
+                    gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
+                    layout.addWidget(gain_info_label)
+                    
+                    gain_info_text = QtWidgets.QTextEdit()
+                    gain_info_text.setReadOnly(True)
+                    gain_info_text.setMaximumHeight(200)
+                    
+                    gain_info = ""
+                    # First sweep results
+                    first_avg_error = first_sweep_data.get('avg_gain_error')
+                    first_adjustment = first_sweep_data.get('adjustment_factor')
+                    first_trim = first_sweep_data.get('trim_value')
+                    if first_avg_error is not None:
+                        gain_info += f"First Sweep (Trim: {first_trim}%):\n"
+                        gain_info += f"  Average Gain Error: {first_avg_error:.4f}%\n"
+                    if first_adjustment is not None:
+                        gain_info += f"  Adjustment Factor: {first_adjustment:.6f}\n"
+                    
+                    # Calculated trim value
+                    calculated_trim = plot_data.get('calculated_trim_value')
+                    if calculated_trim is not None:
+                        gain_info += f"\nCalculated Trim Value: {calculated_trim:.4f}%\n"
+                    
+                    # Second sweep results
+                    second_avg_error = second_sweep_data.get('avg_gain_error')
+                    second_trim = second_sweep_data.get('trim_value')
+                    tolerance_percent = plot_data.get('tolerance_percent')
+                    if second_avg_error is not None:
+                        gain_info += f"\nSecond Sweep (Trim: {second_trim:.4f}%):\n"
+                        gain_info += f"  Average Gain Error: {second_avg_error:.4f}%\n"
+                    if tolerance_percent is not None:
+                        gain_info += f"  Tolerance: {tolerance_percent:.4f}%\n"
+                        passed = second_avg_error is not None and second_avg_error <= tolerance_percent
+                        gain_info += f"  Result: {'PASS' if passed else 'FAIL'}\n"
+                    
+                    gain_info_text.setPlainText(gain_info)
+                    layout.addWidget(gain_info_text)
                     
                 except Exception as e:
-                    logger.error(f"Error creating Output Current Calibration plot in test details dialog: {e}", exc_info=True)
+                    logger.error(f"Error creating Output Current Calibration dual plots in test details dialog: {e}", exc_info=True)
                     error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
                     error_label.setStyleSheet('color: red;')
                     layout.addWidget(error_label)
+            else:
+                # Old format: Single plot (backward compatibility)
+                plot_osc_averages = plot_data.get('osc_averages', [])
+                plot_can_averages = plot_data.get('can_averages', [])
+                
+                if plot_osc_averages and plot_can_averages:
+                    plot_label = QtWidgets.QLabel(f'<b>Output Current Calibration: DUT vs Oscilloscope Comparison:</b>')
+                    layout.addWidget(plot_label)
+                    
+                    try:
+                        # Create a new figure for the dialog
+                        plot_figure = Figure(figsize=(8, 6))
+                        plot_canvas = FigureCanvasQTAgg(plot_figure)
+                        plot_axes = plot_figure.add_subplot(111)
+                        
+                        # Filter out NaN values and ensure matching lengths
+                        osc_clean = []
+                        can_clean = []
+                        min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                        for i in range(min_len):
+                            osc_val = plot_osc_averages[i]
+                            can_val = plot_can_averages[i]
+                            # Check if both are valid (not NaN)
+                            if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                not (isinstance(can_val, float) and can_val != can_val)):
+                                osc_clean.append(osc_val)
+                                can_clean.append(can_val)
+                        
+                        if osc_clean and can_clean:
+                            # Plot data points
+                            plot_axes.plot(osc_clean, can_clean, 'bo', markersize=8, label='Data Points')
+                            
+                            # Add diagonal reference line (y=x) for ideal line
+                            plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                            
+                            # Add regression line if available
+                            slope = plot_data.get('slope')
+                            intercept = plot_data.get('intercept')
+                            if slope is not None and intercept is not None:
+                                # Calculate regression line points
+                                x_min = min(osc_clean)
+                                x_max = max(osc_clean)
+                                x_reg = [x_min, x_max]
+                                y_reg = [slope * x + intercept for x in x_reg]
+                                plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                            
+                            plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                            plot_axes.set_ylabel('DUT Measurement (A)')
+                            plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                            plot_axes.grid(True, alpha=0.3)
+                            plot_axes.legend()
+                            
+                            # Auto-scale axes to fit all data
+                            plot_axes.relim()
+                            plot_axes.autoscale()
+                            
+                            # Tight layout
+                            plot_figure.tight_layout()
+                            
+                            # Add canvas to layout
+                            layout.addWidget(plot_canvas)
+                            
+                            # Display gain error and adjustment factor
+                            # Support both old format (gain_error) and new format (avg_gain_error)
+                            gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
+                            adjustment_factor = plot_data.get('adjustment_factor')
+                            tolerance_percent = plot_data.get('tolerance_percent')
+                            slope = plot_data.get('slope')
+                            intercept = plot_data.get('intercept')
+                            
+                            if gain_error is not None:
+                                gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
+                                layout.addWidget(gain_info_label)
+                                
+                                gain_info_text = QtWidgets.QTextEdit()
+                                gain_info_text.setReadOnly(True)
+                                gain_info_text.setMaximumHeight(120)
+                                
+                                gain_info = ""
+                                # Only show slope/intercept if available (old format)
+                                if slope is not None:
+                                    gain_info += f"Slope: {slope:.6f} (ideal: 1.0)\n"
+                                if intercept is not None:
+                                    gain_info += f"Intercept: {intercept:.6f} A\n"
+                                # Show average gain error (new format) or gain error (old format)
+                                if plot_data.get('avg_gain_error') is not None:
+                                    gain_info += f"Average Gain Error: {gain_error:.4f}%\n"
+                                else:
+                                    gain_info += f"Gain Error: {gain_error:+.4f}%\n"
+                                if adjustment_factor is not None:
+                                    gain_info += f"Adjustment Factor: {adjustment_factor:.6f}\n"
+                                if tolerance_percent is not None:
+                                    gain_info += f"Tolerance: {tolerance_percent:.4f}%\n"
+                                    passed = abs(gain_error) <= tolerance_percent
+                                    gain_info += f"Result: {'PASS' if passed else 'FAIL'}\n"
+                                
+                                gain_info_text.setPlainText(gain_info)
+                                layout.addWidget(gain_info_text)
+                        
+                    except Exception as e:
+                        logger.error(f"Error creating Output Current Calibration plot in test details dialog: {e}", exc_info=True)
+                        error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                        error_label.setStyleSheet('color: red;')
+                        layout.addWidget(error_label)
         
         # Close button
         button_layout = QtWidgets.QHBoxLayout()
@@ -2756,107 +2881,203 @@ Data Points Used: {data_points}"""
                 plot_data = exec_data_full.get('plot_data')
                 
                 if plot_data:
-                    # Calibration results data
-                    # Support both old format (gain_error) and new format (avg_gain_error)
-                    slope = plot_data.get('slope')
-                    intercept = plot_data.get('intercept')
-                    gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
-                    adjustment_factor = plot_data.get('adjustment_factor')
-                    tolerance_percent = plot_data.get('tolerance_percent')
+                    # Check if we have dual sweep data (new format) or single plot data (old format)
+                    first_sweep_data = plot_data.get('first_sweep')
+                    second_sweep_data = plot_data.get('second_sweep')
                     
-                    if (slope is not None or intercept is not None or gain_error is not None or 
-                        adjustment_factor is not None or tolerance_percent is not None):
+                    if first_sweep_data and second_sweep_data:
+                        # New format: Dual sweep results
                         calib_item = QtWidgets.QTreeWidgetItem(['Calibration Results', '', '', ''])
                         calib_item.setExpanded(False)
                         
-                        if slope is not None:
-                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Slope', f"{slope:.6f} (ideal: 1.0)", '', '']))
-                        if intercept is not None:
-                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Intercept (A)', f"{intercept:.6f}", '', '']))
-                        if gain_error is not None:
-                            # Use appropriate label based on format
-                            if plot_data.get('avg_gain_error') is not None:
-                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Average Gain Error (%)', f"{gain_error:.4f}%", '', '']))
-                            else:
-                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error (%)', f"{gain_error:+.4f}%", '', '']))
-                        if adjustment_factor is not None:
-                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Adjustment Factor', f"{adjustment_factor:.6f}", '', '']))
+                        # First sweep results
+                        first_avg_error = first_sweep_data.get('avg_gain_error')
+                        first_adjustment = first_sweep_data.get('adjustment_factor')
+                        first_trim = first_sweep_data.get('trim_value')
+                        if first_avg_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep (Trim Value)', f"{first_trim}%", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Avg Gain Error (%)', f"{first_avg_error:.4f}%", '', '']))
+                        if first_adjustment is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Adjustment Factor', f"{first_adjustment:.6f}", '', '']))
+                        
+                        # Calculated trim value
+                        calculated_trim = plot_data.get('calculated_trim_value')
+                        if calculated_trim is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Calculated Trim Value (%)', f"{calculated_trim:.4f}%", '', '']))
+                        
+                        # Second sweep results
+                        second_avg_error = second_sweep_data.get('avg_gain_error')
+                        second_trim = second_sweep_data.get('trim_value')
+                        tolerance_percent = plot_data.get('tolerance_percent')
+                        if second_avg_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep (Trim Value)', f"{second_trim:.4f}%", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Avg Gain Error (%)', f"{second_avg_error:.4f}%", '', '']))
                         if tolerance_percent is not None:
                             calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance (%)', f"{tolerance_percent:.4f}%", '', '']))
-                            if gain_error is not None:
-                                passed = abs(gain_error) <= tolerance_percent
+                            if second_avg_error is not None:
+                                passed = second_avg_error <= tolerance_percent
                                 calib_item.addChild(QtWidgets.QTreeWidgetItem(['Result', 'PASS' if passed else 'FAIL', '', '']))
                         
                         test_item.addChild(calib_item)
-                    
-                    # Add plot widget if plot data is available
-                    if matplotlib_available:
-                        plot_item = QtWidgets.QTreeWidgetItem(['Plot: DUT vs Oscilloscope', '', '', ''])
-                        plot_item.setExpanded(False)
                         
-                        osc_averages = plot_data.get('osc_averages', [])
-                        can_averages = plot_data.get('can_averages', [])
-                        
-                        if osc_averages and can_averages:
+                        # Add dual plot widgets
+                        if matplotlib_available:
+                            # Helper function to create a plot
+                            def create_plot_for_report(plot_data_dict, plot_title):
+                                plot_figure = Figure(figsize=(8, 6))
+                                plot_axes = plot_figure.add_subplot(111)
+                                
+                                plot_osc_averages = plot_data_dict.get('osc_averages', [])
+                                plot_can_averages = plot_data_dict.get('can_averages', [])
+                                
+                                if plot_osc_averages and plot_can_averages:
+                                    # Filter out NaN values
+                                    osc_clean = []
+                                    can_clean = []
+                                    min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                                    for i in range(min_len):
+                                        osc_val = plot_osc_averages[i]
+                                        can_val = plot_can_averages[i]
+                                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                            not (isinstance(can_val, float) and can_val != can_val)):
+                                            osc_clean.append(osc_val)
+                                            can_clean.append(can_val)
+                                    
+                                    if osc_clean and can_clean:
+                                        plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+                                        plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                        plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                                        plot_axes.set_ylabel('DUT Measurement (A)')
+                                        plot_axes.set_title(plot_title)
+                                        plot_axes.grid(True, alpha=0.3)
+                                        plot_axes.legend()
+                                        plot_axes.relim()
+                                        plot_axes.autoscale()
+                                
+                                plot_figure.tight_layout()
+                                return plot_figure
+                            
+                            # First sweep plot
+                            first_plot_item = QtWidgets.QTreeWidgetItem([f'Plot: {first_sweep_data.get("plot_label", "First Sweep")}', '', '', ''])
+                            first_plot_item.setExpanded(False)
                             try:
-                                # Create plot widget
+                                plot_figure = create_plot_for_report(first_sweep_data, first_sweep_data.get("plot_label", "First Sweep"))
+                                plot_canvas = FigureCanvasQTAgg(plot_figure)
                                 plot_widget = QtWidgets.QWidget()
                                 plot_layout = QtWidgets.QVBoxLayout(plot_widget)
                                 plot_layout.setContentsMargins(0, 0, 0, 0)
-                                
-                                plot_figure = Figure(figsize=(8, 6))
-                                plot_canvas = FigureCanvasQTAgg(plot_figure)
-                                plot_axes = plot_figure.add_subplot(111)
-                                
-                                # Filter out NaN values
-                                osc_clean = []
-                                can_clean = []
-                                min_len = min(len(osc_averages), len(can_averages))
-                                for i in range(min_len):
-                                    osc_val = osc_averages[i]
-                                    can_val = can_averages[i]
-                                    if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
-                                        not (isinstance(osc_val, float) and osc_val != osc_val) and
-                                        not (isinstance(can_val, float) and can_val != can_val)):
-                                        osc_clean.append(osc_val)
-                                        can_clean.append(can_val)
-                                
-                                if osc_clean and can_clean:
-                                    # Plot data points
-                                    plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
-                                    
-                                    # Add diagonal reference line (y=x) for ideal line
-                                    plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-                                    
-                                    # Add regression line if available
-                                    if slope is not None and intercept is not None:
-                                        # Calculate regression line points
-                                        x_min = min(osc_clean)
-                                        x_max = max(osc_clean)
-                                        x_reg = [x_min, x_max]
-                                        y_reg = [slope * x + intercept for x in x_reg]
-                                        plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
-                                    
-                                    plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-                                    plot_axes.set_ylabel('DUT Measurement (A)')
-                                    plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
-                                    plot_axes.grid(True, alpha=0.3)
-                                    plot_axes.legend()
-                                    
-                                    # Auto-scale axes to fit all data
-                                    plot_axes.relim()
-                                    plot_axes.autoscale()
-                                
-                                plot_figure.tight_layout()
                                 plot_layout.addWidget(plot_canvas)
-                                
-                                # Set widget as item widget
-                                self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                                self.report_tree.setItemWidget(first_plot_item, 1, plot_widget)
                             except Exception as e:
-                                logger.error(f"Error creating Output Current Calibration plot in report: {e}", exc_info=True)
-                                plot_item.setText(1, f"Plot error: {e}")
+                                logger.error(f"Error creating first sweep plot in report: {e}", exc_info=True)
+                                first_plot_item.setText(1, f"Plot error: {e}")
+                            test_item.addChild(first_plot_item)
+                            
+                            # Second sweep plot
+                            second_plot_item = QtWidgets.QTreeWidgetItem([f'Plot: {second_sweep_data.get("plot_label", "Second Sweep")}', '', '', ''])
+                            second_plot_item.setExpanded(False)
+                            try:
+                                plot_figure = create_plot_for_report(second_sweep_data, second_sweep_data.get("plot_label", "Second Sweep"))
+                                plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                plot_widget = QtWidgets.QWidget()
+                                plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                plot_layout.setContentsMargins(0, 0, 0, 0)
+                                plot_layout.addWidget(plot_canvas)
+                                self.report_tree.setItemWidget(second_plot_item, 1, plot_widget)
+                            except Exception as e:
+                                logger.error(f"Error creating second sweep plot in report: {e}", exc_info=True)
+                                second_plot_item.setText(1, f"Plot error: {e}")
+                            test_item.addChild(second_plot_item)
+                    else:
+                        # Old format: Single plot (backward compatibility)
+                        slope = plot_data.get('slope')
+                        intercept = plot_data.get('intercept')
+                        gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
+                        adjustment_factor = plot_data.get('adjustment_factor')
+                        tolerance_percent = plot_data.get('tolerance_percent')
                         
-                        test_item.addChild(plot_item)
+                        if (slope is not None or intercept is not None or gain_error is not None or 
+                            adjustment_factor is not None or tolerance_percent is not None):
+                            calib_item = QtWidgets.QTreeWidgetItem(['Calibration Results', '', '', ''])
+                            calib_item.setExpanded(False)
+                            
+                            if slope is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Slope', f"{slope:.6f} (ideal: 1.0)", '', '']))
+                            if intercept is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Intercept (A)', f"{intercept:.6f}", '', '']))
+                            if gain_error is not None:
+                                if plot_data.get('avg_gain_error') is not None:
+                                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Average Gain Error (%)', f"{gain_error:.4f}%", '', '']))
+                                else:
+                                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error (%)', f"{gain_error:+.4f}%", '', '']))
+                            if adjustment_factor is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Adjustment Factor', f"{adjustment_factor:.6f}", '', '']))
+                            if tolerance_percent is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance (%)', f"{tolerance_percent:.4f}%", '', '']))
+                                if gain_error is not None:
+                                    passed = abs(gain_error) <= tolerance_percent
+                                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Result', 'PASS' if passed else 'FAIL', '', '']))
+                            
+                            test_item.addChild(calib_item)
+                        
+                        # Add plot widget if plot data is available
+                        if matplotlib_available:
+                            plot_item = QtWidgets.QTreeWidgetItem(['Plot: DUT vs Oscilloscope', '', '', ''])
+                            plot_item.setExpanded(False)
+                            
+                            osc_averages = plot_data.get('osc_averages', [])
+                            can_averages = plot_data.get('can_averages', [])
+                            
+                            if osc_averages and can_averages:
+                                try:
+                                    plot_widget = QtWidgets.QWidget()
+                                    plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                    plot_layout.setContentsMargins(0, 0, 0, 0)
+                                    
+                                    plot_figure = Figure(figsize=(8, 6))
+                                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                    plot_axes = plot_figure.add_subplot(111)
+                                    
+                                    osc_clean = []
+                                    can_clean = []
+                                    min_len = min(len(osc_averages), len(can_averages))
+                                    for i in range(min_len):
+                                        osc_val = osc_averages[i]
+                                        can_val = can_averages[i]
+                                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                            not (isinstance(can_val, float) and can_val != can_val)):
+                                            osc_clean.append(osc_val)
+                                            can_clean.append(can_val)
+                                    
+                                    if osc_clean and can_clean:
+                                        plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+                                        plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                        
+                                        if slope is not None and intercept is not None:
+                                            x_min = min(osc_clean)
+                                            x_max = max(osc_clean)
+                                            x_reg = [x_min, x_max]
+                                            y_reg = [slope * x + intercept for x in x_reg]
+                                            plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                        
+                                        plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                                        plot_axes.set_ylabel('DUT Measurement (A)')
+                                        plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                                        plot_axes.grid(True, alpha=0.3)
+                                        plot_axes.legend()
+                                        plot_axes.relim()
+                                        plot_axes.autoscale()
+                                    
+                                    plot_figure.tight_layout()
+                                    plot_layout.addWidget(plot_canvas)
+                                    self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                                except Exception as e:
+                                    logger.error(f"Error creating Output Current Calibration plot in report: {e}", exc_info=True)
+                                    plot_item.setText(1, f"Plot error: {e}")
+                            
+                            test_item.addChild(plot_item)
             
             self.report_tree.addTopLevelItem(test_item)
         
