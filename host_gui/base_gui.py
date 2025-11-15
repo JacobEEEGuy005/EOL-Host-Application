@@ -1295,12 +1295,33 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Enabled Signal: {act['fan_enabled_signal']}")
             if act.get('fan_tach_feedback_signal'):
                 params.append(f"Tach Signal: {act['fan_tach_feedback_signal']}")
-            if act.get('fan_fault_feedback_signal'):
-                params.append(f"Fault Signal: {act['fan_fault_feedback_signal']}")
-            if act.get('dwell_time_ms') is not None:
-                params.append(f"Dwell: {act['dwell_time_ms']} ms")
-            if act.get('test_timeout_ms') is not None:
-                params.append(f"Timeout: {act['test_timeout_ms']} ms")
+        elif test_type == 'Charged HV Bus Test':
+            if act.get('command_signal_source'):
+                params.append(f"Command Source: 0x{act['command_signal_source']:X}")
+            if act.get('test_trigger_signal'):
+                params.append(f"Trigger Signal: {act['test_trigger_signal']}")
+            if act.get('test_trigger_signal_value') is not None:
+                params.append(f"Trigger Value: {act['test_trigger_signal_value']}")
+            if act.get('set_output_current_trim_signal'):
+                params.append(f"Trim Signal: {act['set_output_current_trim_signal']}")
+            if act.get('fallback_output_current_trim_value') is not None:
+                params.append(f"Fallback Trim: {act['fallback_output_current_trim_value']:.2f}%")
+            if act.get('set_output_current_setpoint_signal'):
+                params.append(f"Setpoint Signal: {act['set_output_current_setpoint_signal']}")
+            if act.get('output_test_current') is not None:
+                params.append(f"Output Current: {act['output_test_current']:.2f} A")
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('dut_test_state_signal'):
+                params.append(f"DUT State Signal: {act['dut_test_state_signal']}")
+            if act.get('enable_pfc_signal'):
+                params.append(f"Enable PFC Signal: {act['enable_pfc_signal']}")
+            if act.get('pfc_power_good_signal'):
+                params.append(f"PFC Power Good Signal: {act['pfc_power_good_signal']}")
+            if act.get('pcmc_signal'):
+                params.append(f"PCMC Signal: {act['pcmc_signal']}")
+            if act.get('test_time_ms'):
+                params.append(f"Test Time: {act['test_time_ms']} ms")
         
         return ', '.join(params) if params else 'None'
     
@@ -2311,7 +2332,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Analog PWM Sensor', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Analog PWM Sensor', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -2420,6 +2441,8 @@ Data Points Used: {data_points}"""
                 elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                     continue
                 elif type_filter == 'Fan Control Test' and test_type != 'Fan Control Test':
+                    continue
+                elif type_filter == 'Charged HV Bus Test' and test_type != 'Charged HV Bus Test':
                     continue
             
             test_items.append((test_name, test_config, exec_data))
@@ -5853,7 +5876,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -6769,6 +6792,158 @@ Data Points Used: {data_points}"""
             output_current_calibration_layout.addRow('Pre-Acquisition Time (ms):', output_current_pre_acq_edit)
             output_current_calibration_layout.addRow('Acquisition Time (ms):', output_current_acq_edit)
             output_current_calibration_layout.addRow('Tolerance (%):', output_current_tolerance_edit)
+            
+            # Charged HV Bus Test fields (DBC mode)
+            charged_hv_bus_widget = QtWidgets.QWidget()
+            charged_hv_bus_layout = QtWidgets.QFormLayout(charged_hv_bus_widget)
+            
+            # Command Signal Source: dropdown of CAN Messages
+            charged_hv_bus_cmd_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_cmd_msg_combo.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            charged_hv_bus_trigger_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trigger_signals(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                charged_hv_bus_trigger_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trigger_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trigger_signals(0)
+            charged_hv_bus_cmd_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_trigger_signals)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            charged_hv_bus_trigger_value_validator = QtGui.QIntValidator(0, 255, self)
+            charged_hv_bus_trigger_value_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_trigger_value_edit.setValidator(charged_hv_bus_trigger_value_validator)
+            charged_hv_bus_trigger_value_edit.setPlaceholderText('e.g., 1')
+            
+            # Set Output Current Trim Value Signal: dropdown based on command message
+            charged_hv_bus_trim_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trim_signals():
+                """Update trim signal dropdown based on command message selection."""
+                charged_hv_bus_trim_signal_combo.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trim_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trim_signals()
+            charged_hv_bus_cmd_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_trim_signals)
+            
+            # Fallback Output Current Trim Value: double input (0-200)
+            charged_hv_bus_fallback_trim_validator = QtGui.QDoubleValidator(0.0, 200.0, 2, self)
+            charged_hv_bus_fallback_trim_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_fallback_trim_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_fallback_trim_edit.setValidator(charged_hv_bus_fallback_trim_validator)
+            charged_hv_bus_fallback_trim_edit.setPlaceholderText('e.g., 100.0')
+            charged_hv_bus_fallback_trim_edit.setText('100.0')
+            
+            # Set Output Current Setpoint Signal: dropdown based on command message
+            charged_hv_bus_setpoint_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_setpoint_signals():
+                """Update setpoint signal dropdown based on command message selection."""
+                charged_hv_bus_setpoint_signal_combo.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_setpoint_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_setpoint_signals()
+            charged_hv_bus_cmd_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_setpoint_signals)
+            
+            # Output Test Current: double input (0-40)
+            charged_hv_bus_output_current_validator = QtGui.QDoubleValidator(0.0, 40.0, 3, self)
+            charged_hv_bus_output_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_output_current_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_output_current_edit.setValidator(charged_hv_bus_output_current_validator)
+            charged_hv_bus_output_current_edit.setPlaceholderText('e.g., 10.0')
+            charged_hv_bus_output_current_edit.setText('10.0')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            charged_hv_bus_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_feedback_msg_combo.addItem(label, fid)
+            
+            # DUT Test State Signal: dropdown based on selected message
+            charged_hv_bus_dut_state_signal_combo = QtWidgets.QComboBox()
+            # Enable Relay Signal: dropdown based on selected message
+            charged_hv_bus_enable_relay_signal_combo = QtWidgets.QComboBox()
+            # Enable PFC Signal: dropdown based on selected message
+            charged_hv_bus_enable_pfc_signal_combo = QtWidgets.QComboBox()
+            # PFC Power Good Signal: dropdown based on selected message
+            charged_hv_bus_pfc_power_good_signal_combo = QtWidgets.QComboBox()
+            # PCMC Signal: dropdown based on selected message
+            charged_hv_bus_pcmc_signal_combo = QtWidgets.QComboBox()
+            # PSFB Fault Signal: dropdown based on selected message
+            charged_hv_bus_psfb_fault_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_feedback_signals(idx=0):
+                """Update all feedback signal dropdowns based on selected message."""
+                charged_hv_bus_dut_state_signal_combo.clear()
+                charged_hv_bus_enable_relay_signal_combo.clear()
+                charged_hv_bus_enable_pfc_signal_combo.clear()
+                charged_hv_bus_pfc_power_good_signal_combo.clear()
+                charged_hv_bus_pcmc_signal_combo.clear()
+                charged_hv_bus_psfb_fault_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_dut_state_signal_combo.addItems(sigs)
+                    charged_hv_bus_enable_relay_signal_combo.addItems(sigs)
+                    charged_hv_bus_enable_pfc_signal_combo.addItems(sigs)
+                    charged_hv_bus_pfc_power_good_signal_combo.addItems(sigs)
+                    charged_hv_bus_pcmc_signal_combo.addItems(sigs)
+                    charged_hv_bus_psfb_fault_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_feedback_signals(0)
+            charged_hv_bus_feedback_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_feedback_signals)
+            
+            # Test Time: integer input (>= 1000)
+            charged_hv_bus_test_time_validator = QtGui.QIntValidator(1000, 600000, self)
+            charged_hv_bus_test_time_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_test_time_edit.setValidator(charged_hv_bus_test_time_validator)
+            charged_hv_bus_test_time_edit.setPlaceholderText('e.g., 30000')
+            charged_hv_bus_test_time_edit.setText('30000')
+            
+            # Populate Charged HV Bus Test sub-widget
+            charged_hv_bus_layout.addRow('Command Signal Source:', charged_hv_bus_cmd_msg_combo)
+            charged_hv_bus_layout.addRow('Test Trigger Signal:', charged_hv_bus_trigger_signal_combo)
+            charged_hv_bus_layout.addRow('Test Trigger Signal Value:', charged_hv_bus_trigger_value_edit)
+            charged_hv_bus_layout.addRow('Set Output Current Trim Value Signal:', charged_hv_bus_trim_signal_combo)
+            charged_hv_bus_layout.addRow('Fallback Output Current Trim Value (%):', charged_hv_bus_fallback_trim_edit)
+            charged_hv_bus_layout.addRow('Set Output Current Setpoint Signal:', charged_hv_bus_setpoint_signal_combo)
+            charged_hv_bus_layout.addRow('Output Test Current (A):', charged_hv_bus_output_current_edit)
+            charged_hv_bus_layout.addRow('Feedback Signal Source:', charged_hv_bus_feedback_msg_combo)
+            charged_hv_bus_layout.addRow('DUT Test State Signal:', charged_hv_bus_dut_state_signal_combo)
+            charged_hv_bus_layout.addRow('Enable Relay Signal:', charged_hv_bus_enable_relay_signal_combo)
+            charged_hv_bus_layout.addRow('Enable PFC Signal:', charged_hv_bus_enable_pfc_signal_combo)
+            charged_hv_bus_layout.addRow('PFC Power Good Signal:', charged_hv_bus_pfc_power_good_signal_combo)
+            charged_hv_bus_layout.addRow('PCMC Signal:', charged_hv_bus_pcmc_signal_combo)
+            charged_hv_bus_layout.addRow('PSFB Fault Signal:', charged_hv_bus_psfb_fault_signal_combo)
+            charged_hv_bus_layout.addRow('Test Time (ms):', charged_hv_bus_test_time_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -7118,6 +7293,7 @@ Data Points Used: {data_points}"""
         test_type_to_index['DC Bus Sensing'] = act_stacked.addWidget(dc_bus_sensing_widget)
         if self.dbc_service is not None and self.dbc_service.is_loaded():
             test_type_to_index['Output Current Calibration'] = act_stacked.addWidget(output_current_calibration_widget)
+            test_type_to_index['Charged HV Bus Test'] = act_stacked.addWidget(charged_hv_bus_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -7139,7 +7315,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -7724,6 +7900,87 @@ Data Points Used: {data_points}"""
                         'acquisition_time_ms': acq_time,
                         'tolerance_percent': tolerance_percent,
                     }
+                elif t == 'Charged HV Bus Test':
+                    # Charged HV Bus Test: read all fields (DBC mode)
+                    try:
+                        cmd_msg_id = charged_hv_bus_cmd_msg_combo.currentData()
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_signal = charged_hv_bus_trigger_signal_combo.currentText().strip() if charged_hv_bus_trigger_signal_combo.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_charged_hv_bus_trigger_value(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_charged_hv_bus_trigger_value(charged_hv_bus_trigger_value_edit)
+                    
+                    trim_signal = charged_hv_bus_trim_signal_combo.currentText().strip() if charged_hv_bus_trim_signal_combo.count() else ''
+                    
+                    # Fallback Output Current Trim Value (float, 0-200)
+                    def _to_float_or_none_charged_hv_bus_fallback_trim(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    fallback_trim = _to_float_or_none_charged_hv_bus_fallback_trim(charged_hv_bus_fallback_trim_edit)
+                    
+                    setpoint_signal = charged_hv_bus_setpoint_signal_combo.currentText().strip() if charged_hv_bus_setpoint_signal_combo.count() else ''
+                    
+                    # Output Test Current (float, 0-40)
+                    def _to_float_or_none_charged_hv_bus_output_current(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current = _to_float_or_none_charged_hv_bus_output_current(charged_hv_bus_output_current_edit)
+                    
+                    try:
+                        feedback_msg_id = charged_hv_bus_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    dut_state_signal = charged_hv_bus_dut_state_signal_combo.currentText().strip() if charged_hv_bus_dut_state_signal_combo.count() else ''
+                    enable_relay_signal = charged_hv_bus_enable_relay_signal_combo.currentText().strip() if charged_hv_bus_enable_relay_signal_combo.count() else ''
+                    enable_pfc_signal = charged_hv_bus_enable_pfc_signal_combo.currentText().strip() if charged_hv_bus_enable_pfc_signal_combo.count() else ''
+                    pfc_power_good_signal = charged_hv_bus_pfc_power_good_signal_combo.currentText().strip() if charged_hv_bus_pfc_power_good_signal_combo.count() else ''
+                    pcmc_signal = charged_hv_bus_pcmc_signal_combo.currentText().strip() if charged_hv_bus_pcmc_signal_combo.count() else ''
+                    psfb_fault_signal = charged_hv_bus_psfb_fault_signal_combo.currentText().strip() if charged_hv_bus_psfb_fault_signal_combo.count() else ''
+                    
+                    # Test Time (int, >= 1000)
+                    def _to_int_or_none_charged_hv_bus_test_time(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    test_time = _to_int_or_none_charged_hv_bus_test_time(charged_hv_bus_test_time_edit)
+                    
+                    act = {
+                        'type': 'Charged HV Bus Test',
+                        'command_signal_source': cmd_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'set_output_current_trim_signal': trim_signal,
+                        'fallback_output_current_trim_value': fallback_trim,
+                        'set_output_current_setpoint_signal': setpoint_signal,
+                        'output_test_current': output_current,
+                        'feedback_signal_source': feedback_msg_id,
+                        'dut_test_state_signal': dut_state_signal,
+                        'enable_relay_signal': enable_relay_signal,
+                        'enable_pfc_signal': enable_pfc_signal,
+                        'pfc_power_good_signal': pfc_power_good_signal,
+                        'pcmc_signal': pcmc_signal,
+                        'psfb_fault_signal': psfb_fault_signal,
+                        'test_time_ms': test_time,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -8166,7 +8423,7 @@ Data Points Used: {data_points}"""
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
             test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
-                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration')
+                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test')
             
             fb_msg_id = None
             feedback = None
@@ -8275,8 +8532,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', or 'Charged HV Bus Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -8500,6 +8757,53 @@ Data Points Used: {data_points}"""
             # Check DBC service is available (test requires DBC)
             if self.dbc_service is None or not self.dbc_service.is_loaded():
                 return False, "Output Current Calibration test requires DBC file to be loaded"
+        elif test_type == 'Charged HV Bus Test':
+            # Validate required fields
+            if actuation.get('command_signal_source') is None:
+                return False, "Charged HV Bus Test requires command signal source (CAN ID)"
+            if not (0 <= actuation.get('command_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Command signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('test_trigger_signal'):
+                return False, "Charged HV Bus Test requires test trigger signal name"
+            if actuation.get('test_trigger_signal_value') is None:
+                return False, "Charged HV Bus Test requires test trigger signal value"
+            if not (0 <= actuation.get('test_trigger_signal_value', -1) <= 255):
+                return False, "Test trigger signal value must be in range 0-255"
+            if not actuation.get('set_output_current_trim_signal'):
+                return False, "Charged HV Bus Test requires set output current trim signal name"
+            if actuation.get('fallback_output_current_trim_value') is None:
+                return False, "Charged HV Bus Test requires fallback output current trim value"
+            if not (0 <= actuation.get('fallback_output_current_trim_value', -1) <= 200):
+                return False, "Fallback output current trim value must be in range 0-200"
+            if not actuation.get('set_output_current_setpoint_signal'):
+                return False, "Charged HV Bus Test requires set output current setpoint signal name"
+            if actuation.get('output_test_current') is None:
+                return False, "Charged HV Bus Test requires output test current (A)"
+            if not (0 <= actuation.get('output_test_current', -1) <= 40):
+                return False, "Output test current must be in range 0-40 A"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Charged HV Bus Test requires feedback signal source (CAN ID)"
+            if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Feedback signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('dut_test_state_signal'):
+                return False, "Charged HV Bus Test requires DUT test state signal name"
+            if not actuation.get('enable_relay_signal'):
+                return False, "Charged HV Bus Test requires enable relay signal name"
+            if not actuation.get('enable_pfc_signal'):
+                return False, "Charged HV Bus Test requires enable PFC signal name"
+            if not actuation.get('pfc_power_good_signal'):
+                return False, "Charged HV Bus Test requires PFC power good signal name"
+            if not actuation.get('pcmc_signal'):
+                return False, "Charged HV Bus Test requires PCMC signal name"
+            if not actuation.get('psfb_fault_signal'):
+                return False, "Charged HV Bus Test requires PSFB fault signal name"
+            if actuation.get('test_time_ms') is None:
+                return False, "Charged HV Bus Test requires test time (ms)"
+            if actuation.get('test_time_ms', 0) < 1000:
+                return False, "Test time must be >= 1000 ms"
+            # Check DBC service is available (test requires DBC)
+            if self.dbc_service is None or not self.dbc_service.is_loaded():
+                return False, "Charged HV Bus Test requires DBC file to be loaded"
         
         return True, ""
     
@@ -8895,7 +9199,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -10035,6 +10339,221 @@ Data Points Used: {data_points}"""
             output_current_calibration_layout_edit.addRow('Pre-Acquisition Time (ms):', output_current_pre_acq_edit_edit)
             output_current_calibration_layout_edit.addRow('Acquisition Time (ms):', output_current_acq_edit_edit)
             output_current_calibration_layout_edit.addRow('Tolerance (%):', output_current_tolerance_edit_edit)
+            
+            # Charged HV Bus Test fields (DBC mode) - for edit dialog
+            charged_hv_bus_widget_edit = QtWidgets.QWidget()
+            charged_hv_bus_layout_edit = QtWidgets.QFormLayout(charged_hv_bus_widget_edit)
+            
+            # Command Signal Source: dropdown of CAN Messages
+            charged_hv_bus_cmd_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_cmd_msg_combo_edit.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            charged_hv_bus_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trigger_signals_edit(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                charged_hv_bus_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trigger_signals_edit(0)
+            charged_hv_bus_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_trigger_signals_edit)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            charged_hv_bus_trigger_value_validator_edit = QtGui.QIntValidator(0, 255, self)
+            charged_hv_bus_trigger_value_edit_edit = QtWidgets.QLineEdit(str(act.get('test_trigger_signal_value', '1')))
+            charged_hv_bus_trigger_value_edit_edit.setValidator(charged_hv_bus_trigger_value_validator_edit)
+            charged_hv_bus_trigger_value_edit_edit.setPlaceholderText('e.g., 1')
+            
+            # Set Output Current Trim Value Signal: dropdown based on command message
+            charged_hv_bus_trim_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trim_signals_edit():
+                """Update trim signal dropdown based on command message selection."""
+                charged_hv_bus_trim_signal_combo_edit.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trim_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trim_signals_edit()
+            charged_hv_bus_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_trim_signals_edit)
+            
+            # Fallback Output Current Trim Value: double input (0-200)
+            charged_hv_bus_fallback_trim_validator_edit = QtGui.QDoubleValidator(0.0, 200.0, 2, self)
+            charged_hv_bus_fallback_trim_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_fallback_trim_edit_edit = QtWidgets.QLineEdit(str(act.get('fallback_output_current_trim_value', '100.0')))
+            charged_hv_bus_fallback_trim_edit_edit.setValidator(charged_hv_bus_fallback_trim_validator_edit)
+            charged_hv_bus_fallback_trim_edit_edit.setPlaceholderText('e.g., 100.0')
+            
+            # Set Output Current Setpoint Signal: dropdown based on command message
+            charged_hv_bus_setpoint_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_setpoint_signals_edit():
+                """Update setpoint signal dropdown based on command message selection."""
+                charged_hv_bus_setpoint_signal_combo_edit.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_setpoint_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_setpoint_signals_edit()
+            charged_hv_bus_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_setpoint_signals_edit)
+            
+            # Output Test Current: double input (0-40)
+            charged_hv_bus_output_current_validator_edit = QtGui.QDoubleValidator(0.0, 40.0, 3, self)
+            charged_hv_bus_output_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_output_current_edit_edit = QtWidgets.QLineEdit(str(act.get('output_test_current', '10.0')))
+            charged_hv_bus_output_current_edit_edit.setValidator(charged_hv_bus_output_current_validator_edit)
+            charged_hv_bus_output_current_edit_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            charged_hv_bus_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # DUT Test State Signal: dropdown based on selected message
+            charged_hv_bus_dut_state_signal_combo_edit = QtWidgets.QComboBox()
+            # Enable Relay Signal: dropdown based on selected message
+            charged_hv_bus_enable_relay_signal_combo_edit = QtWidgets.QComboBox()
+            # Enable PFC Signal: dropdown based on selected message
+            charged_hv_bus_enable_pfc_signal_combo_edit = QtWidgets.QComboBox()
+            # PFC Power Good Signal: dropdown based on selected message
+            charged_hv_bus_pfc_power_good_signal_combo_edit = QtWidgets.QComboBox()
+            # PCMC Signal: dropdown based on selected message
+            charged_hv_bus_pcmc_signal_combo_edit = QtWidgets.QComboBox()
+            # PSFB Fault Signal: dropdown based on selected message
+            charged_hv_bus_psfb_fault_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_feedback_signals_edit(idx=0):
+                """Update all feedback signal dropdowns based on selected message."""
+                charged_hv_bus_dut_state_signal_combo_edit.clear()
+                charged_hv_bus_enable_relay_signal_combo_edit.clear()
+                charged_hv_bus_enable_pfc_signal_combo_edit.clear()
+                charged_hv_bus_pfc_power_good_signal_combo_edit.clear()
+                charged_hv_bus_pcmc_signal_combo_edit.clear()
+                charged_hv_bus_psfb_fault_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_dut_state_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_enable_relay_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_enable_pfc_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_pfc_power_good_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_pcmc_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_psfb_fault_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_feedback_signals_edit(0)
+            charged_hv_bus_feedback_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_feedback_signals_edit)
+            
+            # Test Time: integer input (>= 1000)
+            charged_hv_bus_test_time_validator_edit = QtGui.QIntValidator(1000, 600000, self)
+            charged_hv_bus_test_time_edit_edit = QtWidgets.QLineEdit(str(act.get('test_time_ms', '30000')))
+            charged_hv_bus_test_time_edit_edit.setValidator(charged_hv_bus_test_time_validator_edit)
+            charged_hv_bus_test_time_edit_edit.setPlaceholderText('e.g., 30000')
+            
+            # Populate Charged HV Bus Test fields from stored data
+            try:
+                cmd_msg_id = act.get('command_signal_source')
+                if cmd_msg_id is not None:
+                    for i in range(charged_hv_bus_cmd_msg_combo_edit.count()):
+                        if charged_hv_bus_cmd_msg_combo_edit.itemData(i) == cmd_msg_id:
+                            charged_hv_bus_cmd_msg_combo_edit.setCurrentIndex(i)
+                            _update_charged_hv_bus_trigger_signals_edit(i)
+                            _update_charged_hv_bus_trim_signals_edit()
+                            _update_charged_hv_bus_setpoint_signals_edit()
+                            break
+                if act.get('test_trigger_signal') and charged_hv_bus_trigger_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_trigger_signal_combo_edit.setCurrentText(str(act.get('test_trigger_signal')))
+                    except Exception:
+                        pass
+                if act.get('set_output_current_trim_signal') and charged_hv_bus_trim_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_trim_signal_combo_edit.setCurrentText(str(act.get('set_output_current_trim_signal')))
+                    except Exception:
+                        pass
+                if act.get('set_output_current_setpoint_signal') and charged_hv_bus_setpoint_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_setpoint_signal_combo_edit.setCurrentText(str(act.get('set_output_current_setpoint_signal')))
+                    except Exception:
+                        pass
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(charged_hv_bus_feedback_msg_combo_edit.count()):
+                        if charged_hv_bus_feedback_msg_combo_edit.itemData(i) == fb_msg_id:
+                            charged_hv_bus_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_charged_hv_bus_feedback_signals_edit(i)
+                            break
+                if act.get('dut_test_state_signal') and charged_hv_bus_dut_state_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_dut_state_signal_combo_edit.setCurrentText(str(act.get('dut_test_state_signal')))
+                    except Exception:
+                        pass
+                if act.get('enable_relay_signal') and charged_hv_bus_enable_relay_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_enable_relay_signal_combo_edit.setCurrentText(str(act.get('enable_relay_signal')))
+                    except Exception:
+                        pass
+                if act.get('enable_pfc_signal') and charged_hv_bus_enable_pfc_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_enable_pfc_signal_combo_edit.setCurrentText(str(act.get('enable_pfc_signal')))
+                    except Exception:
+                        pass
+                if act.get('pfc_power_good_signal') and charged_hv_bus_pfc_power_good_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_pfc_power_good_signal_combo_edit.setCurrentText(str(act.get('pfc_power_good_signal')))
+                    except Exception:
+                        pass
+                if act.get('pcmc_signal') and charged_hv_bus_pcmc_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_pcmc_signal_combo_edit.setCurrentText(str(act.get('pcmc_signal')))
+                    except Exception:
+                        pass
+                if act.get('psfb_fault_signal') and charged_hv_bus_psfb_fault_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_psfb_fault_signal_combo_edit.setCurrentText(str(act.get('psfb_fault_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Charged HV Bus Test sub-widget
+            charged_hv_bus_layout_edit.addRow('Command Signal Source:', charged_hv_bus_cmd_msg_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Test Trigger Signal:', charged_hv_bus_trigger_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Test Trigger Signal Value:', charged_hv_bus_trigger_value_edit_edit)
+            charged_hv_bus_layout_edit.addRow('Set Output Current Trim Value Signal:', charged_hv_bus_trim_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Fallback Output Current Trim Value (%):', charged_hv_bus_fallback_trim_edit_edit)
+            charged_hv_bus_layout_edit.addRow('Set Output Current Setpoint Signal:', charged_hv_bus_setpoint_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Output Test Current (A):', charged_hv_bus_output_current_edit_edit)
+            charged_hv_bus_layout_edit.addRow('Feedback Signal Source:', charged_hv_bus_feedback_msg_combo_edit)
+            charged_hv_bus_layout_edit.addRow('DUT Test State Signal:', charged_hv_bus_dut_state_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Enable Relay Signal:', charged_hv_bus_enable_relay_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Enable PFC Signal:', charged_hv_bus_enable_pfc_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('PFC Power Good Signal:', charged_hv_bus_pfc_power_good_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('PCMC Signal:', charged_hv_bus_pcmc_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('PSFB Fault Signal:', charged_hv_bus_psfb_fault_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Test Time (ms):', charged_hv_bus_test_time_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -10319,6 +10838,7 @@ Data Points Used: {data_points}"""
         test_type_to_index_edit['DC Bus Sensing'] = act_stacked_edit.addWidget(dc_bus_sensing_widget_edit)
         if self.dbc_service is not None and self.dbc_service.is_loaded():
             test_type_to_index_edit['Output Current Calibration'] = act_stacked_edit.addWidget(output_current_calibration_widget_edit)
+            test_type_to_index_edit['Charged HV Bus Test'] = act_stacked_edit.addWidget(charged_hv_bus_widget_edit)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked_edit)
@@ -10340,7 +10860,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -10375,7 +10895,7 @@ Data Points Used: {data_points}"""
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
             test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
-                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration')
+                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test')
             
             if data['type'] not in test_types_with_own_feedback:
                 # Only read and save feedback fields for test types that use them
@@ -10936,6 +11456,87 @@ Data Points Used: {data_points}"""
                         'acquisition_time_ms': acq_time,
                         'tolerance_percent': tolerance_percent,
                     }
+                elif data['type'] == 'Charged HV Bus Test':
+                    # Charged HV Bus Test: read all fields (DBC mode)
+                    try:
+                        cmd_msg_id = charged_hv_bus_cmd_msg_combo_edit.currentData() if 'charged_hv_bus_cmd_msg_combo_edit' in locals() else None
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_signal = charged_hv_bus_trigger_signal_combo_edit.currentText().strip() if 'charged_hv_bus_trigger_signal_combo_edit' in locals() and charged_hv_bus_trigger_signal_combo_edit.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_charged_hv_bus_trigger_value_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_charged_hv_bus_trigger_value_edit(charged_hv_bus_trigger_value_edit_edit) if 'charged_hv_bus_trigger_value_edit_edit' in locals() else None
+                    
+                    trim_signal = charged_hv_bus_trim_signal_combo_edit.currentText().strip() if 'charged_hv_bus_trim_signal_combo_edit' in locals() and charged_hv_bus_trim_signal_combo_edit.count() else ''
+                    
+                    # Fallback Output Current Trim Value (float, 0-200)
+                    def _to_float_or_none_charged_hv_bus_fallback_trim_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    fallback_trim = _to_float_or_none_charged_hv_bus_fallback_trim_edit(charged_hv_bus_fallback_trim_edit_edit) if 'charged_hv_bus_fallback_trim_edit_edit' in locals() else None
+                    
+                    setpoint_signal = charged_hv_bus_setpoint_signal_combo_edit.currentText().strip() if 'charged_hv_bus_setpoint_signal_combo_edit' in locals() and charged_hv_bus_setpoint_signal_combo_edit.count() else ''
+                    
+                    # Output Test Current (float, 0-40)
+                    def _to_float_or_none_charged_hv_bus_output_current_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current = _to_float_or_none_charged_hv_bus_output_current_edit(charged_hv_bus_output_current_edit_edit) if 'charged_hv_bus_output_current_edit_edit' in locals() else None
+                    
+                    try:
+                        feedback_msg_id = charged_hv_bus_feedback_msg_combo_edit.currentData() if 'charged_hv_bus_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    dut_state_signal = charged_hv_bus_dut_state_signal_combo_edit.currentText().strip() if 'charged_hv_bus_dut_state_signal_combo_edit' in locals() and charged_hv_bus_dut_state_signal_combo_edit.count() else ''
+                    enable_relay_signal = charged_hv_bus_enable_relay_signal_combo_edit.currentText().strip() if 'charged_hv_bus_enable_relay_signal_combo_edit' in locals() and charged_hv_bus_enable_relay_signal_combo_edit.count() else ''
+                    enable_pfc_signal = charged_hv_bus_enable_pfc_signal_combo_edit.currentText().strip() if 'charged_hv_bus_enable_pfc_signal_combo_edit' in locals() and charged_hv_bus_enable_pfc_signal_combo_edit.count() else ''
+                    pfc_power_good_signal = charged_hv_bus_pfc_power_good_signal_combo_edit.currentText().strip() if 'charged_hv_bus_pfc_power_good_signal_combo_edit' in locals() and charged_hv_bus_pfc_power_good_signal_combo_edit.count() else ''
+                    pcmc_signal = charged_hv_bus_pcmc_signal_combo_edit.currentText().strip() if 'charged_hv_bus_pcmc_signal_combo_edit' in locals() and charged_hv_bus_pcmc_signal_combo_edit.count() else ''
+                    psfb_fault_signal = charged_hv_bus_psfb_fault_signal_combo_edit.currentText().strip() if 'charged_hv_bus_psfb_fault_signal_combo_edit' in locals() and charged_hv_bus_psfb_fault_signal_combo_edit.count() else ''
+                    
+                    # Test Time (int, >= 1000)
+                    def _to_int_or_none_charged_hv_bus_test_time_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    test_time = _to_int_or_none_charged_hv_bus_test_time_edit(charged_hv_bus_test_time_edit_edit) if 'charged_hv_bus_test_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Charged HV Bus Test',
+                        'command_signal_source': cmd_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'set_output_current_trim_signal': trim_signal,
+                        'fallback_output_current_trim_value': fallback_trim,
+                        'set_output_current_setpoint_signal': setpoint_signal,
+                        'output_test_current': output_current,
+                        'feedback_signal_source': feedback_msg_id,
+                        'dut_test_state_signal': dut_state_signal,
+                        'enable_relay_signal': enable_relay_signal,
+                        'enable_pfc_signal': enable_pfc_signal,
+                        'pfc_power_good_signal': pfc_power_good_signal,
+                        'pcmc_signal': pcmc_signal,
+                        'psfb_fault_signal': psfb_fault_signal,
+                        'test_time_ms': test_time,
+                    }
             else:
                 if data['type'] == 'Digital Logic Test':
                     try:
@@ -11446,6 +12047,62 @@ Data Points Used: {data_points}"""
         only for test sequences via Run Sequence button.
         """
         self._on_run_selected()
+    
+    @QtCore.Slot()
+    def _show_charged_hv_bus_safety_dialog(self) -> None:
+        """Show pre-test safety dialog for Charged HV Bus Test.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.BlockingQueuedConnection.
+        
+        The result is stored in self._charged_hv_bus_dialog_result for retrieval.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            # Ensure we're in the main thread
+            from PySide6 import QtCore
+            if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+                logger.error("_show_charged_hv_bus_safety_dialog called from non-main thread!")
+                self._charged_hv_bus_dialog_result = QMessageBox.No
+                return
+            
+            # Create dialog with proper parent to ensure it's modal
+            msg_box = QMessageBox(self)
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            msg_box.setWindowTitle("Pre-Test Safety Check - Charged HV Bus Test")
+            msg_box.setText("Hardware Connection Requirements:")
+            msg_box.setInformativeText(
+                "1. Ensure that AC Input is connected to a switchable AC Input\n"
+                "2. Ensure that DC Output is connected to a Battery/Load Back\n\n"
+                "Proceed to Run Test?"
+            )
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.Yes)
+            
+            # Show dialog and store result
+            # exec() will block until user clicks a button
+            result = msg_box.exec()
+            self._charged_hv_bus_dialog_result = result
+        except Exception as e:
+            logger.error(f"Error in _show_charged_hv_bus_safety_dialog: {e}", exc_info=True)
+            # Return No on error to be safe
+            self._charged_hv_bus_dialog_result = QMessageBox.No
+    
+    @QtCore.Slot()
+    def _request_test_sequence_pause(self) -> None:
+        """Safely request pause on test execution thread from main thread.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.QueuedConnection.
+        """
+        try:
+            if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+                self.test_execution_thread.pause()
+                logger.info("Test sequence pause requested via safe method")
+        except Exception as e:
+            logger.error(f"Error requesting pause: {e}", exc_info=True)
 
     def _on_run_sequence(self) -> None:
         """Execute all configured tests in sequence using background thread.
@@ -11768,12 +12425,27 @@ Data Points Used: {data_points}"""
                             'fan_fault_samples': result_data.get('fan_fault_samples'),
                             'passed': result_data.get('passed', False)
                         }
-                        # Store raw data for potential plotting
-                        plot_data = {
-                            'fan_tach_values': result_data.get('fan_tach_values', []),
-                            'fan_fault_values': result_data.get('fan_fault_values', [])
-                        }
                         logger.debug(f"Retrieved stored result data for {test_name} (fan control test)")
+                elif test_type == 'Charged HV Bus Test':
+                    # Retrieve result data for Charged HV Bus Test
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'pfc_regulation_success': result_data.get('pfc_regulation_success'),
+                            'pcmc_success': result_data.get('pcmc_success'),
+                            'fault_detected': result_data.get('fault_detected'),
+                            'final_dut_state': result_data.get('final_dut_state'),
+                            'trigger_value': result_data.get('trigger_value'),
+                            'trim_value_used': result_data.get('trim_value_used'),
+                            'total_data_points': len(result_data.get('logged_data', [])),
+                            'passed': result_data.get('passed')
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (Charged HV Bus Test)")
                     else:
                         plot_data = None
                 

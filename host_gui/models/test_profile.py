@@ -7,10 +7,10 @@ from typing import Optional, Dict, Any, List
 
 @dataclass
 class ActuationConfig:
-    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, Analog PWM Sensor, Temperature Validation Test, or Fan Control Test).
+    """Configuration for test actuation (Digital Logic Test, Analog Sweep Test, Phase Current Test, Analog Static Test, Analog PWM Sensor, Temperature Validation Test, Fan Control Test, or Charged HV Bus Test).
     
     Attributes:
-        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', or 'Fan Control Test')
+        type: Test type ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', or 'Charged HV Bus Test')
         can_id: CAN message ID for actuation commands (digital tests)
         signal: Signal name for actuation (optional)
         value_low: Low value for digital tests
@@ -109,8 +109,25 @@ class ActuationConfig:
         pre_acquisition_time_ms: Time to wait before starting data acquisition (stabilization time)
         acquisition_time_ms: Time to collect data from both CAN and oscilloscope
         tolerance_percent: Maximum allowed gain error percentage
+        
+        For Charged HV Bus Test:
+        command_signal_source: CAN message ID for command messages
+        test_trigger_signal: Signal name for test trigger command
+        test_trigger_signal_value: Value to send for test trigger signal (user configurable, 0-255)
+        set_output_current_trim_signal: Signal name for setting output current trim value
+        fallback_output_current_trim_value: Fallback trim value (0-200%) if Output Current Calibration not performed
+        set_output_current_setpoint_signal: Signal name for setting output current setpoint
+        output_test_current: Output current setpoint in Amperes (0-40A)
+        feedback_signal_source: CAN message ID for feedback messages
+        dut_test_state_signal: Signal name for DUT test state feedback
+        enable_relay_signal: Signal name for AC relay enable feedback
+        enable_pfc_signal: Signal name for PFC enable feedback
+        pfc_power_good_signal: Signal name for PFC power good feedback
+        pcmc_signal: Signal name for Peak Current Mode Control feedback
+        psfb_fault_signal: Signal name for PSFB fault feedback (for future use)
+        test_time_ms: Test duration in milliseconds from test trigger (minimum 1000)
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', or 'Output Current Calibration'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', or 'Charged HV Bus Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -202,6 +219,23 @@ class ActuationConfig:
     pre_acquisition_time_ms: Optional[int] = None  # Time to wait before starting data acquisition
     acquisition_time_ms: Optional[int] = None  # Time to collect data from both CAN and oscilloscope
     tolerance_percent: Optional[float] = None  # Maximum allowed gain error percentage
+    
+    # Charged HV Bus Test fields
+    command_signal_source: Optional[int] = None  # CAN message ID for command messages
+    test_trigger_signal: Optional[str] = None  # Signal name for test trigger command (reused from Output Current Calibration)
+    test_trigger_signal_value: Optional[int] = None  # Value to send for test trigger signal (reused from Output Current Calibration)
+    set_output_current_trim_signal: Optional[str] = None  # Signal name for setting output current trim value
+    fallback_output_current_trim_value: Optional[float] = None  # Fallback trim value (0-200%)
+    set_output_current_setpoint_signal: Optional[str] = None  # Signal name for setting output current setpoint (reused from Output Current Calibration)
+    output_test_current: Optional[float] = None  # Output current setpoint in Amperes (0-40A)
+    # Note: feedback_signal_source is already defined for Analog Static Test
+    dut_test_state_signal: Optional[str] = None  # Signal name for DUT test state feedback
+    enable_relay_signal: Optional[str] = None  # Signal name for AC relay enable feedback
+    enable_pfc_signal: Optional[str] = None  # Signal name for PFC enable feedback
+    pfc_power_good_signal: Optional[str] = None  # Signal name for PFC power good feedback
+    pcmc_signal: Optional[str] = None  # Signal name for Peak Current Mode Control feedback
+    psfb_fault_signal: Optional[str] = None  # Signal name for PSFB fault feedback
+    test_time_ms: Optional[int] = None  # Test duration in milliseconds from test trigger
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -378,6 +412,37 @@ class ActuationConfig:
                 result['acquisition_time_ms'] = self.acquisition_time_ms
             if self.tolerance_percent is not None:
                 result['tolerance_percent'] = self.tolerance_percent
+        elif self.type == 'Charged HV Bus Test':
+            if self.command_signal_source is not None:
+                result['command_signal_source'] = self.command_signal_source
+            if self.test_trigger_signal:
+                result['test_trigger_signal'] = self.test_trigger_signal
+            if self.test_trigger_signal_value is not None:
+                result['test_trigger_signal_value'] = self.test_trigger_signal_value
+            if self.set_output_current_trim_signal:
+                result['set_output_current_trim_signal'] = self.set_output_current_trim_signal
+            if self.fallback_output_current_trim_value is not None:
+                result['fallback_output_current_trim_value'] = self.fallback_output_current_trim_value
+            if self.set_output_current_setpoint_signal:
+                result['set_output_current_setpoint_signal'] = self.set_output_current_setpoint_signal
+            if self.output_test_current is not None:
+                result['output_test_current'] = self.output_test_current
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.dut_test_state_signal:
+                result['dut_test_state_signal'] = self.dut_test_state_signal
+            if self.enable_relay_signal:
+                result['enable_relay_signal'] = self.enable_relay_signal
+            if self.enable_pfc_signal:
+                result['enable_pfc_signal'] = self.enable_pfc_signal
+            if self.pfc_power_good_signal:
+                result['pfc_power_good_signal'] = self.pfc_power_good_signal
+            if self.pcmc_signal:
+                result['pcmc_signal'] = self.pcmc_signal
+            if self.psfb_fault_signal:
+                result['psfb_fault_signal'] = self.psfb_fault_signal
+            if self.test_time_ms is not None:
+                result['test_time_ms'] = self.test_time_ms
         return result
     
     @classmethod

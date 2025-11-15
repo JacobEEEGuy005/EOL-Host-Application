@@ -31,6 +31,7 @@
   - AC Power Source (for AC input to DUT)
   
   Special Considerations:
+  - **Pre-Test Safety Dialog**: Before starting the test, the test sequence must pause and display a safety confirmation dialog. The dialog lists hardware connection requirements and asks the user to confirm before proceeding. If the user clicks "No", the test sequence pauses and the same dialog will appear again when the user resumes the sequence.
   - Test requires Output Current Calibration test to be performed prior (for trim value)
   - If Output Current Calibration was not performed, uses fallback trim value from user input
   - Test monitors multiple feedback signals simultaneously during execution
@@ -98,6 +99,25 @@ If the test uses CAN communication, specify:
 Describe the step-by-step execution flow:
 
 ```
+0. Pre-Test Safety Dialog
+   - Action: 
+     1. Pause test sequence execution
+     2. Display modal dialog with title "Pre-Test Safety Check - Charged HV Bus Test"
+     3. Dialog content:
+        - Requirements list:
+          * "1. Ensure that AC Input is connected to a switchable AC Input"
+          * "2. Ensure that DC Output is connected to a Battery/Load Back"
+        - Text: "Proceed to Run Test"
+        - Buttons: "Yes" and "No"
+     4. Wait for user response:
+        - If user clicks "Yes": Continue to step 1
+        - If user clicks "No": 
+          * Pause test sequence (do not proceed)
+          * User can resume test sequence later
+          * When user resumes, return to step 0 (show dialog again)
+   - Duration: User-dependent (until user responds)
+   - Expected result: User confirms hardware connections are ready, or test sequence paused
+
 1. Initialize and Get Output Current Trim Value
    - Action: 
      1. Check if Output Current Calibration test was performed previously in test sequence
@@ -394,6 +414,29 @@ Specify the UI fields needed:
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
 
+### Pre-Test Safety Dialog Requirements
+- **Show Pre-Test Dialog**: `Yes` - Dialog must appear before test execution starts
+- **Dialog Type**: `QMessageBox` or custom `QDialog` with modal blocking
+- **Dialog Title**: `"Pre-Test Safety Check - Charged HV Bus Test"`
+- **Dialog Content**: 
+  - Requirements list (bulleted):
+    1. "Ensure that AC Input is connected to a switchable AC Input"
+    2. "Ensure that DC Output is connected to a Battery/Load Back"
+  - Confirmation text: "Proceed to Run Test"
+- **Dialog Buttons**: 
+  - "Yes" button (default/accept) - Proceeds with test execution
+  - "No" button (reject) - Pauses test sequence
+- **Dialog Behavior**:
+  - Modal dialog (blocks test execution until user responds)
+  - If "Yes": Dialog closes, test proceeds to step 1
+  - If "No": Dialog closes, test sequence pauses, user can resume later
+  - On resume: Dialog appears again (same content and behavior)
+- **Implementation Notes**:
+  - Dialog should be shown before any test initialization or CAN communication
+  - Dialog must be shown in the main GUI thread (not in background test thread)
+  - Test sequence pause/resume mechanism should be used for "No" response
+  - Dialog should be non-dismissible (user must click Yes or No)
+
 ## Validation Rules
 
 ### Schema Validation
@@ -558,11 +601,12 @@ List potential errors and how to handle them:
 ## Implementation Notes
 
 ### Special Considerations
+- **Pre-Test Safety Dialog**: Before test execution begins, a modal safety confirmation dialog must be displayed. The dialog lists two hardware connection requirements and asks the user to confirm readiness. If the user clicks "No", the test sequence pauses and the dialog will reappear when the user resumes the sequence. This ensures proper hardware connections before starting the test, which is critical for safety and test validity. The dialog must be shown in the main GUI thread before any test initialization occurs.
 - **Output Current Calibration Dependency**: Test attempts to retrieve adjustment_factor from previous "Output Current Calibration" test in the test sequence. If not found, uses fallback value. Implementation should search test results/execution history for previous test.
 - **Multi-Signal Monitoring**: Test monitors 6 feedback signals simultaneously during execution. All signals must be logged with timestamps for post-execution analysis.
 - **Post-Execution Analysis**: Test performs analysis of logged CAN data after test execution completes. This requires storing all logged data with timestamps.
 - **Fault Detection**: Test must immediately fail if DUT Test State = 7 is detected at any point during execution.
-- **State Machine Pattern**: Test uses a simple state machine: Initialize → Send Commands → Monitor → Analyze → Determine Result
+- **State Machine Pattern**: Test uses a simple state machine: Pre-Test Dialog → Initialize → Send Commands → Monitor → Analyze → Determine Result
 - **PSFB Fault Signal**: Currently logged but not used for pass/fail determination (reserved for future implementation)
 
 ### Dependencies
@@ -599,12 +643,14 @@ List potential errors and how to handle them:
   - Charged HV Bus Test has longer duration (user configurable)
 
 ### Code Patterns to Use
+- **Pre-Test Dialog Pattern**: Show modal dialog before test execution, pause sequence if user declines, re-show dialog on resume. Dialog should be shown in main GUI thread using QMessageBox or QDialog with proper signal/slot connection to test execution thread.
 - **Multi-Signal Monitoring Pattern**: Poll and log multiple signals simultaneously with timestamps
 - **Post-Execution Analysis Pattern**: Store logged data and analyze after test execution completes
 - **Previous Test Result Access Pattern**: Search test execution history/results for previous test data
 - **Fault Detection Pattern**: Check for fault condition during monitoring and fail immediately
-- **State Transition Pattern**: Use state machine for test flow (Initialize → Send → Monitor → Analyze → Result)
+- **State Transition Pattern**: Use state machine for test flow (Pre-Test Dialog → Initialize → Send → Monitor → Analyze → Result)
 - **DBC Encoding Pattern**: Use DBC service for encoding command messages
+- **Test Sequence Pause/Resume Pattern**: Use test execution thread pause/resume mechanism when user clicks "No" in pre-test dialog
 
 ## Acceptance Criteria
 
@@ -615,6 +661,11 @@ List potential errors and how to handle them:
 - [ ] Test can be created and saved successfully
 - [ ] Test can be edited and saved successfully
 - [ ] Validation works correctly (rejects invalid configurations)
+- [ ] Pre-test safety dialog appears before test execution starts
+- [ ] Pre-test dialog shows correct requirements (AC Input and DC Output connections)
+- [ ] Pre-test dialog "Yes" button proceeds with test execution
+- [ ] Pre-test dialog "No" button pauses test sequence
+- [ ] Pre-test dialog reappears when test sequence is resumed after "No" response
 - [ ] Test execution runs without errors
 - [ ] Test execution returns correct pass/fail results
 - [ ] Test results appear in results table
@@ -630,6 +681,7 @@ List potential errors and how to handle them:
 - [ ] Logging added for debugging
 - [ ] Non-blocking sleep used (no `time.sleep()`)
 - [ ] DBC mode supported (required)
+- [ ] Pre-test safety dialog implemented correctly (modal, blocks execution, pause/resume integration)
 - [ ] Multi-signal monitoring implemented correctly
 - [ ] Post-execution data analysis implemented correctly
 - [ ] Previous test result access implemented (for Output Current Calibration)
@@ -639,6 +691,10 @@ List potential errors and how to handle them:
 - [ ] Test with valid configuration
 - [ ] Test with invalid configuration (should fail validation)
 - [ ] Test with DBC loaded (required)
+- [ ] Pre-test dialog appears before test execution
+- [ ] Pre-test dialog "Yes" button proceeds correctly
+- [ ] Pre-test dialog "No" button pauses sequence correctly
+- [ ] Pre-test dialog reappears on resume after "No" response
 - [ ] Test execution produces correct results
 - [ ] Error cases handled gracefully (fault detection, signal not found, etc.)
 - [ ] Test with Output Current Calibration performed prior
@@ -668,11 +724,12 @@ Please implement this new test type following the documentation in:
    - `host_gui/test_runner.py`
    - `host_gui/services/test_execution_service.py` (optional)
 4. Implement validation logic
-5. Implement execution logic with multi-signal monitoring
-6. Implement post-execution data analysis
-7. Implement previous test result access (for Output Current Calibration)
-8. Test thoroughly with both valid and invalid configurations
-9. Ensure all acceptance criteria are met
+5. Implement pre-test safety dialog (modal dialog with Yes/No, pause sequence on No, re-show on resume)
+6. Implement execution logic with multi-signal monitoring
+7. Implement post-execution data analysis
+8. Implement previous test result access (for Output Current Calibration)
+9. Test thoroughly with both valid and invalid configurations
+10. Ensure all acceptance criteria are met
 
 ### Key Reminders
 - Use exact test type name consistently across all files: `"Charged HV Bus Test"`
@@ -681,6 +738,7 @@ Please implement this new test type following the documentation in:
 - Provide meaningful error messages
 - Add appropriate logging
 - Follow existing code patterns and style
+- **Implement pre-test safety dialog before test execution starts** - Show modal dialog with hardware connection requirements, pause sequence if user clicks "No", re-show dialog when user resumes
 - Implement multi-signal monitoring with timestamped logging
 - Implement post-execution analysis for PFC Regulation and PCMC Success
 - Access previous test results for Output Current Calibration adjustment_factor

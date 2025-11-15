@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration","Charged HV Bus Test"]},
           "feedback_signal": {"type":["string","null"]},
           "actuation": {
             "type": "object",
@@ -176,6 +176,43 @@
                   "pre_acquisition_time_ms",
                   "acquisition_time_ms",
                   "tolerance_percent"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Charged HV Bus Test"},
+                  "command_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "test_trigger_signal": {"type":"string"},
+                  "test_trigger_signal_value": {"type":"integer", "minimum":0, "maximum":255},
+                  "set_output_current_trim_signal": {"type":"string"},
+                  "fallback_output_current_trim_value": {"type":"number", "minimum":0, "maximum":200},
+                  "set_output_current_setpoint_signal": {"type":"string"},
+                  "output_test_current": {"type":"number", "minimum":0, "maximum":40},
+                  "feedback_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "dut_test_state_signal": {"type":"string"},
+                  "enable_relay_signal": {"type":"string"},
+                  "enable_pfc_signal": {"type":"string"},
+                  "pfc_power_good_signal": {"type":"string"},
+                  "pcmc_signal": {"type":"string"},
+                  "psfb_fault_signal": {"type":"string"},
+                  "test_time_ms": {"type":"integer", "minimum":1000}
+                },
+                "required": [
+                  "command_signal_source",
+                  "test_trigger_signal",
+                  "test_trigger_signal_value",
+                  "set_output_current_trim_signal",
+                  "fallback_output_current_trim_value",
+                  "set_output_current_setpoint_signal",
+                  "output_test_current",
+                  "feedback_signal_source",
+                  "dut_test_state_signal",
+                  "enable_relay_signal",
+                  "enable_pfc_signal",
+                  "pfc_power_good_signal",
+                  "pcmc_signal",
+                  "psfb_fault_signal",
+                  "test_time_ms"
                 ]
               },
               {

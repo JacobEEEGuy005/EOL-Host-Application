@@ -185,21 +185,40 @@ class TestExecutionThread(QtCore.QThread):
                 self.test_progress.emit(progress)
                 
                 # Check for pause request after test completes (but before next test starts)
-                # Only pause if there are more tests to run
-                if self._pause_requested and i < total_tests - 1:
-                    self._pause_lock.lock()
-                    self._is_paused = True
-                    self.sequence_paused.emit()
-                    logger.info(f"Test sequence paused after test {i+1}/{total_tests}")
-                    
-                    # Wait until resume is called
-                    while self._is_paused and not self._stop_requested:
-                        self._pause_condition.wait(self._pause_lock, 100)  # Wait 100ms at a time
-                    
-                    if not self._stop_requested:
-                        self.sequence_resumed.emit()
-                        logger.info(f"Test sequence resumed, continuing with test {i+2}/{total_tests}")
-                    self._pause_lock.unlock()
+                # Pause if requested and there are more tests to run, OR if this was the last test
+                # (pausing on last test allows user to review results before sequence ends)
+                if self._pause_requested:
+                    if i < total_tests - 1:
+                        # Pause before next test
+                        self._pause_lock.lock()
+                        self._is_paused = True
+                        self.sequence_paused.emit()
+                        logger.info(f"Test sequence paused after test {i+1}/{total_tests}")
+                        
+                        # Wait until resume is called
+                        while self._is_paused and not self._stop_requested:
+                            self._pause_condition.wait(self._pause_lock, 100)  # Wait 100ms at a time
+                        
+                        if not self._stop_requested:
+                            self.sequence_resumed.emit()
+                            logger.info(f"Test sequence resumed, continuing with test {i+2}/{total_tests}")
+                        self._pause_lock.unlock()
+                    else:
+                        # Last test - still pause to allow user to review before sequence ends
+                        # Note: This is a soft pause - sequence will end after resume
+                        self._pause_lock.lock()
+                        self._is_paused = True
+                        self.sequence_paused.emit()
+                        logger.info(f"Test sequence paused after final test {i+1}/{total_tests}")
+                        
+                        # Wait until resume is called (or timeout)
+                        while self._is_paused and not self._stop_requested:
+                            self._pause_condition.wait(self._pause_lock, 100)  # Wait 100ms at a time
+                        
+                        if not self._stop_requested:
+                            self.sequence_resumed.emit()
+                            logger.info("Test sequence resumed after final test")
+                        self._pause_lock.unlock()
             
             # Generate summary
             if cancelled:
