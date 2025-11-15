@@ -3767,51 +3767,131 @@ Data Points Used: {data_points}"""
                 elif test_type == 'Output Current Calibration' or (test_config and test_config.get('type') == 'Output Current Calibration'):
                     plot_data = exec_data.get('plot_data')
                     if plot_data:
-                        # Calibration results data
-                        # Support both old format (gain_error) and new format (avg_gain_error)
-                        slope = plot_data.get('slope')
-                        intercept = plot_data.get('intercept')
-                        gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
-                        adjustment_factor = plot_data.get('adjustment_factor')
-                        tolerance_percent = plot_data.get('tolerance_percent')
+                        # Check for dual sweep data (new format) or single plot data (old format)
+                        first_sweep_data = plot_data.get('first_sweep')
+                        second_sweep_data = plot_data.get('second_sweep')
                         
-                        if (slope is not None or intercept is not None or gain_error is not None or 
-                            adjustment_factor is not None or tolerance_percent is not None):
+                        if first_sweep_data and second_sweep_data:
+                            # New format: Dual sweep results
                             html_parts.append('<h3>Calibration Results</h3>')
                             html_parts.append('<table class="calibration-table">')
                             html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
                             
-                            if slope is not None:
-                                html_parts.append(f'<tr><td>Slope</td><td>{slope:.6f} (ideal: 1.0)</td></tr>')
-                            if intercept is not None:
-                                html_parts.append(f'<tr><td>Intercept (A)</td><td>{intercept:.6f}</td></tr>')
-                            if gain_error is not None:
-                                # Use appropriate label based on format
-                                if plot_data.get('avg_gain_error') is not None:
-                                    html_parts.append(f'<tr><td>Average Gain Error (%)</td><td>{gain_error:.4f}%</td></tr>')
-                                else:
-                                    html_parts.append(f'<tr><td>Gain Error (%)</td><td>{gain_error:+.4f}%</td></tr>')
-                            if adjustment_factor is not None:
-                                html_parts.append(f'<tr><td>Adjustment Factor</td><td>{adjustment_factor:.6f}</td></tr>')
+                            # First sweep results
+                            first_slope = first_sweep_data.get('slope')
+                            first_intercept = first_sweep_data.get('intercept')
+                            first_gain_error = first_sweep_data.get('gain_error')
+                            first_adjustment = first_sweep_data.get('adjustment_factor')
+                            first_trim = first_sweep_data.get('trim_value')
+                            
+                            if first_trim is not None:
+                                html_parts.append(f'<tr><td>First Sweep (Trim Value)</td><td>{first_trim}%</td></tr>')
+                            if first_slope is not None:
+                                html_parts.append(f'<tr><td>First Sweep Slope</td><td>{first_slope:.6f} (ideal: 1.0)</td></tr>')
+                            if first_intercept is not None:
+                                html_parts.append(f'<tr><td>First Sweep Intercept</td><td>{first_intercept:.6f} A</td></tr>')
+                            if first_gain_error is not None:
+                                html_parts.append(f'<tr><td>First Sweep Gain Error (%)</td><td>{first_gain_error:.4f}%</td></tr>')
+                            if first_adjustment is not None:
+                                html_parts.append(f'<tr><td>First Sweep Adjustment Factor</td><td>{first_adjustment:.6f}</td></tr>')
+                            
+                            # Calculated trim value
+                            calculated_trim = plot_data.get('calculated_trim_value')
+                            if calculated_trim is not None:
+                                html_parts.append(f'<tr><td>Calculated Trim Value (%)</td><td>{calculated_trim:.4f}%</td></tr>')
+                            
+                            # Second sweep results
+                            second_slope = second_sweep_data.get('slope')
+                            second_intercept = second_sweep_data.get('intercept')
+                            second_gain_error = second_sweep_data.get('gain_error')
+                            second_trim = second_sweep_data.get('trim_value')
+                            tolerance_percent = plot_data.get('tolerance_percent')
+                            
+                            if second_trim is not None:
+                                html_parts.append(f'<tr><td>Second Sweep (Trim Value)</td><td>{second_trim:.4f}%</td></tr>')
+                            if second_slope is not None:
+                                html_parts.append(f'<tr><td>Second Sweep Slope</td><td>{second_slope:.6f} (ideal: 1.0)</td></tr>')
+                            if second_intercept is not None:
+                                html_parts.append(f'<tr><td>Second Sweep Intercept</td><td>{second_intercept:.6f} A</td></tr>')
+                            if second_gain_error is not None:
+                                html_parts.append(f'<tr><td>Second Sweep Gain Error (%)</td><td>{second_gain_error:.4f}%</td></tr>')
                             if tolerance_percent is not None:
                                 html_parts.append(f'<tr><td>Tolerance (%)</td><td>{tolerance_percent:.4f}%</td></tr>')
-                                if gain_error is not None:
-                                    passed = abs(gain_error) <= tolerance_percent
+                                if second_gain_error is not None:
+                                    passed = abs(second_gain_error) <= tolerance_percent
                                     result_class = 'status-pass' if passed else 'status-fail'
                                     html_parts.append(f'<tr><td>Result</td><td class="{result_class}">{"PASS" if passed else "FAIL"}</td></tr>')
                             
                             html_parts.append('</table>')
-                        
-                        # Plot image (DUT vs Oscilloscope)
-                        osc_averages = plot_data.get('osc_averages', [])
-                        can_averages = plot_data.get('can_averages', [])
-                        
-                        if osc_averages and can_averages:
-                            plot_base64 = self._generate_output_current_calibration_plot_base64(
-                                test_name, osc_averages, can_averages, slope, intercept)
-                            if plot_base64:
-                                html_parts.append('<h3>Plot: Output Current Calibration (DUT vs Oscilloscope)</h3>')
-                                html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Output Current Calibration Plot for {test_name}" class="plot-image">')
+                            
+                            # First sweep plot
+                            first_osc_averages = first_sweep_data.get('osc_averages', [])
+                            first_can_averages = first_sweep_data.get('can_averages', [])
+                            if first_osc_averages and first_can_averages:
+                                first_plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                    test_name, first_osc_averages, first_can_averages, first_slope, first_intercept)
+                                if first_plot_base64:
+                                    first_plot_label = first_sweep_data.get('plot_label', 'First Sweep')
+                                    html_parts.append(f'<h3>Plot: {first_plot_label}</h3>')
+                                    html_parts.append(f'<img src="data:image/png;base64,{first_plot_base64}" alt="{first_plot_label} for {test_name}" class="plot-image">')
+                            
+                            # Second sweep plot
+                            second_osc_averages = second_sweep_data.get('osc_averages', [])
+                            second_can_averages = second_sweep_data.get('can_averages', [])
+                            if second_osc_averages and second_can_averages:
+                                second_plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                    test_name, second_osc_averages, second_can_averages, second_slope, second_intercept)
+                                if second_plot_base64:
+                                    second_plot_label = second_sweep_data.get('plot_label', 'Second Sweep')
+                                    html_parts.append(f'<h3>Plot: {second_plot_label}</h3>')
+                                    html_parts.append(f'<img src="data:image/png;base64,{second_plot_base64}" alt="{second_plot_label} for {test_name}" class="plot-image">')
+                        else:
+                            # Old format: Single plot (backward compatibility)
+                            # Calibration results data
+                            # Support both old format (gain_error) and new format (avg_gain_error)
+                            slope = plot_data.get('slope')
+                            intercept = plot_data.get('intercept')
+                            gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
+                            adjustment_factor = plot_data.get('adjustment_factor')
+                            tolerance_percent = plot_data.get('tolerance_percent')
+                            
+                            if (slope is not None or intercept is not None or gain_error is not None or 
+                                adjustment_factor is not None or tolerance_percent is not None):
+                                html_parts.append('<h3>Calibration Results</h3>')
+                                html_parts.append('<table class="calibration-table">')
+                                html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
+                                
+                                if slope is not None:
+                                    html_parts.append(f'<tr><td>Slope</td><td>{slope:.6f} (ideal: 1.0)</td></tr>')
+                                if intercept is not None:
+                                    html_parts.append(f'<tr><td>Intercept (A)</td><td>{intercept:.6f}</td></tr>')
+                                if gain_error is not None:
+                                    # Use appropriate label based on format
+                                    if plot_data.get('avg_gain_error') is not None:
+                                        html_parts.append(f'<tr><td>Average Gain Error (%)</td><td>{gain_error:.4f}%</td></tr>')
+                                    else:
+                                        html_parts.append(f'<tr><td>Gain Error (%)</td><td>{gain_error:+.4f}%</td></tr>')
+                                if adjustment_factor is not None:
+                                    html_parts.append(f'<tr><td>Adjustment Factor</td><td>{adjustment_factor:.6f}</td></tr>')
+                                if tolerance_percent is not None:
+                                    html_parts.append(f'<tr><td>Tolerance (%)</td><td>{tolerance_percent:.4f}%</td></tr>')
+                                    if gain_error is not None:
+                                        passed = abs(gain_error) <= tolerance_percent
+                                        result_class = 'status-pass' if passed else 'status-fail'
+                                        html_parts.append(f'<tr><td>Result</td><td class="{result_class}">{"PASS" if passed else "FAIL"}</td></tr>')
+                                
+                                html_parts.append('</table>')
+                            
+                            # Plot image (DUT vs Oscilloscope)
+                            osc_averages = plot_data.get('osc_averages', [])
+                            can_averages = plot_data.get('can_averages', [])
+                            
+                            if osc_averages and can_averages:
+                                plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                    test_name, osc_averages, can_averages, slope, intercept)
+                                if plot_base64:
+                                    html_parts.append('<h3>Plot: Output Current Calibration (DUT vs Oscilloscope)</h3>')
+                                    html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Output Current Calibration Plot for {test_name}" class="plot-image">')
                 
                 html_parts.append('</div>')
             
@@ -12643,9 +12723,8 @@ Data Points Used: {data_points}"""
         self.status_label.setText(f'Running test sequence ({total_tests} tests)...')
         logger.debug(f"Sequence started: {total_tests} tests")
         
-        # Enable pause button only if there's more than 1 test
-        if total_tests > 1:
-            self.pause_test_btn.setEnabled(True)
+        # Enable pause button for all test sequences (including single test)
+        self.pause_test_btn.setEnabled(True)
         self.resume_test_btn.setEnabled(False)
     
     def _on_sequence_progress(self, current: int, total: int) -> None:
@@ -12653,12 +12732,9 @@ Data Points Used: {data_points}"""
         self.progress_bar.setValue(current)
         self.status_label.setText(f'Running test {current}/{total}...')
         
-        # Disable pause button when on the last test (no point in pausing)
-        if current >= total - 1:
-            self.pause_test_btn.setEnabled(False)
-        elif total > 1:
-            # Re-enable pause button if we're not on the last test and there's more than 1 test
-            self.pause_test_btn.setEnabled(True)
+        # Keep pause button enabled for all tests (including last test)
+        # User can pause even on the last test to review results before sequence ends
+        self.pause_test_btn.setEnabled(True)
     
     def _on_test_started(self, test_index: int, test_name: str) -> None:
         """Handle test started signal from TestExecutionThread."""
@@ -12962,15 +13038,11 @@ Data Points Used: {data_points}"""
         """Handle pause test button click.
         
         Requests the test sequence to pause after the current test completes.
-        Only works when a sequence is running and has more than 1 test.
+        Works when a sequence is running (including single test sequences).
         """
         if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
-            # Check if there's more than 1 test
-            if len(self._tests) > 1:
-                self.test_execution_thread.pause()
-                logger.info("Pause test requested")
-            else:
-                logger.debug("Pause ignored - only single test in sequence")
+            self.test_execution_thread.pause()
+            logger.info("Pause test requested")
         else:
             logger.debug("Pause ignored - no test sequence running")
     
