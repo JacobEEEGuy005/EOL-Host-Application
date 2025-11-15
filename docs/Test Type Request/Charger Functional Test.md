@@ -24,7 +24,7 @@
   - The test monitors fault signals throughout the test duration
   - If DUT Test State Signal value goes to 7, the DUT has faults and the test fails immediately
   - After test timeout, the test analyzes logged CAN data to verify:
-    1. PFC Regulation: PFC Power Good signal transitions from 0→1 after Enable PFC becomes 1
+    1. PFC Regulation: PFC Power Good signal transitions from 1→0 after Enable PFC becomes 1 (PFC is regulating when signal is 0)
     2. PCMC Success: PCMC signal value is 1 (Peak Current Mode Control successful)
     3. Output Current Regulation: Average output current measured from CAN for the last 1s is within 
        tolerance of the Output Test Current value
@@ -95,7 +95,7 @@ If the test uses CAN communication, specify:
     - `dut_test_state_signal` - DUT test state (value 7 = fault, matching trigger value = no fault)
     - `enable_relay_signal` - AC relay enable state
     - `enable_pfc_signal` - PFC enable state
-    - `pfc_power_good_signal` - PFC power good status (0→1 transition indicates regulation)
+    - `pfc_power_good_signal` - PFC power good status (1→0 transition indicates regulation, PFC is regulating when signal is 0)
     - `pcmc_signal` - Peak Current Mode Control flag (1 = successful)
     - `output_current_signal` - Output current feedback (for regulation verification)
     - `psfb_fault_signal` - PSFB fault status
@@ -196,9 +196,9 @@ Describe the step-by-step execution flow:
      2. For each timestamp where enable_pfc_signal = 1:
         - Check pfc_power_good_signal value at that timestamp
         - Check pfc_power_good_signal value at later timestamps
-        - Verify if pfc_power_good_signal transitions from 0→1 after enable_pfc_signal = 1
-     3. If transition 0→1 found: PFC Regulation = SUCCESS
-     4. If no transition found or pfc_power_good_signal never becomes 1: PFC Regulation = FAIL
+        - Verify if pfc_power_good_signal transitions from 1→0 after enable_pfc_signal = 1
+     3. If transition 1→0 found: PFC Regulation = SUCCESS (PFC is regulating when signal is 0)
+     4. If no transition found or pfc_power_good_signal never transitions from 1→0: PFC Regulation = FAIL
    - Duration: As fast as possible (data analysis)
    - Expected result: PFC Regulation status determined
 
@@ -236,8 +236,8 @@ Describe the step-by-step execution flow:
 ### Pass/Fail Criteria
 Define how the test determines pass or fail:
 
-- **Pass Condition**: `PFC Regulation is successful (PFC Power Good transitions 0→1 after Enable PFC = 1) AND PCMC Success (PCMC signal = 1) AND Output Current Regulation is successful (average output current in last 1s is within tolerance of Output Test Current) AND No fault occurred (DUT Test State never = 7, and equals Test Trigger Signal Value at end)`
-- **Fail Condition**: `DUT Test State = 7 (fault) OR PFC Regulation failed (PFC Power Good never transitions 0→1) OR PCMC Success failed (PCMC signal ≠ 1) OR Output Current Regulation failed (average output current outside tolerance)`
+- **Pass Condition**: `PFC Regulation is successful (PFC Power Good transitions 1→0 after Enable PFC = 1, PFC is regulating when signal is 0) AND PCMC Success (PCMC signal = 1) AND Output Current Regulation is successful (average output current in last 1s is within tolerance of Output Test Current) AND No fault occurred (DUT Test State never = 7, and equals Test Trigger Signal Value at end)`
+- **Fail Condition**: `DUT Test State = 7 (fault) OR PFC Regulation failed (PFC Power Good never transitions 1→0) OR PCMC Success failed (PCMC signal ≠ 1) OR Output Current Regulation failed (average output current outside tolerance)`
 - **Calculation Method**: 
   ```
   1. Fault Check:
@@ -246,8 +246,8 @@ Define how the test determines pass or fail:
   
   2. PFC Regulation Check:
      - Find timestamps where enable_pfc_signal = 1
-     - Check if pfc_power_good_signal transitions from 0→1 after enable_pfc_signal = 1
-     - If transition found → PFC Regulation = SUCCESS
+     - Check if pfc_power_good_signal transitions from 1→0 after enable_pfc_signal = 1
+     - If transition 1→0 found → PFC Regulation = SUCCESS (PFC is regulating when signal is 0)
      - If no transition → PFC Regulation = FAIL
   
   3. PCMC Success Check:
@@ -295,7 +295,7 @@ Specify what data needs to be collected:
   2. Post-Execution Analysis:
      - Analyze logged data for PFC Regulation:
        * Find enable_pfc_signal = 1 timestamps
-       * Check pfc_power_good_signal transition from 0→1
+       * Check pfc_power_good_signal transition from 1→0 (PFC is regulating when signal is 0)
      - Analyze logged data for PCMC Success:
        * Check latest pcmc_signal value
      - Analyze logged data for Output Current Regulation:
@@ -580,8 +580,8 @@ List potential errors and how to handle them:
    - Handling: Return `False, "No data collected: signal {signal_name} not found"`
 
 6. **PFC Regulation Failed**
-   - Error: `"PFC Power Good signal never transitioned from 0→1"`
-   - Handling: Return `False, "PFC Regulation failed: PFC Power Good never became 1"`
+   - Error: `"PFC Power Good signal never transitioned from 1→0"`
+   - Handling: Return `False, "PFC Regulation failed: PFC Power Good never transitioned from 1→0 (PFC is regulating when signal is 0)"`
 
 7. **PCMC Success Failed**
    - Error: `"PCMC signal is not 1"`

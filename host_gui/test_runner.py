@@ -2964,6 +2964,604 @@ class TestRunner:
                 
                 logger.info(f"Charged HV Bus Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            elif act.get('type') == 'Charger Functional Test':
+                # Charger Functional Test execution:
+                # 0) Pre-Test Safety Dialog (BEFORE any test execution)
+                # 1) Get Output Current Trim Value (from previous test or fallback)
+                # 2) Send Output Current Trim Value
+                # 3) Send Output Current Setpoint
+                # 4) Start CAN Data Logging and Send Test Trigger
+                # 5) Monitor Test Execution (until test_time_ms elapsed)
+                # 6) Stop Test and Logging
+                # 7) Analyze Logged CAN Data - PFC Regulation
+                # 8) Analyze Logged CAN Data - PCMC Success
+                # 9) Analyze Logged CAN Data - Output Current Regulation
+                # 10) Determine Pass/Fail
+                
+                # Step 0: Pre-Test Safety Dialog - MUST be shown BEFORE any test execution
+                # Must be shown in main GUI thread (Qt requirement)
+                logger.info("Charger Functional Test: Showing pre-test safety dialog BEFORE test execution...")
+                dialog_result = None
+                
+                if self.gui is not None:
+                    try:
+                        from PySide6 import QtCore
+                        from PySide6.QtWidgets import QMessageBox
+                        
+                        # Check if we're in the main thread
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread == main_thread:
+                            # We're in the main thread, show dialog directly
+                            self.gui._show_charger_functional_safety_dialog()
+                            dialog_result = getattr(self.gui, '_charger_functional_dialog_result', QMessageBox.No)
+                        else:
+                            # We're in a background thread, use BlockingQueuedConnection
+                            # This will block the background thread until the dialog method returns
+                            # Initialize result attribute if not present
+                            if not hasattr(self.gui, '_charger_functional_dialog_result'):
+                                self.gui._charger_functional_dialog_result = None
+                            
+                            # Clear previous result
+                            self.gui._charger_functional_dialog_result = None
+                            
+                            # Invoke dialog in main thread using BlockingQueuedConnection
+                            # This blocks until the method completes
+                            success = QtCore.QMetaObject.invokeMethod(
+                                self.gui,
+                                '_show_charger_functional_safety_dialog',
+                                QtCore.Qt.ConnectionType.BlockingQueuedConnection
+                            )
+                            
+                            if success:
+                                # After BlockingQueuedConnection returns, the method has completed
+                                # Get the result that was stored
+                                dialog_result = getattr(self.gui, '_charger_functional_dialog_result', QMessageBox.No)
+                                if dialog_result is None:
+                                    logger.warning("Dialog result is None, defaulting to No")
+                                    dialog_result = QMessageBox.No
+                            else:
+                                logger.warning("Failed to invoke dialog method, defaulting to No")
+                                dialog_result = QMessageBox.No
+                        
+                        if dialog_result == QMessageBox.No:
+                            # Request pause of test sequence - test will NOT execute
+                            logger.info("Charger Functional Test: User declined safety check, pausing test sequence (test will not execute)")
+                            
+                            # Request pause safely from main thread using QMetaObject.invokeMethod
+                            # This avoids threading issues that can cause segfaults
+                            if self.gui is not None:
+                                try:
+                                    # Check if we're in the main thread
+                                    current_thread = QtCore.QThread.currentThread()
+                                    main_thread = QtCore.QCoreApplication.instance().thread()
+                                    
+                                    if current_thread == main_thread:
+                                        # We're in the main thread, call directly
+                                        if hasattr(self.gui, '_request_test_sequence_pause'):
+                                            self.gui._request_test_sequence_pause()
+                                    else:
+                                        # We're in a background thread, use QueuedConnection (non-blocking)
+                                        QtCore.QMetaObject.invokeMethod(
+                                            self.gui,
+                                            '_request_test_sequence_pause',
+                                            QtCore.Qt.ConnectionType.QueuedConnection
+                                        )
+                                    logger.info("Charger Functional Test: Pause requested on test execution thread")
+                                except Exception as e:
+                                    logger.warning(f"Failed to request pause on test execution thread: {e}")
+                            
+                            return False, "Test sequence paused: User declined safety check. Please ensure hardware connections are ready and resume the test sequence."
+                    except Exception as e:
+                        logger.error(f"Failed to show pre-test safety dialog: {e}", exc_info=True)
+                        # On error, default to No (don't execute test if we can't show dialog)
+                        logger.warning("Dialog error - defaulting to No (test will not execute)")
+                        return False, "Test sequence paused: Failed to show safety dialog. Please ensure hardware connections are ready and resume the test sequence."
+                
+                # If we reach here, user pressed Yes - continue with test execution
+                logger.info("Charger Functional Test: User confirmed safety check, proceeding with test execution...")
+                
+                # Extract parameters (only after user confirms)
+                cmd_msg_id = act.get('command_signal_source')
+                trigger_signal = act.get('test_trigger_signal')
+                trigger_value = act.get('test_trigger_signal_value')
+                trim_signal = act.get('set_output_current_trim_signal')
+                fallback_trim = act.get('fallback_output_current_trim_value', 100.0)
+                setpoint_signal = act.get('set_output_current_setpoint_signal')
+                output_current = act.get('output_test_current')
+                feedback_msg_id = act.get('feedback_signal_source')
+                dut_state_signal = act.get('dut_test_state_signal')
+                enable_relay_signal = act.get('enable_relay_signal')
+                enable_pfc_signal = act.get('enable_pfc_signal')
+                pfc_power_good_signal = act.get('pfc_power_good_signal')
+                pcmc_signal = act.get('pcmc_signal')
+                output_current_signal = act.get('output_current_signal')
+                psfb_fault_signal = act.get('psfb_fault_signal')
+                output_current_tolerance = act.get('output_current_tolerance', 0.5)
+                test_time_ms = int(act.get('test_time_ms', 30000))
+                
+                # Validate parameters
+                if not all([cmd_msg_id, trigger_signal, trigger_value is not None, trim_signal, 
+                           setpoint_signal, output_current is not None, feedback_msg_id,
+                           dut_state_signal, enable_relay_signal, enable_pfc_signal,
+                           pfc_power_good_signal, pcmc_signal, output_current_signal, psfb_fault_signal]):
+                    return False, "Missing required Charger Functional Test parameters"
+                
+                if test_time_ms < 1000:
+                    return False, "Test time must be >= 1000 ms"
+                
+                if output_current_tolerance is None or output_current_tolerance < 0:
+                    return False, "Output current tolerance must be >= 0"
+                
+                # Import AdapterFrame at function level
+                try:
+                    from backend.adapters.interface import Frame as AdapterFrame
+                except ImportError:
+                    AdapterFrame = None
+                
+                def _nb_sleep(sec: float) -> None:
+                    """Non-blocking sleep that processes Qt events."""
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Error processing Qt events during sleep: {e}")
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                
+                # Helper function to encode and send CAN message
+                def _encode_and_send_charger_functional(signals: dict, msg_id: int) -> bytes:
+                    """Encode signals to CAN message bytes."""
+                    encode_data = {'DeviceID': 0}
+                    mux_value = None
+                    data_bytes = b''
+                    
+                    dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
+                    if dbc_available:
+                        target_msg = self.dbc_service.find_message_by_id(msg_id)
+                    else:
+                        target_msg = None
+                    
+                    if target_msg is None:
+                        logger.warning(f"Could not find message for CAN ID 0x{msg_id:X}")
+                    
+                    if target_msg is not None:
+                        for sig_name in signals:
+                            encode_data[sig_name] = signals[sig_name]
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                    mux_value = sig.multiplexer_ids[0]
+                                    break
+                        if mux_value is not None:
+                            encode_data['MessageType'] = mux_value
+                        try:
+                            if self.dbc_service is not None:
+                                data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
+                            else:
+                                data_bytes = target_msg.encode(encode_data)
+                        except Exception:
+                            try:
+                                if len(signals) == 1:
+                                    v = list(signals.values())[0]
+                                    data_bytes = bytes([int(v) & 0xFF])
+                            except Exception:
+                                data_bytes = b''
+                    else:
+                        try:
+                            if len(signals) == 1:
+                                v = list(signals.values())[0]
+                                if isinstance(v, str) and v.startswith('0x'):
+                                    data_bytes = bytes.fromhex(v[2:])
+                                else:
+                                    data_bytes = bytes([int(v) & 0xFF])
+                        except Exception:
+                            data_bytes = b''
+                    
+                    return data_bytes
+                
+                # Step 1: Get Output Current Trim Value (same logic as Charged HV Bus Test)
+                logger.info("Charger Functional Test: Step 1 - Getting output current trim value...")
+                logger.info(f"Charger Functional Test: Fallback trim value from config: {fallback_trim:.2f}%")
+                trim_value = fallback_trim
+                trim_value_source = "fallback (config default)"
+                
+                # Try to get adjustment_factor from previous Output Current Calibration test
+                if self.gui is not None:
+                    # Strategy 1: Search through _tests list directly (most reliable)
+                    if hasattr(self.gui, '_tests') and hasattr(self.gui, '_test_execution_data'):
+                        logger.info(f"Charger Functional Test: Searching through {len(self.gui._tests)} tests for Output Current Calibration test...")
+                        
+                        found_calibration_test = False
+                        for test in reversed(self.gui._tests):
+                            test_name = test.get('name', '')
+                            actuation = test.get('actuation', {})
+                            test_type = actuation.get('type', '')
+                            
+                            if test_type == 'Output Current Calibration':
+                                if test_name in self.gui._test_execution_data:
+                                    found_calibration_test = True
+                                    exec_data = self.gui._test_execution_data[test_name]
+                                    stats = exec_data.get('statistics', {})
+                                    adjustment_factor = stats.get('adjustment_factor')
+                                    exec_status = exec_data.get('status', 'Not Run')
+                                    test_passed_in_stats = stats.get('passed', False)
+                                    test_passed = (exec_status == 'PASS') or test_passed_in_stats
+                                    
+                                    if adjustment_factor is not None and test_passed:
+                                        trim_value = adjustment_factor * 100.0
+                                        trim_value_source = f"Output Current Calibration test '{test_name}' (adjustment_factor={adjustment_factor:.6f})"
+                                        logger.info(f"Charger Functional Test: ✓ Using trim_value = {trim_value:.2f}% from Output Current Calibration test '{test_name}'")
+                                        break
+                
+                if trim_value == fallback_trim:
+                    logger.info(f"Charger Functional Test: No Output Current Calibration test found or test did not pass. Using fallback trim value: {trim_value:.2f}%")
+                
+                # Step 2: Send Output Current Trim Value
+                logger.info(f"Charger Functional Test: Step 2 - Sending output current trim value to DUT...")
+                try:
+                    signals = {trim_signal: trim_value}
+                    data_bytes = _encode_and_send_charger_functional(signals, cmd_msg_id)
+                    
+                    if not data_bytes:
+                        return False, "Failed to encode output current trim message"
+                    
+                    if self.can_service is not None and self.can_service.is_connected():
+                        f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                        try:
+                            success = self.can_service.send_frame(f)
+                            if not success:
+                                return False, f"Failed to send output current trim value: send_frame returned False"
+                            else:
+                                logger.info(f"Charger Functional Test: ✓ Sent output current trim value ({trim_value:.2f}%)")
+                        except Exception as e:
+                            return False, f"Failed to send output current trim value: {e}"
+                    elif self.gui is not None:
+                        if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                            f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                            try:
+                                success = self.gui.can_service.send_frame(f)
+                                if not success:
+                                    return False, f"Failed to send output current trim value: send_frame returned False"
+                                else:
+                                    logger.info(f"Charger Functional Test: ✓ Sent output current trim value ({trim_value:.2f}%)")
+                            except Exception as e:
+                                return False, f"Failed to send output current trim value: {e}"
+                        else:
+                            return False, "CAN service not available. Cannot send output current trim value."
+                    else:
+                        return False, "CAN service not available. Cannot send output current trim value."
+                except Exception as e:
+                    logger.error(f"Charger Functional Test: Exception during trim value encoding/sending: {e}", exc_info=True)
+                    return False, f"Failed to send output current trim value: {e}"
+                
+                _nb_sleep(SLEEP_INTERVAL_MEDIUM)
+                
+                # Step 3: Send Output Current Setpoint
+                logger.info(f"Charger Functional Test: Step 3 - Sending output current setpoint ({output_current:.2f} A)...")
+                try:
+                    signals = {setpoint_signal: output_current}
+                    data_bytes = _encode_and_send_charger_functional(signals, cmd_msg_id)
+                    
+                    if not data_bytes:
+                        return False, "Failed to encode output current setpoint message"
+                    
+                    if self.can_service is not None and self.can_service.is_connected():
+                        f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                        try:
+                            success = self.can_service.send_frame(f)
+                            if not success:
+                                logger.warning(f"send_frame returned False for setpoint (can_id=0x{cmd_msg_id:X})")
+                            else:
+                                logger.info(f"Sent output current setpoint ({output_current:.2f} A)")
+                        except Exception as e:
+                            logger.error(f"Failed to send setpoint frame: {e}", exc_info=True)
+                            return False, f"Failed to send output current setpoint: {e}"
+                    elif self.gui is not None:
+                        if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                            f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                            try:
+                                success = self.gui.can_service.send_frame(f)
+                                if not success:
+                                    logger.warning(f"send_frame returned False for setpoint (can_id=0x{cmd_msg_id:X})")
+                                else:
+                                    logger.info(f"Sent output current setpoint ({output_current:.2f} A)")
+                            except Exception as e:
+                                logger.error(f"Failed to send setpoint frame via GUI service: {e}", exc_info=True)
+                                return False, f"Failed to send output current setpoint: {e}"
+                        else:
+                            return False, "CAN service not available. Cannot send output current setpoint."
+                    else:
+                        return False, "CAN service not available. Cannot send output current setpoint."
+                except Exception as e:
+                    logger.error(f"Failed to send output current setpoint: {e}")
+                    return False, f"Failed to send output current setpoint: {e}"
+                
+                _nb_sleep(SLEEP_INTERVAL_MEDIUM)
+                
+                # Step 4: Start CAN Data Logging and Send Test Trigger
+                logger.info("Charger Functional Test: Starting CAN data logging...")
+                logged_data = []  # List of dicts: {'timestamp': float, 'signal_name': str, 'value': float}
+                
+                logger.info(f"Charger Functional Test: Sending test trigger signal (value: {trigger_value})...")
+                try:
+                    signals = {trigger_signal: trigger_value}
+                    data_bytes = _encode_and_send_charger_functional(signals, cmd_msg_id)
+                    
+                    if not data_bytes:
+                        return False, "Failed to encode test trigger message"
+                    
+                    trigger_timestamp = time.time()
+                    
+                    if self.can_service is not None and self.can_service.is_connected():
+                        f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=trigger_timestamp)
+                        try:
+                            success = self.can_service.send_frame(f)
+                            if not success:
+                                logger.warning(f"send_frame returned False for test trigger (can_id=0x{cmd_msg_id:X})")
+                            else:
+                                logger.info(f"Sent test trigger signal (value: {trigger_value})")
+                        except Exception as e:
+                            logger.error(f"Failed to send test trigger frame: {e}", exc_info=True)
+                            return False, f"Failed to send test trigger: {e}"
+                    elif self.gui is not None:
+                        if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                            f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=trigger_timestamp)
+                            try:
+                                success = self.gui.can_service.send_frame(f)
+                                if not success:
+                                    logger.warning(f"send_frame returned False for test trigger (can_id=0x{cmd_msg_id:X})")
+                                else:
+                                    logger.info(f"Sent test trigger signal (value: {trigger_value})")
+                            except Exception as e:
+                                logger.error(f"Failed to send test trigger frame via GUI service: {e}", exc_info=True)
+                                return False, f"Failed to send test trigger: {e}"
+                        else:
+                            return False, "CAN service not available. Cannot send test trigger."
+                    else:
+                        return False, "CAN service not available. Cannot send test trigger."
+                except Exception as e:
+                    logger.error(f"Failed to send test trigger: {e}")
+                    return False, f"Failed to send test trigger: {e}"
+                
+                # Step 5: Monitor Test Execution (until test_time_ms elapsed)
+                logger.info(f"Charger Functional Test: Monitoring test execution for {test_time_ms}ms...")
+                end_time = trigger_timestamp + (test_time_ms / 1000.0)
+                fault_detected = False
+                
+                while time.time() < end_time:
+                    current_time = time.time()
+                    
+                    # Read all feedback signals (including output_current_signal)
+                    signals_to_read = [
+                        (dut_state_signal, 'dut_test_state'),
+                        (enable_relay_signal, 'enable_relay'),
+                        (enable_pfc_signal, 'enable_pfc'),
+                        (pfc_power_good_signal, 'pfc_power_good'),
+                        (pcmc_signal, 'pcmc'),
+                        (output_current_signal, 'output_current'),
+                        (psfb_fault_signal, 'psfb_fault')
+                    ]
+                    
+                    for signal_name, log_key in signals_to_read:
+                        try:
+                            if self.signal_service is not None:
+                                ts, val = self.signal_service.get_latest_signal(feedback_msg_id, signal_name)
+                            elif self.gui is not None:
+                                ts, val = self.gui.get_latest_signal(feedback_msg_id, signal_name)
+                            else:
+                                ts, val = (None, None)
+                            
+                            if val is not None:
+                                try:
+                                    val_float = float(val)
+                                    logged_data.append({
+                                        'timestamp': current_time,
+                                        'signal_name': log_key,
+                                        'value': val_float
+                                    })
+                                    
+                                    # Check for fault condition (DUT Test State = 7)
+                                    if signal_name == dut_state_signal:
+                                        if int(val_float) == 7:
+                                            fault_detected = True
+                                            logger.warning(f"Charger Functional Test: DUT fault detected (Test State = 7) at {current_time - trigger_timestamp:.2f}s")
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading signal {signal_name}: {e}")
+                    
+                    # If fault detected, stop immediately
+                    if fault_detected:
+                        break
+                    
+                    # Process events and sleep
+                    try:
+                        QtCore.QCoreApplication.processEvents()
+                    except Exception:
+                        pass
+                    time.sleep(SLEEP_INTERVAL_SHORT)
+                
+                # Step 6: Stop Test and Logging
+                logger.info("Charger Functional Test: Stopping test and logging...")
+                try:
+                    signals = {trigger_signal: 0}
+                    data_bytes = _encode_and_send_charger_functional(signals, cmd_msg_id)
+                    
+                    if data_bytes:
+                        if self.can_service is not None and self.can_service.is_connected():
+                            f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                            try:
+                                self.can_service.send_frame(f)
+                                logger.info(f"Sent test stop signal (value: 0)")
+                            except Exception:
+                                pass
+                        elif self.gui is not None:
+                            if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                                try:
+                                    self.gui.can_service.send_frame(f)
+                                    logger.info(f"Sent test stop signal (value: 0)")
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to send test stop signal: {e}")
+                
+                _nb_sleep(SLEEP_INTERVAL_MEDIUM)
+                
+                # Step 7: Analyze Logged CAN Data - PFC Regulation
+                logger.info("Charger Functional Test: Analyzing logged data for PFC Regulation...")
+                pfc_regulation_success = False
+                
+                # Find timestamps where enable_pfc = 1
+                enable_pfc_timestamps = []
+                for entry in logged_data:
+                    if entry['signal_name'] == 'enable_pfc' and int(entry['value']) == 1:
+                        enable_pfc_timestamps.append(entry['timestamp'])
+                
+                # Check if pfc_power_good transitions from 1→0 after enable_pfc = 1 (PFC is regulating when signal is 0)
+                for enable_pfc_ts in enable_pfc_timestamps:
+                    # Find pfc_power_good values after this timestamp
+                    pfc_power_good_values = []
+                    for entry in logged_data:
+                        if entry['signal_name'] == 'pfc_power_good' and entry['timestamp'] >= enable_pfc_ts:
+                            pfc_power_good_values.append((entry['timestamp'], entry['value']))
+                    
+                    # Check if we have a transition from 1→0
+                    if len(pfc_power_good_values) >= 2:
+                        # Sort by timestamp
+                        pfc_power_good_values.sort(key=lambda x: x[0])
+                        # Check if first value is 1 and later value is 0 (PFC is regulating when signal is 0)
+                        first_val = int(pfc_power_good_values[0][1])
+                        for ts, val in pfc_power_good_values[1:]:
+                            if first_val == 1 and int(val) == 0:
+                                pfc_regulation_success = True
+                                logger.info(f"Charger Functional Test: PFC Regulation successful (transition 1→0 detected, PFC is regulating when signal is 0)")
+                                break
+                        if pfc_regulation_success:
+                            break
+                
+                if not pfc_regulation_success:
+                    logger.warning("Charger Functional Test: PFC Regulation failed (no 1→0 transition detected, PFC is regulating when signal is 0)")
+                
+                # Step 8: Analyze Logged CAN Data - PCMC Success
+                logger.info("Charger Functional Test: Analyzing logged data for PCMC Success...")
+                pcmc_success = False
+                
+                # Get latest pcmc signal value
+                pcmc_values = [entry for entry in logged_data if entry['signal_name'] == 'pcmc']
+                if pcmc_values:
+                    latest_pcmc = pcmc_values[-1]['value']
+                    if int(latest_pcmc) == 1:
+                        pcmc_success = True
+                        logger.info("Charger Functional Test: PCMC Success (PCMC signal = 1)")
+                    else:
+                        logger.warning(f"Charger Functional Test: PCMC Success failed (PCMC signal = {latest_pcmc})")
+                else:
+                    logger.warning("Charger Functional Test: PCMC Success failed (no PCMC data collected)")
+                
+                # Step 9: Analyze Logged CAN Data - Output Current Regulation
+                logger.info("Charger Functional Test: Analyzing logged data for Output Current Regulation...")
+                current_regulation_success = False
+                avg_current = None
+                
+                # Extract output current values from last 1 second
+                test_end_time = trigger_timestamp + (test_time_ms / 1000.0)
+                one_second_before_end = test_end_time - 1.0
+                
+                output_current_values = []
+                for entry in logged_data:
+                    if entry['signal_name'] == 'output_current' and entry['timestamp'] >= one_second_before_end:
+                        output_current_values.append(entry['value'])
+                
+                if not output_current_values:
+                    # If no data in last 1 second, use all available data and log warning
+                    logger.warning("Charger Functional Test: Less than 1 second of output current data available, using all available data")
+                    output_current_values = [entry['value'] for entry in logged_data if entry['signal_name'] == 'output_current']
+                
+                if output_current_values:
+                    # Calculate average
+                    avg_current = sum(output_current_values) / len(output_current_values)
+                    error = abs(avg_current - output_current)
+                    
+                    if error <= output_current_tolerance:
+                        current_regulation_success = True
+                        logger.info(f"Charger Functional Test: Output Current Regulation successful (average = {avg_current:.3f}A, expected = {output_current:.3f}A, error = {error:.3f}A <= tolerance = {output_current_tolerance:.3f}A)")
+                    else:
+                        logger.warning(f"Charger Functional Test: Output Current Regulation failed (average = {avg_current:.3f}A, expected = {output_current:.3f}A, error = {error:.3f}A > tolerance = {output_current_tolerance:.3f}A)")
+                else:
+                    logger.warning("Charger Functional Test: Output Current Regulation failed (no output current data collected)")
+                
+                # Check final DUT Test State
+                dut_state_values = [entry for entry in logged_data if entry['signal_name'] == 'dut_test_state']
+                final_dut_state = None
+                if dut_state_values:
+                    final_dut_state = int(dut_state_values[-1]['value'])
+                
+                # Step 10: Determine Pass/Fail
+                passed = False
+                if fault_detected:
+                    passed = False
+                    info = "Test failed: DUT fault detected (Test State = 7)"
+                elif final_dut_state is not None and final_dut_state != trigger_value:
+                    passed = False
+                    info = f"Test failed: DUT Test State ({final_dut_state}) does not match trigger value ({trigger_value})"
+                elif not pfc_regulation_success:
+                    passed = False
+                    info = "Test failed: PFC Regulation failed (PFC Power Good never transitioned from 1→0, PFC is regulating when signal is 0)"
+                elif not pcmc_success:
+                    passed = False
+                    info = "Test failed: PCMC Success failed (PCMC signal ≠ 1)"
+                elif not current_regulation_success:
+                    passed = False
+                    if avg_current is not None:
+                        error = abs(avg_current - output_current)
+                        info = f"Test failed: Output Current Regulation failed (average = {avg_current:.3f}A, expected = {output_current:.3f}A ± {output_current_tolerance:.3f}A, error = {error:.3f}A)"
+                    else:
+                        info = "Test failed: Output Current Regulation failed (no output current data collected)"
+                else:
+                    passed = True
+                    info = "Test passed: PFC Regulation successful AND PCMC Success AND Output Current Regulation successful AND No fault detected"
+                
+                # Build detailed info string
+                info += f"\nPFC Regulation: {'SUCCESS' if pfc_regulation_success else 'FAIL'}"
+                info += f"\nPCMC Success: {'SUCCESS' if pcmc_success else 'FAIL'}"
+                info += f"\nOutput Current Regulation: {'SUCCESS' if current_regulation_success else 'FAIL'}"
+                if avg_current is not None:
+                    error = abs(avg_current - output_current)
+                    info += f" (avg = {avg_current:.3f}A, expected = {output_current:.3f}A ± {output_current_tolerance:.3f}A, error = {error:.3f}A)"
+                info += f"\nFault Detected: {'YES' if fault_detected else 'NO'}"
+                if final_dut_state is not None:
+                    info += f"\nFinal DUT Test State: {final_dut_state} (expected: {trigger_value})"
+                info += f"\nTotal data points logged: {len(logged_data)}"
+                
+                # Store results for display
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'pfc_regulation_success': pfc_regulation_success,
+                    'pcmc_success': pcmc_success,
+                    'current_regulation_success': current_regulation_success,
+                    'avg_output_current': avg_current,
+                    'output_current_error': abs(avg_current - output_current) if avg_current is not None else None,
+                    'fault_detected': fault_detected,
+                    'final_dut_state': final_dut_state,
+                    'trigger_value': trigger_value,
+                    'trim_value_used': trim_value,
+                    'logged_data': logged_data,
+                    'passed': passed
+                }
+                
+                # Store in temporary storage for retrieval by _on_test_finished
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+                
+                logger.info(f"Charger Functional Test completed: {'PASS' if passed else 'FAIL'}")
+                return passed, info
             elif act.get('type') == 'Output Current Calibration':
                 # Output Current Calibration Test execution:
                 # 1) Verify oscilloscope setup (TDIV, TRA, probe attenuation)

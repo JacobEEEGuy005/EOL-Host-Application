@@ -128,8 +128,27 @@ class ActuationConfig:
         pcmc_signal: Signal name for Peak Current Mode Control feedback
         psfb_fault_signal: Signal name for PSFB fault feedback (for future use)
         test_time_ms: Test duration in milliseconds from test trigger (minimum 1000)
+        
+        For Charger Functional Test:
+        command_signal_source: CAN message ID for command messages
+        test_trigger_signal: Signal name for test trigger command
+        test_trigger_signal_value: Value to send for test trigger signal (user configurable, 0-255)
+        set_output_current_trim_signal: Signal name for setting output current trim value
+        fallback_output_current_trim_value: Fallback trim value (0-200%) if Output Current Calibration not performed
+        set_output_current_setpoint_signal: Signal name for setting output current setpoint
+        output_test_current: Output current setpoint in Amperes (0-40A)
+        feedback_signal_source: CAN message ID for feedback messages
+        dut_test_state_signal: Signal name for DUT test state feedback
+        enable_relay_signal: Signal name for AC relay enable feedback
+        enable_pfc_signal: Signal name for PFC enable feedback
+        pfc_power_good_signal: Signal name for PFC power good feedback
+        pcmc_signal: Signal name for Peak Current Mode Control feedback
+        output_current_signal: Signal name for output current feedback
+        psfb_fault_signal: Signal name for PSFB fault feedback
+        output_current_tolerance: Tolerance for output current regulation in Amperes (>= 0)
+        test_time_ms: Test duration in milliseconds from test trigger (minimum 1000)
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', or 'Charged HV Bus Test'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', or 'Charger Functional Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -240,6 +259,10 @@ class ActuationConfig:
     pcmc_signal: Optional[str] = None  # Signal name for Peak Current Mode Control feedback
     psfb_fault_signal: Optional[str] = None  # Signal name for PSFB fault feedback
     test_time_ms: Optional[int] = None  # Test duration in milliseconds from test trigger
+    
+    # Charger Functional Test fields
+    output_current_signal: Optional[str] = None  # Signal name for output current feedback
+    output_current_tolerance: Optional[float] = None  # Tolerance for output current regulation in Amperes
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -449,6 +472,41 @@ class ActuationConfig:
                 result['pcmc_signal'] = self.pcmc_signal
             if self.psfb_fault_signal:
                 result['psfb_fault_signal'] = self.psfb_fault_signal
+            if self.test_time_ms is not None:
+                result['test_time_ms'] = self.test_time_ms
+        elif self.type == 'Charger Functional Test':
+            if self.command_signal_source is not None:
+                result['command_signal_source'] = self.command_signal_source
+            if self.test_trigger_signal:
+                result['test_trigger_signal'] = self.test_trigger_signal
+            if self.test_trigger_signal_value is not None:
+                result['test_trigger_signal_value'] = self.test_trigger_signal_value
+            if self.set_output_current_trim_signal:
+                result['set_output_current_trim_signal'] = self.set_output_current_trim_signal
+            if self.fallback_output_current_trim_value is not None:
+                result['fallback_output_current_trim_value'] = self.fallback_output_current_trim_value
+            if self.set_output_current_setpoint_signal:
+                result['set_output_current_setpoint_signal'] = self.set_output_current_setpoint_signal
+            if self.output_test_current is not None:
+                result['output_test_current'] = self.output_test_current
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.dut_test_state_signal:
+                result['dut_test_state_signal'] = self.dut_test_state_signal
+            if self.enable_relay_signal:
+                result['enable_relay_signal'] = self.enable_relay_signal
+            if self.enable_pfc_signal:
+                result['enable_pfc_signal'] = self.enable_pfc_signal
+            if self.pfc_power_good_signal:
+                result['pfc_power_good_signal'] = self.pfc_power_good_signal
+            if self.pcmc_signal:
+                result['pcmc_signal'] = self.pcmc_signal
+            if self.output_current_signal:
+                result['output_current_signal'] = self.output_current_signal
+            if self.psfb_fault_signal:
+                result['psfb_fault_signal'] = self.psfb_fault_signal
+            if self.output_current_tolerance is not None:
+                result['output_current_tolerance'] = self.output_current_tolerance
             if self.test_time_ms is not None:
                 result['test_time_ms'] = self.test_time_ms
         return result

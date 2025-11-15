@@ -1,0 +1,29 @@
+{
+  "tests": [
+    {
+      "name": "Charger Functional Test V1.3",
+      "type": "Charger Functional Test",
+      "actuation": {
+        "type": "Charger Functional Test",
+        "command_signal_source": 272,
+        "test_trigger_signal": "Test_Request",
+        "test_trigger_signal_value": 3,
+        "set_output_current_trim_signal": "Set_ChargerIout_TrimValue",
+        "fallback_output_current_trim_value": 105.0,
+        "set_output_current_setpoint_signal": "ChargerIout_SetPoint",
+        "output_test_current": 20.0,
+        "feedback_signal_source": 250,
+        "dut_test_state_signal": "ChargerTestState",
+        "enable_relay_signal": "Enable_ACInputRelay",
+        "enable_pfc_signal": "Enable_PFC",
+        "pfc_power_good_signal": "PFC_PGood_Filtered",
+        "pcmc_signal": "PCMC_Flag",
+        "output_current_signal": "ChargerIout",
+        "psfb_fault_signal": "ChargerFaultNow",
+        "output_current_tolerance": 0.5,
+        "test_time_ms": 6000
+      },
+      "created_at": "2025-11-15T17:12:42.233460Z"
+    }
+  ]
+}
