@@ -13360,6 +13360,47 @@ Data Points Used: {data_points}"""
             self._charger_functional_dialog_result = QMessageBox.No
     
     @QtCore.Slot()
+    def _show_output_current_calibration_safety_dialog(self) -> None:
+        """Show pre-test safety dialog for Output Current Calibration Test.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.BlockingQueuedConnection.
+        
+        The result is stored in self._output_current_calibration_dialog_result for retrieval.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            # Ensure we're in the main thread
+            from PySide6 import QtCore
+            if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+                logger.error("_show_output_current_calibration_safety_dialog called from non-main thread!")
+                self._output_current_calibration_dialog_result = QMessageBox.No
+                return
+            
+            # Create dialog with proper parent to ensure it's modal
+            msg_box = QMessageBox(self)
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            msg_box.setWindowTitle("Pre-Test Safety Check - Output Current Calibration Test")
+            msg_box.setText("Hardware Connection Requirements:")
+            msg_box.setInformativeText(
+                "1. Ensure that AC Input is connected to a Regulated Power Supply with Maximum 60V and current limited.\n"
+                "2. Ensure that DC Output is connected to a appropriate Low resistive load for current calibration.\n\n"
+                "Proceed to Run Test?"
+            )
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.Yes)
+            
+            # Show dialog and store result
+            # exec() will block until user clicks a button
+            result = msg_box.exec()
+            self._output_current_calibration_dialog_result = result
+        except Exception as e:
+            logger.error(f"Error in _show_output_current_calibration_safety_dialog: {e}", exc_info=True)
+            # Return No on error to be safe
+            self._output_current_calibration_dialog_result = QMessageBox.No
+    
+    @QtCore.Slot()
     def _request_test_sequence_pause(self) -> None:
         """Safely request pause on test execution thread from main thread.
         

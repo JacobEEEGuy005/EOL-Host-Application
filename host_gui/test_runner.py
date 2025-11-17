@@ -3564,6 +3564,7 @@ class TestRunner:
                 return passed, info
             elif act.get('type') == 'Output Current Calibration':
                 # Output Current Calibration Test execution:
+                # 0) Pre-Test Safety Dialog - MUST be shown BEFORE any test execution
                 # 1) Verify oscilloscope setup (TDIV, TRA, probe attenuation)
                 # 2) Generate current setpoints array
                 # 3) Initialize trim value at DUT
@@ -3580,6 +3581,94 @@ class TestRunner:
                 # 8) Disable test mode
                 # 9) Calculate gain error and adjustment factor (point-by-point method, same as Phase Current Test)
                 # 10) Determine pass/fail
+                
+                # Step 0: Pre-Test Safety Dialog - MUST be shown BEFORE any test execution
+                # Must be shown in main GUI thread (Qt requirement)
+                logger.info("Output Current Calibration Test: Showing pre-test safety dialog BEFORE test execution...")
+                dialog_result = None
+                
+                if self.gui is None:
+                    logger.error("Output Current Calibration Test: GUI is None, cannot show safety dialog")
+                    return False, "Test sequence paused: Cannot show safety dialog (GUI not available). Please ensure hardware connections are ready and resume the test sequence."
+                
+                if self.gui is not None:
+                    try:
+                        from PySide6 import QtCore
+                        from PySide6.QtWidgets import QMessageBox
+                        
+                        # Check if we're in the main thread
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread == main_thread:
+                            # We're in the main thread, show dialog directly
+                            self.gui._show_output_current_calibration_safety_dialog()
+                            dialog_result = getattr(self.gui, '_output_current_calibration_dialog_result', QMessageBox.No)
+                        else:
+                            # We're in a background thread, use BlockingQueuedConnection
+                            # This will block the background thread until the dialog method returns
+                            # Initialize result attribute if not present
+                            if not hasattr(self.gui, '_output_current_calibration_dialog_result'):
+                                self.gui._output_current_calibration_dialog_result = None
+                            
+                            # Clear previous result
+                            self.gui._output_current_calibration_dialog_result = None
+                            
+                            # Invoke dialog in main thread using BlockingQueuedConnection
+                            # This blocks until the method completes
+                            success = QtCore.QMetaObject.invokeMethod(
+                                self.gui,
+                                '_show_output_current_calibration_safety_dialog',
+                                QtCore.Qt.ConnectionType.BlockingQueuedConnection
+                            )
+                            
+                            if success:
+                                # After BlockingQueuedConnection returns, the method has completed
+                                # Get the result that was stored
+                                dialog_result = getattr(self.gui, '_output_current_calibration_dialog_result', QMessageBox.No)
+                                if dialog_result is None:
+                                    logger.warning("Dialog result is None, defaulting to No")
+                                    dialog_result = QMessageBox.No
+                            else:
+                                logger.warning("Failed to invoke dialog method, defaulting to No")
+                                dialog_result = QMessageBox.No
+                        
+                        if dialog_result == QMessageBox.No:
+                            # Request pause of test sequence - test will NOT execute
+                            logger.info("Output Current Calibration Test: User declined safety check, pausing test sequence (test will not execute)")
+                            
+                            # Request pause safely from main thread using QMetaObject.invokeMethod
+                            # This avoids threading issues that can cause segfaults
+                            if self.gui is not None:
+                                try:
+                                    # Check if we're in the main thread
+                                    current_thread = QtCore.QThread.currentThread()
+                                    main_thread = QtCore.QCoreApplication.instance().thread()
+                                    
+                                    if current_thread == main_thread:
+                                        # We're in the main thread, call directly
+                                        if hasattr(self.gui, '_request_test_sequence_pause'):
+                                            self.gui._request_test_sequence_pause()
+                                    else:
+                                        # We're in a background thread, use QueuedConnection (non-blocking)
+                                        QtCore.QMetaObject.invokeMethod(
+                                            self.gui,
+                                            '_request_test_sequence_pause',
+                                            QtCore.Qt.ConnectionType.QueuedConnection
+                                        )
+                                    logger.info("Output Current Calibration Test: Pause requested on test execution thread")
+                                except Exception as e:
+                                    logger.warning(f"Failed to request pause on test execution thread: {e}")
+                            
+                            return False, "Test sequence paused: User declined safety check. Please ensure hardware connections are ready and resume the test sequence."
+                    except Exception as e:
+                        logger.error(f"Failed to show pre-test safety dialog: {e}", exc_info=True)
+                        # On error, default to No (don't execute test if we can't show dialog)
+                        logger.warning("Dialog error - defaulting to No (test will not execute)")
+                        return False, "Test sequence paused: Failed to show safety dialog. Please ensure hardware connections are ready and resume the test sequence."
+                
+                # If we reach here, user pressed Yes - continue with test execution
+                logger.info("Output Current Calibration Test: User confirmed safety check, proceeding with test execution...")
                 
                 # Extract parameters
                 test_trigger_source = act.get('test_trigger_source')

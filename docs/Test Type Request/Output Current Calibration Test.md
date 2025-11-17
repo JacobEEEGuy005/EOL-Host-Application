@@ -56,6 +56,7 @@
   - Current probe connected to oscilloscope channel
 
   Special Considerations:
+  - **Pre-Test Safety Dialog**: Before starting the test, the test sequence must pause and display a safety confirmation dialog. The dialog lists hardware connection requirements and asks the user to confirm before proceeding. If the user clicks "No", the test sequence pauses and the same dialog will appear again when the user resumes the sequence.
   - Requires oscilloscope to be connected and configured before test execution
   - Test iterates through multiple current setpoints (sweep pattern)
   - Real-time scatter plot updates during test execution
@@ -112,6 +113,25 @@ If the test uses CAN communication, specify:
 Describe the step-by-step execution flow:
 
 ```
+0. Pre-Test Safety Dialog
+   - Action: 
+     1. Pause test sequence execution
+     2. Display modal dialog with title "Pre-Test Safety Check - Output Current Calibration Test"
+     3. Dialog content:
+        - Requirements list:
+          * "1. Ensure that AC Input is connected to a Regulated Power Supply with Maximum 60V and current limited."
+          * "2. Ensure that DC Output is connected to a appropriate Low resistive load for current calibration."
+        - Text: "Proceed to Run Test"
+        - Buttons: "Yes" and "No"
+     4. Wait for user response:
+        - If user clicks "Yes": Continue to step 1
+        - If user clicks "No": 
+          * Pause test sequence (do not proceed)
+          * User can resume test sequence later
+          * When user resumes, return to step 0 (show dialog again)
+   - Duration: User-dependent (until user responds)
+   - Expected result: User confirms hardware connections are ready, or test sequence paused
+
 1. Verify Oscilloscope Setup
     - Action: 
      1. Check oscilloscope connection status
@@ -610,6 +630,29 @@ Specify the UI fields needed:
 - **Show Feedback Fields**: `No` - This test type has its own feedback fields (feedback_signal_source and feedback_signal)
 - **Custom Feedback Fields**: `Yes` - Uses feedback_signal_source and feedback_signal for DUT current measurement
 
+### Pre-Test Safety Dialog Requirements
+- **Show Pre-Test Dialog**: `Yes` - Dialog must appear before test execution starts
+- **Dialog Type**: `QMessageBox` or custom `QDialog` with modal blocking
+- **Dialog Title**: `"Pre-Test Safety Check - Output Current Calibration Test"`
+- **Dialog Content**: 
+  - Requirements list (bulleted):
+    1. "Ensure that AC Input is connected to a Regulated Power Supply with Maximum 60V and current limited."
+    2. "Ensure that DC Output is connected to a appropriate Low resistive load for current calibration."
+  - Confirmation text: "Proceed to Run Test"
+- **Dialog Buttons**: 
+  - "Yes" button (default/accept) - Proceeds with test execution
+  - "No" button (reject) - Pauses test sequence
+- **Dialog Behavior**:
+  - Modal dialog (blocks test execution until user responds)
+  - If "Yes": Dialog closes, test proceeds to step 1
+  - If "No": Dialog closes, test sequence pauses, user can resume later
+  - On resume: Dialog appears again (same content and behavior)
+- **Implementation Notes**:
+  - Dialog should be shown before any test initialization or CAN communication
+  - Dialog must be shown in the main GUI thread (not in background test thread)
+  - Test sequence pause/resume mechanism should be used for "No" response
+  - Dialog should be non-dismissible (user must click Yes or No)
+
 ### Plot Requirements
 - **Needs Plot**: `Yes` - Two plots required (one for each sweep)
 - **Plot Type**: `Scatter plot (X-Y plot)` - Two separate scatter plots
@@ -851,6 +894,7 @@ List potential errors and how to handle them:
 ## Implementation Notes
 
 ### Special Considerations
+- **Pre-Test Safety Dialog**: Before test execution begins, a modal safety confirmation dialog must be displayed. The dialog lists two hardware connection requirements and asks the user to confirm readiness. If the user clicks "No", the test sequence pauses and the dialog will reappear when the user resumes the sequence. This ensures proper hardware connections before starting the test, which is critical for safety and test validity. The dialog must be shown in the main GUI thread before any test initialization occurs.
 - **Requires oscilloscope integration**: Test must verify oscilloscope connection and configuration before execution
 - **Two-sweep calibration pattern**: Test performs two complete sweeps - first sweep calculates trim value, second sweep verifies calibration
 - **Multi-step test pattern**: Each sweep iterates through multiple current setpoints (similar to Analog Sweep Test)
@@ -916,6 +960,7 @@ List potential errors and how to handle them:
   - Performs two sweeps (first calculates trim, second verifies)
 
 ### Code Patterns to Use
+- **Pre-Test Dialog Pattern**: Show modal dialog before test execution, pause sequence if user declines, re-show dialog on resume. Dialog should be shown in main GUI thread using QMessageBox or QDialog with proper signal/slot connection to test execution thread.
 - **Oscilloscope setup pattern**: Follow DC Bus Sensing pattern for oscilloscope verification (TDIV, TRA commands)
 - **Multi-step iteration pattern**: Follow Analog Sweep Test pattern for iterating through setpoints
 - **CAN command + feedback pattern**: Send current setpoint via CAN, then read feedback signal
@@ -923,6 +968,7 @@ List potential errors and how to handle them:
 - **Linear regression pattern**: Use Analog Sweep Test pattern for linear regression calculation (slope, intercept, gain error)
 - **Plot update pattern**: Update scatter plot after each setpoint (similar to Phase Current Test)
 - **State management**: Consider using state machine pattern (like Phase Current Test) if test becomes complex
+- **Test Sequence Pause/Resume Pattern**: Use test execution thread pause/resume mechanism when user clicks "No" in pre-test dialog
 
 ## Acceptance Criteria
 
@@ -933,6 +979,11 @@ List potential errors and how to handle them:
 - [ ] Test can be created and saved successfully
 - [ ] Test can be edited and saved successfully
 - [ ] Validation works correctly (rejects invalid configurations)
+- [ ] Pre-test safety dialog appears before test execution starts
+- [ ] Pre-test dialog shows correct requirements (AC Input and DC Output connections)
+- [ ] Pre-test dialog "Yes" button proceeds with test execution
+- [ ] Pre-test dialog "No" button pauses test sequence
+- [ ] Pre-test dialog reappears when test sequence is resumed after "No" response
 - [ ] Test execution runs without errors
 - [ ] Test execution returns correct pass/fail results
 - [ ] Test results appear in results table
@@ -946,6 +997,7 @@ List potential errors and how to handle them:
 - [ ] Logging added for debugging
 - [ ] Non-blocking sleep used (no `time.sleep()`)
 - [ ] DBC mode supported (required - test requires DBC file)
+- [ ] Pre-test safety dialog implemented correctly (modal, blocks execution, pause/resume integration)
 - [ ] Oscilloscope integration implemented correctly
 - [ ] Linear regression calculation implemented (same as Analog Sweep Test) for both sweeps
 - [ ] Two-sweep execution pattern implemented correctly
@@ -961,6 +1013,10 @@ List potential errors and how to handle them:
 - [ ] Test with valid configuration
 - [ ] Test with invalid configuration (should fail validation)
 - [ ] Test with DBC loaded (required)
+- [ ] Pre-test dialog appears before test execution
+- [ ] Pre-test dialog "Yes" button proceeds correctly
+- [ ] Pre-test dialog "No" button pauses sequence correctly
+- [ ] Pre-test dialog reappears on resume after "No" response
 - [ ] Test execution produces correct results (both sweeps complete)
 - [ ] Error cases handled gracefully (oscilloscope not connected, channel not found, no data collected)
 - [ ] Error cases for second sweep handled gracefully (invalid calculated trim value, no data in second sweep)
@@ -994,8 +1050,9 @@ Please implement this new test type following the documentation in:
    - `host_gui/test_runner.py`
    - `host_gui/services/test_execution_service.py` (optional)
 4. Implement validation logic
-5. Implement execution logic
-6. Test thoroughly with both valid and invalid configurations
+5. Implement pre-test safety dialog (modal dialog with Yes/No, pause sequence on No, re-show on resume)
+6. Implement execution logic
+7. Test thoroughly with both valid and invalid configurations
 7. Ensure all acceptance criteria are met
 
 ### Key Reminders
@@ -1005,6 +1062,7 @@ Please implement this new test type following the documentation in:
 - Provide meaningful error messages
 - Add appropriate logging
 - Follow existing code patterns and style
+- **Implement pre-test safety dialog before test execution starts** - Show modal dialog with hardware connection requirements, pause sequence if user clicks "No", re-show dialog when user resumes
 - Verify oscilloscope connection before test execution
 - Implement two-sweep execution pattern:
   - First sweep: Use initial_trim_value, perform linear regression, calculate gain adjustment factor from slope, convert to trim value (calculated_trim_value = 100 * gain_adjustment_factor)
