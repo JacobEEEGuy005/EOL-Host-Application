@@ -25,7 +25,7 @@ try:
         CAN_ID_MIN, CAN_ID_MAX, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
         SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM, MSG_TYPE_SET_RELAY,
         DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
-        POLL_INTERVAL_MS
+        POLL_INTERVAL_MS, TEST_MODE_CONTINUOUS_MATCH_REQUIRED, TEST_MODE_TOTAL_TIMEOUT
     )
 except ImportError:
     logger.error("Failed to import constants")
@@ -41,6 +41,8 @@ except ImportError:
     DAC_SETTLING_TIME_MS = 50
     DATA_COLLECTION_PERIOD_MS = 200
     POLL_INTERVAL_MS = 50
+    TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0
+    TEST_MODE_TOTAL_TIMEOUT = 5.0
 
 # Import adapter interface
 try:
@@ -143,6 +145,186 @@ class TestRunner:
             self.label_update_callback = label_update_callback
             self.oscilloscope_init_callback = oscilloscope_init_callback
 
+    def check_test_mode(self, test: Dict[str, Any]) -> Tuple[bool, str]:
+        """Check if DUT is in correct test mode before test execution.
+        
+        First sends the test mode value to DUT using Set DUT Test Mode Signal,
+        then reads the DUT Test Status Signal from EOL HW Config and compares it
+        with the test's test_mode value. Must match continuously for the required duration.
+        
+        Args:
+            test: Test configuration dictionary with 'test_mode' field
+            
+        Returns:
+            Tuple of (success: bool, message: str)
+            - success: True if test mode matches continuously for required duration, False otherwise
+            - message: Description of the result
+        """
+        import time
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Get test_mode from test profile (default 0)
+        test_mode = test.get('test_mode', 0)
+        
+        # Get DUT Test Status Signal info from eol_hw_config
+        if not self.eol_hw_config:
+            logger.info("No EOL HW config - skipping test mode check")
+            return True, "No EOL HW config - skipping test mode check"
+        
+        # Get EOL Command Message info for sending test mode
+        eol_cmd_msg_id = self.eol_hw_config.get('eol_command_message_id')
+        set_dut_test_mode_signal = self.eol_hw_config.get('set_dut_test_mode_signal')
+        
+        # Get DUT Feedback Message info for checking test status
+        dut_feedback_msg_id = self.eol_hw_config.get('dut_feedback_message_id')
+        dut_test_status_signal = self.eol_hw_config.get('dut_test_status_signal')
+        
+        # Step 1: Send test mode value to DUT using Set DUT Test Mode Signal
+        if eol_cmd_msg_id and set_dut_test_mode_signal:
+            logger.info(f"Sending test mode {test_mode} to DUT using signal {set_dut_test_mode_signal} (CAN ID: 0x{eol_cmd_msg_id:X})")
+            
+            try:
+                # Check if CAN service and DBC service are available
+                if not self.can_service or not self.can_service.is_connected():
+                    logger.warning("CAN service not connected - cannot send test mode command")
+                    return False, "CAN service not connected - cannot send test mode command"
+                
+                if not self.dbc_service or not self.dbc_service.is_loaded():
+                    logger.warning("DBC service not loaded - cannot encode test mode command")
+                    return False, "DBC service not loaded - cannot encode test mode command"
+                
+                # Find the command message
+                cmd_msg = self.dbc_service.find_message_by_id(eol_cmd_msg_id)
+                if cmd_msg is None:
+                    logger.warning(f"Could not find message for CAN ID 0x{eol_cmd_msg_id:X}")
+                    return False, f"Could not find message for CAN ID 0x{eol_cmd_msg_id:X}"
+                
+                # Prepare signal values for encoding
+                signal_values = {}
+                mux_value = None
+                
+                # Check if signal is multiplexed
+                for sig in getattr(cmd_msg, 'signals', []):
+                    if sig.name == set_dut_test_mode_signal:
+                        if getattr(sig, 'multiplexer_ids', None):
+                            mux_value = sig.multiplexer_ids[0]
+                        break
+                
+                # Set MessageType if signal is multiplexed
+                if mux_value is not None:
+                    signal_values['MessageType'] = mux_value
+                
+                # Add DeviceID if message requires it (check if DeviceID signal exists)
+                for sig in getattr(cmd_msg, 'signals', []):
+                    if sig.name == 'DeviceID':
+                        signal_values['DeviceID'] = 0  # Default device ID, adjust if needed
+                        break
+                
+                # Set the test mode signal value
+                signal_values[set_dut_test_mode_signal] = test_mode
+                
+                # Encode the message
+                frame_data = self.dbc_service.encode_message(cmd_msg, signal_values)
+                
+                # Create and send frame
+                frame = AdapterFrame(
+                    can_id=eol_cmd_msg_id,
+                    data=frame_data,
+                    timestamp=None
+                )
+                
+                if not self.can_service.send_frame(frame):
+                    logger.error(f"Failed to send test mode command to DUT")
+                    return False, "Failed to send test mode command to DUT"
+                
+                logger.info(f"Successfully sent test mode {test_mode} to DUT")
+                
+                # Small delay to allow DUT to process the command
+                time.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error sending test mode command: {e}", exc_info=True)
+                return False, f"Error sending test mode command: {e}"
+        else:
+            logger.info("EOL Command Message or Set DUT Test Mode Signal not configured - skipping test mode command")
+        
+        # Step 2: Check if DUT Test Status Signal matches
+        if not dut_feedback_msg_id or not dut_test_status_signal:
+            # If we sent the command but can't check, assume success
+            if eol_cmd_msg_id and set_dut_test_mode_signal:
+                logger.info("DUT Test Status Signal not configured - assuming test mode was set successfully")
+                return True, "Test mode command sent (status check not configured)"
+            else:
+                logger.info("DUT Test Status Signal not configured - skipping check")
+                return True, "DUT Test Status Signal not configured - skipping check"
+        
+        logger.info(f"Checking DUT test mode: expected={test_mode}, signal={dut_test_status_signal} (CAN ID: 0x{dut_feedback_msg_id:X})")
+        
+        # Monitor signal for up to total timeout, requiring continuous match for required duration
+        total_timeout = TEST_MODE_TOTAL_TIMEOUT  # seconds - total time to wait
+        continuous_match_required = TEST_MODE_CONTINUOUS_MATCH_REQUIRED  # seconds - must match continuously for this duration
+        check_interval = 0.1  # check every 100ms
+        start_time = time.time()
+        match_start_time = None
+        last_value = None
+        
+        while time.time() - start_time < total_timeout:
+            # Read signal value
+            if self.signal_service:
+                ts, val = self.signal_service.get_latest_signal(
+                    dut_feedback_msg_id, 
+                    dut_test_status_signal
+                )
+            elif self.gui:
+                ts, val = self.gui.get_latest_signal(
+                    dut_feedback_msg_id,
+                    dut_test_status_signal
+                )
+            else:
+                logger.warning("No signal service or GUI available for test mode check")
+                return False, "No signal service available for test mode check"
+            
+            if val is None:
+                # Signal not available yet
+                match_start_time = None
+                last_value = None
+                time.sleep(check_interval)
+                continue
+            
+            # Compare with test_mode
+            try:
+                signal_value = int(float(val))
+                last_value = signal_value
+                
+                if signal_value == test_mode:
+                    if match_start_time is None:
+                        match_start_time = time.time()
+                        logger.debug(f"Test mode match started: {signal_value} == {test_mode}")
+                    
+                    # Check if we've matched continuously for required duration
+                    elapsed_match_time = time.time() - match_start_time
+                    if elapsed_match_time >= continuous_match_required:
+                        logger.info(f"Test mode check passed: DUT is in mode {test_mode} (matched for {elapsed_match_time:.1f}s within {time.time() - start_time:.1f}s total)")
+                        return True, f"DUT Test Mode matches ({test_mode})"
+                else:
+                    # Mismatch - reset match timer
+                    if match_start_time is not None:
+                        logger.debug(f"Test mode mismatch detected: {signal_value} != {test_mode}, resetting match timer")
+                    match_start_time = None
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Error converting signal value to int: {val}, error: {e}")
+                match_start_time = None
+                last_value = None
+            
+            time.sleep(check_interval)
+        
+        # Failed to achieve required continuous match within total timeout
+        elapsed_total = time.time() - start_time
+        error_msg = f"DUT Test Mode mismatch: expected {test_mode}, got {last_value if last_value is not None else 'N/A'}. No continuous match for {continuous_match_required}s within {total_timeout}s timeout (elapsed: {elapsed_total:.1f}s)."
+        logger.warning(error_msg)
+        return False, error_msg
+
     def run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Execute a single test using the same behavior as the previous
         BaseGUI._run_single_test implementation. 
@@ -224,6 +406,9 @@ class TestRunner:
                     logger.warning(f"Invalid dwell time in digital test, using {DWELL_TIME_DEFAULT}ms: {e}")
                     dwell_ms = DWELL_TIME_DEFAULT
 
+                # Capture QtCore in local scope for nested functions
+                from PySide6 import QtCore as LocalQtCore
+
                 # Import AdapterFrame at function level (unified pattern)
                 try:
                     from backend.adapters.interface import Frame as AdapterFrame
@@ -294,7 +479,7 @@ class TestRunner:
                     end = time.time() + float(sec)
                     while time.time() < end:
                         try:
-                            QtCore.QCoreApplication.processEvents()
+                            LocalQtCore.QCoreApplication.processEvents()
                         except Exception:
                             pass
                         remaining = end - time.time()
@@ -322,7 +507,7 @@ class TestRunner:
                     matched_start = None
                     poll = SLEEP_INTERVAL_SHORT
                     while time.time() < end:
-                        QtCore.QCoreApplication.processEvents()
+                        LocalQtCore.QCoreApplication.processEvents()
                         try:
                             if fb:
                                 if fb_mid is not None:

@@ -8260,6 +8260,12 @@ Data Points Used: {data_points}"""
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
+        # Test Mode field (0-3, default 0)
+        test_mode_spin = QtWidgets.QSpinBox()
+        test_mode_spin.setRange(0, 3)
+        test_mode_spin.setValue(0)
+        test_mode_spin.setToolTip('DUT must be in this test mode before test execution (0-3)')
+        form.addRow('Test Mode:', test_mode_spin)
         # Feedback source and signal (DBC-driven when available)
         if self.dbc_service is not None and self.dbc_service.is_loaded():
             # build feedback message combo and signal combo
@@ -9568,10 +9574,14 @@ Data Points Used: {data_points}"""
                 else:
                     feedback = feedback_edit.text().strip()
 
+            # Get test_mode value
+            test_mode_val = test_mode_spin.value()
+            
             entry = {
                 'name': nm,
                 'type': t,
                 'actuation': act,
+                'test_mode': test_mode_val,
                 'created_at': datetime.utcnow().isoformat() + 'Z'
             }
             
@@ -12266,6 +12276,12 @@ Data Points Used: {data_points}"""
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
+        # Test Mode field (0-3, default 0)
+        test_mode_spin_edit = QtWidgets.QSpinBox()
+        test_mode_spin_edit.setRange(0, 3)
+        test_mode_spin_edit.setValue(data.get('test_mode', 0))
+        test_mode_spin_edit.setToolTip('DUT must be in this test mode before test execution (0-3)')
+        form.addRow('Test Mode:', test_mode_spin_edit)
         # Feedback fields - store references for showing/hiding
         fb_msg_label = None
         fb_signal_label = None
@@ -12349,6 +12365,8 @@ Data Points Used: {data_points}"""
             
             data['name'] = new_name
             data['type'] = type_combo.currentText()
+            # Update test_mode
+            data['test_mode'] = test_mode_spin_edit.value()
             # feedback
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
@@ -13856,6 +13874,7 @@ Data Points Used: {data_points}"""
         self.test_execution_thread.sequence_cancelled.connect(self._on_sequence_cancelled)
         self.test_execution_thread.sequence_paused.connect(self._on_sequence_paused)
         self.test_execution_thread.sequence_resumed.connect(self._on_sequence_resumed)
+        self.test_execution_thread.test_mode_mismatch.connect(self._on_test_mode_mismatch)
         
         # Initialize UI
         self.progress_bar.setVisible(True)
@@ -14331,6 +14350,27 @@ Data Points Used: {data_points}"""
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Test sequence resumed')
         logger.info("Test sequence resumed")
+    
+    @QtCore.Slot(str, str)
+    def _on_test_mode_mismatch(self, test_name: str, message: str) -> None:
+        """Handle test mode mismatch signal from TestExecutionThread.
+        
+        Shows a warning dialog when DUT is not in the correct test mode.
+        User can click OK to close the dialog, then press Resume to retry.
+        
+        Args:
+            test_name: Name of the test that failed the mode check
+            message: Error message describing the mismatch
+        """
+        logger.warning(f"Test mode mismatch for {test_name}: {message}")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test mode mismatch for {test_name}: {message}')
+        QtWidgets.QMessageBox.warning(
+            self,
+            'Test Mode Mismatch',
+            f'Test: {test_name}\n\n{message}\n\n'
+            'Please ensure DUT is in the correct test mode and click Resume to retry.'
+        )
     
     def closeEvent(self, event) -> None:
         """Handle window close event - cleanup services and resources.

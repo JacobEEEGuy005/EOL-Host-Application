@@ -52,6 +52,7 @@ class TestExecutionThread(QtCore.QThread):
     sequence_cancelled = QtCore.Signal()
     sequence_paused = QtCore.Signal()  # Emitted when sequence is paused
     sequence_resumed = QtCore.Signal()  # Emitted when sequence is resumed
+    test_mode_mismatch = QtCore.Signal(str, str)  # test_name, message
     
     def __init__(self, 
                  tests: List[Dict[str, Any]],
@@ -155,6 +156,44 @@ class TestExecutionThread(QtCore.QThread):
                 self.sequence_progress.emit(i, total_tests)
                 
                 logger.info(f"Executing test {i+1}/{total_tests}: {test_name}")
+                
+                # Check test mode before executing test
+                test_mode_check_passed = False
+                while not test_mode_check_passed:
+                    # Check if paused or cancelled
+                    if self._stop_requested:
+                        cancelled = True
+                        break
+                    
+                    # Perform test mode check
+                    check_passed, check_msg = self.test_runner.check_test_mode(test)
+                    
+                    if check_passed:
+                        test_mode_check_passed = True
+                        logger.info(f"Test mode check passed for {test_name}: {check_msg}")
+                    else:
+                        # Pause test sequence
+                        self._pause_lock.lock()
+                        self._is_paused = True
+                        self.sequence_paused.emit()
+                        
+                        # Show warning dialog (must be done in main thread via signal)
+                        logger.warning(f"Test mode mismatch for {test_name}: {check_msg}")
+                        self.test_mode_mismatch.emit(test_name, check_msg)
+                        
+                        # Wait for resume
+                        logger.info(f"Waiting for resume after test mode mismatch for {test_name}")
+                        self._pause_condition.wait(self._pause_lock)
+                        self._is_paused = False
+                        self._pause_lock.unlock()
+                        
+                        # When resumed, loop will check again
+                        logger.info(f"Resumed after test mode mismatch for {test_name}, re-checking...")
+                
+                # If cancelled during test mode check, break out
+                if self._stop_requested:
+                    cancelled = True
+                    break
                 
                 start_time = time.time()
                 test_paused = False  # Flag to track if test requested pause (not a failure)

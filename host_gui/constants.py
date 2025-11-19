@@ -91,3 +91,7 @@ PLOT_GRID_ALPHA = 0.3  # Grid transparency for matplotlib plots
 # Signal processing gain factors
 ADC_A3_GAIN_FACTOR = 1.998  # Gain factor to apply to ADC_A3_mV signal for display in Signal View
 
+# Test Mode validation timing constants (seconds)
+TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0  # Must match continuously for this duration
+TEST_MODE_TOTAL_TIMEOUT = 5.0  # Total time to wait for test mode match
+

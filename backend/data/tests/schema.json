@@ -12,6 +12,7 @@
           "name": {"type":"string"},
           "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration","Charged HV Bus Test","Charger Functional Test"]},
           "feedback_signal": {"type":["string","null"]},
+          "test_mode": {"type":"integer", "minimum":0, "maximum":3, "default":0},
           "actuation": {
             "type": "object",
             "oneOf": [

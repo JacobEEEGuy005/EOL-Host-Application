@@ -526,11 +526,13 @@ class TestProfile:
         actuation: Actuation configuration
         feedback_signal: Signal name to monitor for feedback
         feedback_message_id: CAN message ID containing feedback signal
+        test_mode: Test mode value (0-3, default 0) - DUT must be in this mode before test execution
     """
     name: str
     actuation: ActuationConfig
     feedback_signal: Optional[str] = None
     feedback_message_id: Optional[int] = None
+    test_mode: int = 0  # Test mode: 0-3, default 0
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -542,6 +544,8 @@ class TestProfile:
             result['feedback_signal'] = self.feedback_signal
         if self.feedback_message_id is not None:
             result['feedback_message_id'] = self.feedback_message_id
+        if self.test_mode is not None:
+            result['test_mode'] = self.test_mode
         return result
     
     @classmethod
@@ -553,6 +557,7 @@ class TestProfile:
             name=data.get('name', 'Unnamed Test'),
             actuation=actuation,
             feedback_signal=data.get('feedback_signal'),
-            feedback_message_id=data.get('feedback_message_id')
+            feedback_message_id=data.get('feedback_message_id'),
+            test_mode=data.get('test_mode', 0)  # Default to 0 if not specified
         )
 
