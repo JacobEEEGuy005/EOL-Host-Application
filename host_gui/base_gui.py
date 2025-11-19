@@ -428,6 +428,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         Configuration includes:
         - EOL Feedback Message: DBC message that contains feedback data
         - Measured DAC Output Voltage Signal: Signal within that message for DAC measurement
+        - EOL Command Message ID: DBC message ID for sending commands to DUT
+        - Set DUT Test Mode Signal: Signal within EOL Command Message for setting test mode
+        - DUT Feedback Message ID: DBC message ID for receiving feedback from DUT
+        - DUT Test Status Signal: Signal within DUT Feedback Message for test status
         
         Returns:
             QWidget containing the EOL H/W Configuration layout
@@ -452,16 +456,30 @@ class BaseGUI(QtWidgets.QMainWindow):
         config_group = QtWidgets.QGroupBox('Current EOL Hardware Configuration')
         config_layout = QtWidgets.QFormLayout()
         
+        self.eol_config_name_label = QtWidgets.QLabel('No configuration loaded')
+        self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
         self.eol_feedback_msg_label = QtWidgets.QLabel('Not configured')
         self.eol_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
         self.eol_dac_signal_label = QtWidgets.QLabel('Not configured')
         self.eol_dac_signal_label.setStyleSheet('color: gray; font-style: italic;')
-        self.eol_config_name_label = QtWidgets.QLabel('No configuration loaded')
-        self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
+        
+        # New fields
+        self.eol_command_msg_label = QtWidgets.QLabel('Not configured')
+        self.eol_command_msg_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dut_test_mode_signal_label = QtWidgets.QLabel('Not configured')
+        self.eol_dut_test_mode_signal_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dut_feedback_msg_label = QtWidgets.QLabel('Not configured')
+        self.eol_dut_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dut_test_status_signal_label = QtWidgets.QLabel('Not configured')
+        self.eol_dut_test_status_signal_label.setStyleSheet('color: gray; font-style: italic;')
         
         config_layout.addRow('Configuration Name:', self.eol_config_name_label)
         config_layout.addRow('EOL Feedback Message:', self.eol_feedback_msg_label)
         config_layout.addRow('Measured DAC Output Voltage Signal:', self.eol_dac_signal_label)
+        config_layout.addRow('EOL Command Message ID:', self.eol_command_msg_label)
+        config_layout.addRow('Set DUT Test Mode Signal:', self.eol_dut_test_mode_signal_label)
+        config_layout.addRow('DUT Feedback Message ID:', self.eol_dut_feedback_msg_label)
+        config_layout.addRow('DUT Test Status Signal:', self.eol_dut_test_status_signal_label)
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         
@@ -483,6 +501,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             'feedback_message_id': None,
             'feedback_message_name': None,
             'measured_dac_signal': None,
+            'eol_command_message_id': None,
+            'eol_command_message_name': None,
+            'set_dut_test_mode_signal': None,
+            'dut_feedback_message_id': None,
+            'dut_feedback_message_name': None,
+            'dut_test_status_signal': None,
             'created_at': None,
             'updated_at': None
         }
@@ -748,6 +772,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             'feedback_message_id': None,
             'feedback_message_name': None,
             'measured_dac_signal': None,
+            'eol_command_message_id': None,
+            'eol_command_message_name': None,
+            'set_dut_test_mode_signal': None,
+            'dut_feedback_message_id': None,
+            'dut_feedback_message_name': None,
+            'dut_test_status_signal': None,
             'created_at': None,
             'updated_at': None
         }
@@ -5088,6 +5118,50 @@ Data Points Used: {data_points}"""
         sig_details.setStyleSheet('color: gray; font-size: 10px;')
         layout.addWidget(sig_details)
         
+        # Separator
+        separator1 = QtWidgets.QFrame()
+        separator1.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        separator1.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        layout.addWidget(separator1)
+        
+        # EOL Command Message ID
+        eol_cmd_msg_label = QtWidgets.QLabel('<b>EOL Command Message ID:</b>')
+        layout.addWidget(eol_cmd_msg_label)
+        eol_cmd_msg_combo = QtWidgets.QComboBox()
+        eol_cmd_msg_combo.addItem('-- Select Message --', None)
+        for msg in messages:
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            eol_cmd_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+        layout.addWidget(eol_cmd_msg_combo)
+        
+        # Set DUT Test Mode Signal (updates when EOL Command Message changes)
+        dut_test_mode_sig_label = QtWidgets.QLabel('<b>Set DUT Test Mode Signal:</b>')
+        layout.addWidget(dut_test_mode_sig_label)
+        dut_test_mode_sig_combo = QtWidgets.QComboBox()
+        dut_test_mode_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_mode_sig_combo)
+        
+        # DUT Feedback Message ID
+        dut_fb_msg_label = QtWidgets.QLabel('<b>DUT Feedback Message ID:</b>')
+        layout.addWidget(dut_fb_msg_label)
+        dut_fb_msg_combo = QtWidgets.QComboBox()
+        dut_fb_msg_combo.addItem('-- Select Message --', None)
+        for msg in messages:
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            dut_fb_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+        layout.addWidget(dut_fb_msg_combo)
+        
+        # DUT Test Status Signal (updates when DUT Feedback Message changes)
+        dut_test_status_sig_label = QtWidgets.QLabel('<b>DUT Test Status Signal:</b>')
+        layout.addWidget(dut_test_status_sig_label)
+        dut_test_status_sig_combo = QtWidgets.QComboBox()
+        dut_test_status_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_status_sig_combo)
+        
         def on_message_changed(index):
             """Update signal combo when message selection changes."""
             sig_combo.clear()
@@ -5115,7 +5189,57 @@ Data Points Used: {data_points}"""
                     display_text += f" ({sig_units})"
                 sig_combo.addItem(display_text, sig)
         
+        def on_eol_cmd_message_changed(index):
+            """Update DUT Test Mode Signal combo when EOL Command Message changes."""
+            dut_test_mode_sig_combo.clear()
+            msg = eol_cmd_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_mode_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_mode_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_mode_sig_combo.addItem('-- Select Signal --', None)
+            for sig in signals:
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_mode_sig_combo.addItem(display_text, sig)
+        
+        def on_dut_fb_message_changed(index):
+            """Update DUT Test Status Signal combo when DUT Feedback Message changes."""
+            dut_test_status_sig_combo.clear()
+            msg = dut_fb_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_status_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_status_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_status_sig_combo.addItem('-- Select Signal --', None)
+            for sig in signals:
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_status_sig_combo.addItem(display_text, sig)
+        
         msg_combo.currentIndexChanged.connect(on_message_changed)
+        eol_cmd_msg_combo.currentIndexChanged.connect(on_eol_cmd_message_changed)
+        dut_fb_msg_combo.currentIndexChanged.connect(on_dut_fb_message_changed)
         
         def on_signal_changed(index):
             """Update signal details when signal selection changes."""
@@ -5161,8 +5285,14 @@ Data Points Used: {data_points}"""
             sig = sig_combo.currentData()
             if not msg or not sig:
                 QtWidgets.QMessageBox.warning(dialog, 'Invalid Configuration', 
-                    'Please select both message and signal.')
+                    'Please select both EOL Feedback Message and Measured DAC Output Voltage Signal.')
                 return
+            
+            # Get new field values (optional)
+            eol_cmd_msg = eol_cmd_msg_combo.currentData()
+            dut_test_mode_sig = dut_test_mode_sig_combo.currentData()
+            dut_fb_msg = dut_fb_msg_combo.currentData()
+            dut_test_status_sig = dut_test_status_sig_combo.currentData()
             
             # Save configuration
             self._eol_hw_config = {
@@ -5170,6 +5300,12 @@ Data Points Used: {data_points}"""
                 'feedback_message_id': getattr(msg, 'frame_id', 0),
                 'feedback_message_name': getattr(msg, 'name', ''),
                 'measured_dac_signal': getattr(sig, 'name', ''),
+                'eol_command_message_id': getattr(eol_cmd_msg, 'frame_id', None) if eol_cmd_msg else None,
+                'eol_command_message_name': getattr(eol_cmd_msg, 'name', None) if eol_cmd_msg else None,
+                'set_dut_test_mode_signal': getattr(dut_test_mode_sig, 'name', None) if dut_test_mode_sig else None,
+                'dut_feedback_message_id': getattr(dut_fb_msg, 'frame_id', None) if dut_fb_msg else None,
+                'dut_feedback_message_name': getattr(dut_fb_msg, 'name', None) if dut_fb_msg else None,
+                'dut_test_status_signal': getattr(dut_test_status_sig, 'name', None) if dut_test_status_sig else None,
                 'created_at': datetime.utcnow().isoformat() + 'Z',
                 'updated_at': datetime.utcnow().isoformat() + 'Z'
             }
@@ -5259,6 +5395,58 @@ Data Points Used: {data_points}"""
         sig_details.setStyleSheet('color: gray; font-size: 10px;')
         layout.addWidget(sig_details)
         
+        # Separator
+        separator1 = QtWidgets.QFrame()
+        separator1.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        separator1.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        layout.addWidget(separator1)
+        
+        # EOL Command Message ID
+        eol_cmd_msg_label = QtWidgets.QLabel('<b>EOL Command Message ID:</b>')
+        layout.addWidget(eol_cmd_msg_label)
+        eol_cmd_msg_combo = QtWidgets.QComboBox()
+        eol_cmd_msg_combo.addItem('-- Select Message --', None)
+        current_eol_cmd_msg_id = self._eol_hw_config.get('eol_command_message_id')
+        current_eol_cmd_msg_index = 0
+        for idx, msg in enumerate(messages, start=1):
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            eol_cmd_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+            if current_eol_cmd_msg_id and msg_id == current_eol_cmd_msg_id:
+                current_eol_cmd_msg_index = idx
+        layout.addWidget(eol_cmd_msg_combo)
+        
+        # Set DUT Test Mode Signal (updates when EOL Command Message changes)
+        dut_test_mode_sig_label = QtWidgets.QLabel('<b>Set DUT Test Mode Signal:</b>')
+        layout.addWidget(dut_test_mode_sig_label)
+        dut_test_mode_sig_combo = QtWidgets.QComboBox()
+        dut_test_mode_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_mode_sig_combo)
+        
+        # DUT Feedback Message ID
+        dut_fb_msg_label = QtWidgets.QLabel('<b>DUT Feedback Message ID:</b>')
+        layout.addWidget(dut_fb_msg_label)
+        dut_fb_msg_combo = QtWidgets.QComboBox()
+        dut_fb_msg_combo.addItem('-- Select Message --', None)
+        current_dut_fb_msg_id = self._eol_hw_config.get('dut_feedback_message_id')
+        current_dut_fb_msg_index = 0
+        for idx, msg in enumerate(messages, start=1):
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            dut_fb_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+            if current_dut_fb_msg_id and msg_id == current_dut_fb_msg_id:
+                current_dut_fb_msg_index = idx
+        layout.addWidget(dut_fb_msg_combo)
+        
+        # DUT Test Status Signal (updates when DUT Feedback Message changes)
+        dut_test_status_sig_label = QtWidgets.QLabel('<b>DUT Test Status Signal:</b>')
+        layout.addWidget(dut_test_status_sig_label)
+        dut_test_status_sig_combo = QtWidgets.QComboBox()
+        dut_test_status_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_status_sig_combo)
+        
         def on_message_changed(index):
             sig_combo.clear()
             sig_details.setText('')
@@ -5291,6 +5479,68 @@ Data Points Used: {data_points}"""
                 sig_combo.setCurrentIndex(current_sig_index)
                 on_signal_changed(current_sig_index)
         
+        def on_eol_cmd_message_changed(index):
+            """Update DUT Test Mode Signal combo when EOL Command Message changes."""
+            dut_test_mode_sig_combo.clear()
+            msg = eol_cmd_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_mode_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_mode_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_mode_sig_combo.addItem('-- Select Signal --', None)
+            current_dut_test_mode_sig_name = self._eol_hw_config.get('set_dut_test_mode_signal')
+            current_dut_test_mode_sig_index = 0
+            for idx, sig in enumerate(signals, start=1):
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_mode_sig_combo.addItem(display_text, sig)
+                if sig_name == current_dut_test_mode_sig_name:
+                    current_dut_test_mode_sig_index = idx
+            
+            if current_dut_test_mode_sig_index > 0:
+                dut_test_mode_sig_combo.setCurrentIndex(current_dut_test_mode_sig_index)
+        
+        def on_dut_fb_message_changed(index):
+            """Update DUT Test Status Signal combo when DUT Feedback Message changes."""
+            dut_test_status_sig_combo.clear()
+            msg = dut_fb_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_status_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_status_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_status_sig_combo.addItem('-- Select Signal --', None)
+            current_dut_test_status_sig_name = self._eol_hw_config.get('dut_test_status_signal')
+            current_dut_test_status_sig_index = 0
+            for idx, sig in enumerate(signals, start=1):
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_status_sig_combo.addItem(display_text, sig)
+                if sig_name == current_dut_test_status_sig_name:
+                    current_dut_test_status_sig_index = idx
+            
+            if current_dut_test_status_sig_index > 0:
+                dut_test_status_sig_combo.setCurrentIndex(current_dut_test_status_sig_index)
+        
         def on_signal_changed(index):
             sig = sig_combo.currentData()
             if sig is None or index == 0:
@@ -5314,11 +5564,21 @@ Data Points Used: {data_points}"""
         
         msg_combo.currentIndexChanged.connect(on_message_changed)
         sig_combo.currentIndexChanged.connect(on_signal_changed)
+        eol_cmd_msg_combo.currentIndexChanged.connect(on_eol_cmd_message_changed)
+        dut_fb_msg_combo.currentIndexChanged.connect(on_dut_fb_message_changed)
         
         # Set current selections
         if current_msg_index > 0:
             msg_combo.setCurrentIndex(current_msg_index)
             on_message_changed(current_msg_index)
+        
+        if current_eol_cmd_msg_index > 0:
+            eol_cmd_msg_combo.setCurrentIndex(current_eol_cmd_msg_index)
+            on_eol_cmd_message_changed(current_eol_cmd_msg_index)
+        
+        if current_dut_fb_msg_index > 0:
+            dut_fb_msg_combo.setCurrentIndex(current_dut_fb_msg_index)
+            on_dut_fb_message_changed(current_dut_fb_msg_index)
         
         # Buttons
         button_layout = QtWidgets.QHBoxLayout()
@@ -5340,14 +5600,26 @@ Data Points Used: {data_points}"""
             sig = sig_combo.currentData()
             if not msg or not sig:
                 QtWidgets.QMessageBox.warning(dialog, 'Invalid Configuration', 
-                    'Please select both message and signal.')
+                    'Please select both EOL Feedback Message and Measured DAC Output Voltage Signal.')
                 return
+            
+            # Get new field values (optional)
+            eol_cmd_msg = eol_cmd_msg_combo.currentData()
+            dut_test_mode_sig = dut_test_mode_sig_combo.currentData()
+            dut_fb_msg = dut_fb_msg_combo.currentData()
+            dut_test_status_sig = dut_test_status_sig_combo.currentData()
             
             self._eol_hw_config.update({
                 'name': config_name,
                 'feedback_message_id': getattr(msg, 'frame_id', 0),
                 'feedback_message_name': getattr(msg, 'name', ''),
                 'measured_dac_signal': getattr(sig, 'name', ''),
+                'eol_command_message_id': getattr(eol_cmd_msg, 'frame_id', None) if eol_cmd_msg else None,
+                'eol_command_message_name': getattr(eol_cmd_msg, 'name', None) if eol_cmd_msg else None,
+                'set_dut_test_mode_signal': getattr(dut_test_mode_sig, 'name', None) if dut_test_mode_sig else None,
+                'dut_feedback_message_id': getattr(dut_fb_msg, 'frame_id', None) if dut_fb_msg else None,
+                'dut_feedback_message_name': getattr(dut_fb_msg, 'name', None) if dut_fb_msg else None,
+                'dut_test_status_signal': getattr(dut_test_status_sig, 'name', None) if dut_test_status_sig else None,
                 'updated_at': datetime.utcnow().isoformat() + 'Z'
             })
             
@@ -5510,6 +5782,41 @@ Data Points Used: {data_points}"""
             self.eol_feedback_msg_label.setStyleSheet('')
             self.eol_dac_signal_label.setText(signal_name)
             self.eol_dac_signal_label.setStyleSheet('')
+            
+            # Display new fields
+            eol_cmd_msg_id = config.get('eol_command_message_id')
+            eol_cmd_msg_name = config.get('eol_command_message_name', '')
+            if eol_cmd_msg_id:
+                self.eol_command_msg_label.setText(f"{eol_cmd_msg_name} (0x{eol_cmd_msg_id:X})" if eol_cmd_msg_name else f"0x{eol_cmd_msg_id:X}")
+                self.eol_command_msg_label.setStyleSheet('')
+            else:
+                self.eol_command_msg_label.setText('Not configured')
+                self.eol_command_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            
+            dut_test_mode_sig = config.get('set_dut_test_mode_signal')
+            if dut_test_mode_sig:
+                self.eol_dut_test_mode_signal_label.setText(dut_test_mode_sig)
+                self.eol_dut_test_mode_signal_label.setStyleSheet('')
+            else:
+                self.eol_dut_test_mode_signal_label.setText('Not configured')
+                self.eol_dut_test_mode_signal_label.setStyleSheet('color: gray; font-style: italic;')
+            
+            dut_fb_msg_id = config.get('dut_feedback_message_id')
+            dut_fb_msg_name = config.get('dut_feedback_message_name', '')
+            if dut_fb_msg_id:
+                self.eol_dut_feedback_msg_label.setText(f"{dut_fb_msg_name} (0x{dut_fb_msg_id:X})" if dut_fb_msg_name else f"0x{dut_fb_msg_id:X}")
+                self.eol_dut_feedback_msg_label.setStyleSheet('')
+            else:
+                self.eol_dut_feedback_msg_label.setText('Not configured')
+                self.eol_dut_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            
+            dut_test_status_sig = config.get('dut_test_status_signal')
+            if dut_test_status_sig:
+                self.eol_dut_test_status_signal_label.setText(dut_test_status_sig)
+                self.eol_dut_test_status_signal_label.setStyleSheet('')
+            else:
+                self.eol_dut_test_status_signal_label.setText('Not configured')
+                self.eol_dut_test_status_signal_label.setStyleSheet('color: gray; font-style: italic;')
         else:
             self.eol_config_name_label.setText('No configuration loaded')
             self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
@@ -5517,6 +5824,14 @@ Data Points Used: {data_points}"""
             self.eol_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
             self.eol_dac_signal_label.setText('Not configured')
             self.eol_dac_signal_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_command_msg_label.setText('Not configured')
+            self.eol_command_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dut_test_mode_signal_label.setText('Not configured')
+            self.eol_dut_test_mode_signal_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dut_feedback_msg_label.setText('Not configured')
+            self.eol_dut_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dut_test_status_signal_label.setText('Not configured')
+            self.eol_dut_test_status_signal_label.setStyleSheet('color: gray; font-style: italic;')
     
     def _refresh_eol_config_list(self):
         """Refresh the list of saved EOL configurations."""
