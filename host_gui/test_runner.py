@@ -325,6 +325,103 @@ class TestRunner:
         logger.warning(error_msg)
         return False, error_msg
 
+    def send_test_mode_command(self, test_mode_value: int) -> Tuple[bool, str]:
+        """Send test mode command to DUT without validation.
+        
+        This method sends a test mode value to the DUT using the Set DUT Test Mode Signal
+        from EOL HW Config. It does not perform validation - it only sends the command.
+        This is useful for sending Idle (0) command between tests or after sequence completion.
+        
+        Args:
+            test_mode_value: Test mode value to send (0-3, typically 0 for Idle)
+            
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        import time
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Get DUT Test Status Signal info from eol_hw_config
+        if not self.eol_hw_config:
+            logger.info("No EOL HW config - cannot send test mode command")
+            return False, "No EOL HW config - cannot send test mode command"
+        
+        # Get EOL Command Message info for sending test mode
+        eol_cmd_msg_id = self.eol_hw_config.get('eol_command_message_id')
+        set_dut_test_mode_signal = self.eol_hw_config.get('set_dut_test_mode_signal')
+        
+        if not eol_cmd_msg_id or not set_dut_test_mode_signal:
+            logger.info("EOL Command Message or Set DUT Test Mode Signal not configured - cannot send test mode command")
+            return False, "EOL Command Message or Set DUT Test Mode Signal not configured"
+        
+        logger.info(f"Sending test mode {test_mode_value} to DUT using signal {set_dut_test_mode_signal} (CAN ID: 0x{eol_cmd_msg_id:X})")
+        
+        try:
+            # Check if CAN service and DBC service are available
+            if not self.can_service or not self.can_service.is_connected():
+                logger.warning("CAN service not connected - cannot send test mode command")
+                return False, "CAN service not connected - cannot send test mode command"
+            
+            if not self.dbc_service or not self.dbc_service.is_loaded():
+                logger.warning("DBC service not loaded - cannot encode test mode command")
+                return False, "DBC service not loaded - cannot encode test mode command"
+            
+            # Find the command message
+            cmd_msg = self.dbc_service.find_message_by_id(eol_cmd_msg_id)
+            if cmd_msg is None:
+                logger.warning(f"Could not find message for CAN ID 0x{eol_cmd_msg_id:X}")
+                return False, f"Could not find message for CAN ID 0x{eol_cmd_msg_id:X}"
+            
+            # Prepare signal values for encoding
+            signal_values = {}
+            mux_value = None
+            
+            # Check if signal is multiplexed
+            for sig in getattr(cmd_msg, 'signals', []):
+                if sig.name == set_dut_test_mode_signal:
+                    if getattr(sig, 'multiplexer_ids', None):
+                        mux_value = sig.multiplexer_ids[0]
+                    break
+            
+            # Set MessageType if signal is multiplexed
+            if mux_value is not None:
+                signal_values['MessageType'] = mux_value
+            
+            # Add DeviceID if message requires it (check if DeviceID signal exists)
+            for sig in getattr(cmd_msg, 'signals', []):
+                if sig.name == 'DeviceID':
+                    signal_values['DeviceID'] = 0  # Default device ID, adjust if needed
+                    break
+            
+            # Set the test mode signal value
+            signal_values[set_dut_test_mode_signal] = test_mode_value
+            
+            # Encode the message
+            frame_data = self.dbc_service.encode_message(cmd_msg, signal_values)
+            
+            # Create and send frame
+            frame = AdapterFrame(
+                can_id=eol_cmd_msg_id,
+                data=frame_data,
+                timestamp=None
+            )
+            
+            if not self.can_service.send_frame(frame):
+                logger.error(f"Failed to send test mode command to DUT")
+                return False, "Failed to send test mode command to DUT"
+            
+            logger.info(f"Successfully sent test mode {test_mode_value} to DUT")
+            
+            # Small delay to allow DUT to process the command
+            time.sleep(0.1)
+            
+            return True, f"Test mode {test_mode_value} command sent successfully"
+            
+        except Exception as e:
+            logger.error(f"Error sending test mode command: {e}", exc_info=True)
+            return False, f"Error sending test mode command: {e}"
+
     def run_single_test(self, test: Dict[str, Any], timeout: float = 1.0) -> Tuple[bool, str]:
         """Execute a single test using the same behavior as the previous
         BaseGUI._run_single_test implementation. 
