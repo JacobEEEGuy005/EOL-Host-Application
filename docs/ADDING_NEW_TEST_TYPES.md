@@ -2,17 +2,20 @@
 
 ## Overview
 
-This document provides a comprehensive guide for AI agents on how to add new test types to the EOL Host Application codebase. The system currently supports 9 test types:
+This document provides a comprehensive guide for AI agents on how to add new test types to the EOL Host Application codebase. The system currently supports 12 test types:
 
 1. **Digital Logic Test** - Tests digital relay states
 2. **Analog Sweep Test** - Sweeps DAC voltages and monitors feedback
 3. **Phase Current Test** - Phase current calibration with oscilloscope integration
 4. **Analog Static Test** - Static analog measurement comparison
-5. **Temperature Validation Test** - Temperature measurement validation
-6. **Fan Control Test** - Fan control system testing
-7. **External 5V Test** - External 5V power supply testing
-8. **DC Bus Sensing** - DC bus voltage sensing with oscilloscope
-9. **Output Current Calibration** - Output current sensor calibration with oscilloscope integration
+5. **Analog PWM Sensor** - PWM sensor frequency and duty cycle validation
+6. **Temperature Validation Test** - Temperature measurement validation
+7. **Fan Control Test** - Fan control system testing
+8. **External 5V Test** - External 5V power supply testing
+9. **DC Bus Sensing** - DC bus voltage sensing with oscilloscope
+10. **Output Current Calibration** - Output current sensor calibration with oscilloscope integration
+11. **Charged HV Bus Test** - Charged high voltage bus testing
+12. **Charger Functional Test** - Charger functional testing with current validation
 
 ## Architecture Overview
 
@@ -22,8 +25,15 @@ The test type system is distributed across multiple components:
 2. **GUI Components** (`host_gui/base_gui.py`) - User interface for creating/editing tests
 3. **Validation Logic** (`host_gui/base_gui.py::_validate_test()`) - Test configuration validation
 4. **Execution Logic** (`host_gui/test_runner.py`) - Test execution implementation
-5. **Service Layer** (`host_gui/services/test_execution_service.py`) - Decoupled test execution
+5. **Service Layer** (`host_gui/services/`) - Business logic services
+   - `test_execution_service.py` - Decoupled test execution
+   - `can_service.py` - CAN adapter management
+   - `dbc_service.py` - DBC file operations
+   - `signal_service.py` - Signal decoding
+   - `oscilloscope_service.py` - Oscilloscope management
 6. **Data Models** (`host_gui/models/test_profile.py`) - Test configuration data structures
+
+For detailed service architecture documentation, see [Service Architecture](SERVICE_ARCHITECTURE.md).
 
 ## Step-by-Step Guide to Adding a New Test Type
 
@@ -420,7 +430,9 @@ elif act.get('type') == 'Analog Static Test':
 
 **File:** `host_gui/services/test_execution_service.py`
 
-If you want to support your test type in the decoupled service layer:
+If you want to support your test type in the decoupled service layer (for headless execution):
+
+**Note**: `TestExecutionService` uses the same service pattern as `TestRunner`. Services are passed to the constructor and accessed as attributes.
 
 #### 7.1 Add Execution Branch
 

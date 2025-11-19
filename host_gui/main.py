@@ -2,26 +2,50 @@
 EOL Host GUI - PySide6-based application for End of Line testing of IPC (Integrated Power Converter).
 
 This module provides a GUI interface for:
-- Connecting to CAN bus adapters (PCAN, SocketCAN, Canalystii, SimAdapter)
+- Connecting to CAN bus adapters (PCAN, SocketCAN, PythonCAN, Canalystii, SimAdapter)
 - Loading and managing DBC (Database CAN) files for signal decoding
-- Configuring and executing test sequences (digital and analog tests)
+- Configuring and executing test sequences (9 test types)
 - Real-time monitoring of CAN frames and decoded signals
-- Visualizing test results with live plots (Feedback vs DAC Voltage for analog tests)
+- Visualizing test results with live plots
+- Managing oscilloscope connections for advanced tests
+
+Architecture:
+The application uses a service-based architecture that separates business logic from the GUI layer:
+- Services: CanService, DbcService, SignalService, OscilloscopeService, etc.
+- ServiceContainer: Dependency injection container for service management
+- TestExecutionThread: Async test execution in background thread
 
 Key Components:
 - BaseGUI: Main application window with tabs for CAN data, test configurator, and test status
-- TestRunner: Encapsulates test execution logic (can be moved to background thread)
-- AdapterWorker: Background thread for receiving CAN frames
+- TestRunner: Test execution logic (supports both GUI and decoupled modes)
+- Services: Business logic layer (host_gui/services/)
+  - CanService: CAN adapter management and frame transmission
+  - DbcService: DBC file loading, parsing, and message/signal operations
+  - SignalService: Signal decoding, caching, and value retrieval
+  - OscilloscopeService: Oscilloscope connection and configuration
+  - TestExecutionService: Decoupled test execution (headless support)
+  - TestExecutionThread: Async test execution in background thread
 
 Test Types:
-- Digital: Apply High/Low voltage to inputs, verify IPC feedback (1/0)
-- Analog: Step DAC voltage from min to max, monitor IPC feedback signal response
+- Digital Logic Test: Apply High/Low voltage to inputs, verify IPC feedback
+- Analog Sweep Test: Step DAC voltage from min to max, monitor feedback
+- Phase Current Test: Phase current calibration with oscilloscope integration
+- Analog Static Test: Static analog measurement comparison
+- Analog PWM Sensor: PWM sensor frequency and duty cycle validation
+- Temperature Validation Test: Temperature measurement validation
+- Fan Control Test: Fan control system testing
+- External 5V Test: External 5V power supply testing
+- DC Bus Sensing: DC bus voltage sensing with oscilloscope
+- Output Current Calibration: Output current sensor calibration with oscilloscope
+- Charged HV Bus Test: Charged high voltage bus testing
+- Charger Functional Test: Charger functional testing with current validation
 
 Dependencies:
 - PySide6: GUI framework
 - cantools: DBC parsing and signal encoding/decoding
 - matplotlib: Live plotting (optional)
 - python-can: CAN bus abstraction layer (via backend adapters)
+- pyvisa: Oscilloscope communication (optional, for oscilloscope tests)
 """
 import sys
 import json

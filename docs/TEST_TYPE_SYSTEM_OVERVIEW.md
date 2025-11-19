@@ -6,7 +6,7 @@ This document provides a high-level overview of the test type system in the EOL 
 
 ## System Architecture
 
-The test type system is a distributed architecture where test type definitions and logic are spread across multiple components:
+The test type system is a distributed architecture where test type definitions and logic are spread across multiple components. The system uses a **service-based architecture** that separates business logic from the GUI layer:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -32,26 +32,49 @@ The test type system is a distributed architecture where test type definitions a
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
+│                    Service Layer                             │
+│  ┌──────────────────┐  ┌────────────────────────────────┐ │
+│  │  CanService      │  │  DbcService                    │ │
+│  │  SignalService   │  │  OscilloscopeService            │ │
+│  └──────────────────┘  └────────────────────────────────┘ │
+│  ┌──────────────────┐  ┌────────────────────────────────┐ │
+│  │  PhaseCurrent    │  │  ServiceContainer               │ │
+│  │  Service         │  │  (Dependency Injection)        │ │
+│  └──────────────────┘  └────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
 │                    Execution Layer                           │
 │  ┌──────────────────┐  ┌────────────────────────────────┐ │
 │  │  Test Runner      │  │  Test Execution Service        │ │
 │  │  (test_runner.py)│  │  (test_execution_service.py)   │ │
 │  └──────────────────┘  └────────────────────────────────┘ │
+│  ┌──────────────────┐  ┌────────────────────────────────┐ │
+│  │  TestExecution    │  │  (Async execution in          │ │
+│  │  Thread           │  │   background thread)           │ │
+│  └──────────────────┘  └────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
 
+For detailed service architecture documentation, see [Service Architecture](SERVICE_ARCHITECTURE.md).
+
 ## Current Test Types
 
-The system currently supports 8 test types:
+The system currently supports 12 test types:
 
 1. **Digital Logic Test** - Tests digital relay states (LOW→HIGH→LOW sequence)
 2. **Analog Sweep Test** - Sweeps DAC voltages and monitors feedback signals
 3. **Phase Current Test** - Phase current calibration with oscilloscope integration
 4. **Analog Static Test** - Static analog measurement comparison (feedback vs EOL)
-5. **Temperature Validation Test** - Temperature measurement validation against reference
-6. **Fan Control Test** - Fan control system testing (enable, tach, fault monitoring)
-7. **External 5V Test** - External 5V power supply testing (disabled/enabled phases)
-8. **DC Bus Sensing** - DC bus voltage sensing with oscilloscope integration
+5. **Analog PWM Sensor** - PWM sensor frequency and duty cycle validation
+6. **Temperature Validation Test** - Temperature measurement validation against reference
+7. **Fan Control Test** - Fan control system testing (enable, tach, fault monitoring)
+8. **External 5V Test** - External 5V power supply testing (disabled/enabled phases)
+9. **DC Bus Sensing** - DC bus voltage sensing with oscilloscope integration
+10. **Output Current Calibration** - Output current sensor calibration with oscilloscope integration
+11. **Charged HV Bus Test** - Charged high voltage bus testing
+12. **Charger Functional Test** - Charger functional testing with current validation
 
 ## Data Flow
 
@@ -112,14 +135,24 @@ Results displayed in GUI and reports
 
 - `TestRunner.run_test()`: Main execution method
 - Contains type-specific execution branches
-- Handles CAN communication, signal reading, data collection
+- Can work with services directly (decoupled mode) or via GUI (legacy mode)
+- Handles CAN communication, signal reading, data collection via services
 - Returns pass/fail results
 
-### 5. Service Layer (`host_gui/services/test_execution_service.py`)
+### 5. Service Layer (`host_gui/services/`)
 
-- Decoupled test execution (no GUI dependencies)
-- Similar structure to TestRunner
-- Used for headless/automated execution
+The service layer provides decoupled business logic that can be used by both GUI and headless execution:
+
+- **CanService** (`can_service.py`): CAN adapter management and frame transmission
+- **DbcService** (`dbc_service.py`): DBC file loading, parsing, and message/signal operations
+- **SignalService** (`signal_service.py`): Signal decoding, caching, and value retrieval
+- **OscilloscopeService** (`oscilloscope_service.py`): Oscilloscope connection and configuration
+- **PhaseCurrentService** (`phase_current_service.py`): Phase Current test state machine
+- **TestExecutionService** (`test_execution_service.py`): Decoupled test execution (no GUI dependencies)
+- **TestExecutionThread** (`test_execution_thread.py`): Async test execution in background thread
+- **ServiceContainer** (`service_container.py`): Dependency injection container
+
+For detailed service documentation, see [Service Architecture](SERVICE_ARCHITECTURE.md).
 
 ## Test Type Characteristics
 
@@ -173,15 +206,27 @@ Most test types support both modes, with the GUI adapting the input method based
 
 ### Test Execution Steps
 
-1. **Parameter Extraction**: Read configuration from actuation dictionary
-2. **Parameter Validation**: Check required fields and constraints
-3. **Test Execution**: 
-   - Send actuation commands (if needed)
+1. **Service Initialization**: Services (CanService, DbcService, SignalService, OscilloscopeService) are initialized
+2. **Parameter Extraction**: Read configuration from actuation dictionary
+3. **Parameter Validation**: Check required fields and constraints
+4. **Test Execution**: 
+   - Use services to send actuation commands (CanService.send_frame())
+   - Use services to read signals (SignalService.get_latest_signal())
    - Wait for stabilization (pre-dwell)
-   - Collect data during dwell time
+   - Collect data during dwell time via services
    - Process data (averages, comparisons, etc.)
-4. **Result Determination**: Calculate pass/fail based on criteria
-5. **Result Return**: Return (success: bool, info: str)
+   - Use OscilloscopeService for oscilloscope-dependent tests
+5. **Result Determination**: Calculate pass/fail based on criteria
+6. **Result Return**: Return (success: bool, info: str)
+
+### Service Usage in Test Execution
+
+Tests access hardware and data through services:
+
+- **CAN Communication**: `can_service.send_frame(frame)` to send commands
+- **Signal Reading**: `signal_service.get_latest_signal(can_id, signal_name)` to read feedback
+- **DBC Operations**: `dbc_service.encode_message()` and `dbc_service.decode_message()` for message encoding/decoding
+- **Oscilloscope**: `oscilloscope_service.query_pava_mean()` and `oscilloscope_service.send_command()` for oscilloscope tests
 
 ### Error Handling
 
@@ -223,15 +268,51 @@ See `ADDING_NEW_TEST_TYPES.md` for detailed instructions.
 4. **Incomplete Implementation**: Missing execution branch or validation
 5. **DBC Mode Only**: Not supporting non-DBC mode
 
+## Service Architecture
+
+The test execution system uses a service-based architecture for better modularity and testability:
+
+### Service Dependencies
+
+- **TestRunner** and **TestExecutionService** depend on:
+  - `CanService` for CAN communication
+  - `DbcService` for DBC operations
+  - `SignalService` for signal decoding
+  - `OscilloscopeService` for oscilloscope tests (optional)
+
+### Service Initialization
+
+Services are initialized in `BaseGUI.__init__()` and can be accessed by:
+- Direct access: `self.can_service`, `self.dbc_service`, etc.
+- ServiceContainer: `self.service_container.get_can_service()`, etc.
+
+### Async Execution
+
+Tests can be executed asynchronously using `TestExecutionThread`:
+- Tests run in background thread (non-blocking UI)
+- Progress updates via Qt signals
+- Supports pause/resume and cancellation
+
+For detailed service architecture documentation, see [Service Architecture](SERVICE_ARCHITECTURE.md).
+
 ## Related Files
 
 - **Full Guide**: `docs/ADDING_NEW_TEST_TYPES.md`
 - **Quick Reference**: `docs/TEST_TYPE_QUICK_REFERENCE.md`
+- **Service Architecture**: `docs/SERVICE_ARCHITECTURE.md`
 - **Schema**: `backend/data/tests/schema.json`
 - **Data Model**: `host_gui/models/test_profile.py`
 - **GUI**: `host_gui/base_gui.py`
 - **Execution**: `host_gui/test_runner.py`
-- **Service**: `host_gui/services/test_execution_service.py`
+- **Service Layer**: `host_gui/services/`
+  - `test_execution_service.py` - Decoupled test execution
+  - `test_execution_thread.py` - Async test execution
+  - `can_service.py` - CAN adapter management
+  - `dbc_service.py` - DBC file operations
+  - `signal_service.py` - Signal decoding
+  - `oscilloscope_service.py` - Oscilloscope management
+  - `phase_current_service.py` - Phase current test state machine
+  - `service_container.py` - Dependency injection container
 
 ## Summary
 

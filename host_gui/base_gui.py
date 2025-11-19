@@ -3,6 +3,28 @@ Base GUI module for EOL Host Application.
 
 This module contains the BaseGUI class, the main application window.
 Extracted from main.py for better modularity.
+
+Architecture:
+The GUI uses a service-based architecture:
+- Services are initialized in __init__() and accessed as attributes
+- ServiceContainer provides dependency injection (optional)
+- TestExecutionThread handles async test execution
+- Services handle all hardware communication (CAN, oscilloscope)
+
+Key Services:
+- can_service: CanService instance for CAN adapter management
+- dbc_service: DbcService instance for DBC file operations
+- signal_service: SignalService instance for signal decoding
+- oscilloscope_service: OscilloscopeService instance for oscilloscope management
+- service_container: ServiceContainer instance for dependency injection (optional)
+- test_execution_thread: TestExecutionThread instance for async test execution
+
+Deprecated Attributes (for backwards compatibility):
+- sim: Use can_service instead
+- worker: Managed by CanService
+- frame_q: Use can_service.frame_queue instead
+- _dbc_db: Use dbc_service instead
+- _signal_values: Use signal_service instead
 """
 import sys
 import json

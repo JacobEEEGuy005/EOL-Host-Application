@@ -183,10 +183,14 @@ act = {
 2. Analog Sweep Test
 3. Phase Current Test
 4. Analog Static Test
-5. Temperature Validation Test
-6. Fan Control Test
-7. External 5V Test
-8. DC Bus Sensing
+5. Analog PWM Sensor
+6. Temperature Validation Test
+7. Fan Control Test
+8. External 5V Test
+9. DC Bus Sensing
+10. Output Current Calibration
+11. Charged HV Bus Test
+12. Charger Functional Test
 
 ## Related Documentation
 
