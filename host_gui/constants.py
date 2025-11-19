@@ -99,5 +99,5 @@ ADC_A3_GAIN_FACTOR = 1.998  # Gain factor to apply to ADC_A3_mV signal for displ
 # - The check will timeout after TEST_MODE_TOTAL_TIMEOUT seconds if continuous match is not achieved
 # - If validation fails, the test sequence is paused and a warning dialog is shown
 TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0  # Must match continuously for this duration
-TEST_MODE_TOTAL_TIMEOUT = 5.0  # Total time to wait for test mode match
+TEST_MODE_TOTAL_TIMEOUT = 6.0  # Total time to wait for test mode match
 
