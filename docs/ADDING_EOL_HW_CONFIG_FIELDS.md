@@ -16,6 +16,12 @@ The current EOL H/W Configuration JSON structure includes the following fields:
 | `feedback_message_id` | `integer` | CAN message ID for EOL hardware feedback (hex format) | Yes | `256` (0x100) |
 | `feedback_message_name` | `string` | DBC message name for feedback | Yes | `"Status_Data"` |
 | `measured_dac_signal` | `string` | DBC signal name for measured DAC voltage | Yes | `"ADC_A1_mV"` |
+| `eol_command_message_id` | `integer` | CAN message ID for sending test mode commands to DUT | No | `272` (0x110) |
+| `eol_command_message_name` | `string` | DBC message name for command message | No | `"Command_Data"` |
+| `set_dut_test_mode_signal` | `string` | DBC signal name for setting DUT test mode | No | `"SetTestMode"` |
+| `dut_feedback_message_id` | `integer` | CAN message ID for receiving DUT test status feedback | No | `250` (0xFA) |
+| `dut_feedback_message_name` | `string` | DBC message name for feedback message | No | `"IPC_Status"` |
+| `dut_test_status_signal` | `string` | DBC signal name for DUT test status | No | `"IPCTestState"` |
 | `created_at` | `string` | ISO 8601 timestamp of creation | Auto | `"2025-11-03T14:14:48.368097Z"` |
 | `updated_at` | `string` | ISO 8601 timestamp of last update | Auto | `"2025-11-03T14:14:58.917704Z"` |
 
@@ -27,10 +33,62 @@ The current EOL H/W Configuration JSON structure includes the following fields:
   "feedback_message_id": 256,
   "feedback_message_name": "Status_Data",
   "measured_dac_signal": "ADC_A1_mV",
+  "eol_command_message_id": 272,
+  "eol_command_message_name": "Command_Data",
+  "set_dut_test_mode_signal": "SetTestMode",
+  "dut_feedback_message_id": 250,
+  "dut_feedback_message_name": "IPC_Status",
+  "dut_test_status_signal": "IPCTestState",
   "created_at": "2025-11-03T14:14:48.368097Z",
   "updated_at": "2025-11-03T14:14:58.917704Z"
 }
 ```
+
+## Test Mode Validation
+
+The EOL H/W Configuration includes fields for Test Mode validation, which ensures the DUT (Device Under Test) is in the correct operational mode before test execution.
+
+### Test Mode Fields
+
+| Field Name | Type | Description | Required | Example |
+|------------|------|-------------|----------|---------|
+| `eol_command_message_id` | `integer` | CAN message ID for sending test mode commands to DUT | No | `272` (0x110) |
+| `eol_command_message_name` | `string` | DBC message name for command message | No | `"Command_Data"` |
+| `set_dut_test_mode_signal` | `string` | DBC signal name for setting DUT test mode | No | `"SetTestMode"` |
+| `dut_feedback_message_id` | `integer` | CAN message ID for receiving DUT test status feedback | No | `250` (0xFA) |
+| `dut_feedback_message_name` | `string` | DBC message name for feedback message | No | `"IPC_Status"` |
+| `dut_test_status_signal` | `string` | DBC signal name for DUT test status | No | `"IPCTestState"` |
+
+### Test Mode Validation Process
+
+Before executing any test, the application performs the following validation:
+
+1. **Send Test Mode Command**: If `eol_command_message_id` and `set_dut_test_mode_signal` are configured, the application sends the test's `test_mode` value (0-3) to the DUT using the configured signal.
+
+2. **Monitor Test Status**: The application then monitors the `dut_test_status_signal` from the `dut_feedback_message_id` message.
+
+3. **Continuous Match Requirement**: The signal value must match the test's `test_mode` value **continuously for 2 seconds** (configurable via `TEST_MODE_CONTINUOUS_MATCH_REQUIRED` constant).
+
+4. **Total Timeout**: The validation check has a **total timeout of 5 seconds** (configurable via `TEST_MODE_TOTAL_TIMEOUT` constant). If the continuous match requirement is not met within this timeout, validation fails.
+
+5. **Failure Handling**: If validation fails:
+   - The test sequence is paused
+   - A warning dialog is displayed to the user
+   - The user can click "OK" to close the dialog
+   - The user can then click "Resume" to retry the validation
+
+### Timing Constants
+
+The test mode validation timing is controlled by constants in `host_gui/constants.py`:
+
+- `TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0` (seconds) - Duration for which the signal must continuously match
+- `TEST_MODE_TOTAL_TIMEOUT = 5.0` (seconds) - Maximum time to wait for validation
+
+These values can be adjusted in the constants file if different timing requirements are needed.
+
+### Test Profile Test Mode Field
+
+Each test profile includes a `test_mode` field (0-3, default 0) that specifies the required DUT operational mode for that test. This value is used during the validation process.
 
 ## Available Signals in Status_Data Message
 

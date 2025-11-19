@@ -9,10 +9,11 @@ Constants are organized by category:
 - CAN ID ranges and limits
 - DAC voltage specifications
 - CAN frame specifications
-- Timing constants (dwell times, poll intervals)
+- Timing constants (dwell times, poll intervals, test mode validation)
 - Display limits
 - Message Type values from DBC specification
 - Default CAN bus settings
+- Test Mode validation timing
 
 All values are based on the EOL hardware and IPC specifications defined in
 the DBC file (docs/can_specs/eol_firmware.dbc).
@@ -92,6 +93,11 @@ PLOT_GRID_ALPHA = 0.3  # Grid transparency for matplotlib plots
 ADC_A3_GAIN_FACTOR = 1.998  # Gain factor to apply to ADC_A3_mV signal for display in Signal View
 
 # Test Mode validation timing constants (seconds)
+# These constants control the test mode validation behavior before test execution:
+# - Before running a test, the DUT Test Status Signal value is checked
+# - The signal must match the test's test_mode value continuously for TEST_MODE_CONTINUOUS_MATCH_REQUIRED seconds
+# - The check will timeout after TEST_MODE_TOTAL_TIMEOUT seconds if continuous match is not achieved
+# - If validation fails, the test sequence is paused and a warning dialog is shown
 TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0  # Must match continuously for this duration
 TEST_MODE_TOTAL_TIMEOUT = 5.0  # Total time to wait for test mode match
 
