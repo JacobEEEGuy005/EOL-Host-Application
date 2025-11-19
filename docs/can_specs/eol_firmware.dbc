@@ -75,6 +75,7 @@ BO_ 272 Command: 8 Host_PC
  SG_ Test_Request m32 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
  SG_ ChargerIout_SetPoint m33 : 32|16@1+ (0.01,0) [0|655.35] "A" Vector__XXX
  SG_ Set_ChargerIout_TrimValue m34 : 32|16@1+ (0.01,0) [0|655.35] "%" Vector__XXX
+ SG_ SetTestMode m23 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
 
 BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ DeviceID : 0|8@1+ (1,0) [0|255] ""  Host_PC
@@ -172,6 +173,7 @@ CM_ SG_ 272 Mctrl_Set_Iq_Ref "Set Quadrature Axis Current Reference for Phase Cu
 CM_ SG_ 272 Mctrl_Set_Id_Ref "Set Direct Axis Current Reference for Phase Current Testing";
 CM_ SG_ 272 Fan_Ctrl "Command to enable or disable Fan";
 CM_ SG_ 272 Ext_5V_Ctrl "Command to enable or disable External 5V ";
+CM_ SG_ 272 SetTestMode "Set Test Mode in IPC";
 CM_ BO_ 250 "Status and data messages from IPC Hardware to Host PC (MessageType determines content)";
 CM_ SG_ 250 DeviceID "Device ID (0x03 for IPC Hardware)";
 CM_ SG_ 250 MessageType "Message type identifier (multiplexor for payload interpretation)";
@@ -219,6 +221,7 @@ VAL_ 272 MUX_Enable 0 "Disable" 1 "Enable" ;
 VAL_ 272 RequestIPCData 111 "AnalogParams1" 112 "AnalogParams2" 113 "AnalogParams3" 114 "AnalogParams4" ;
 VAL_ 272 Fan_Ctrl 0 "Disable" 1 "Enable" ;
 VAL_ 272 Ext_5V_Ctrl 0 "Disable" 1 "Enable" ;
+VAL_ 272 SetTestMode 0 "Idle" 1 "MotorControlTestMode" 2 "ChargerTestMode" ;
 VAL_ 250 MessageType 100 "DigSig1" 101 "AnalogValues1" 102 "AnalogValues2" 103 "AnalogValues3" 104 "AnalogValues4" 111 "AnalogParams1" 112 "AnalogParams2" 113 "AnalogParams3" 114 "AnalogParams4" ;
 VAL_ 250 KeySwitchIndicator 0 "Off" 1 "On" ;
 VAL_ 250 ForwardMode 0 "Off" 1 "On" ;
