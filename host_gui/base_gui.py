@@ -1281,22 +1281,135 @@ class BaseGUI(QtWidgets.QMainWindow):
         left_layout = QtWidgets.QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Real-time monitoring
+        # Real-time monitoring with compact table view
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
-        monitor_layout = QtWidgets.QFormLayout(monitor_group)
-        self.current_signal_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Current Signal Value:', self.current_signal_label)
-        self.feedback_signal_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Feedback Signal Value:', self.feedback_signal_label)
-        # Additional monitoring labels for charger tests
-        self.enable_relay_monitor_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Enable Relay Signal:', self.enable_relay_monitor_label)
-        self.enable_pfc_monitor_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Enable PFC Signal:', self.enable_pfc_monitor_label)
-        self.pfc_power_good_monitor_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('PFC Power Good Signal:', self.pfc_power_good_monitor_label)
-        self.output_current_monitor_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Output Current Signal:', self.output_current_monitor_label)
+        monitor_main_layout = QtWidgets.QVBoxLayout(monitor_group)
+        monitor_main_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Initialize monitoring data structures
+        self._monitor_data = {}  # Store signal data: {signal_name: {'value': val, 'timestamp': ts, 'history': []}}
+        self._monitor_last_update_times = {}  # Track update times for refresh rate
+        self._monitor_sparklines = {}  # Store sparkline widgets
+        self._monitor_labels = {}  # Store all label widgets (QTableWidgetItem)
+        self._monitor_timestamps = {}  # Store timestamp items (QTableWidgetItem)
+        self._monitor_table_rows = {}  # Map signal names to table row indices
+        
+        # Create compact table
+        monitor_table = QtWidgets.QTableWidget(6, 4)  # 6 signals, 4 columns
+        monitor_table.setHorizontalHeaderLabels(['Signal', 'Value', 'Trend', 'Updated'])
+        monitor_table.horizontalHeader().setStretchLastSection(True)
+        monitor_table.verticalHeader().setVisible(False)
+        monitor_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        monitor_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        monitor_table.setAlternatingRowColors(True)
+        monitor_table.setMaximumHeight(280)  # Fixed compact height, no scroll needed
+        monitor_table.setMinimumHeight(280)
+        monitor_table.setShowGrid(True)
+        monitor_table.setGridStyle(QtCore.Qt.SolidLine)
+        
+        # Set column widths
+        monitor_table.setColumnWidth(0, 150)  # Signal name
+        monitor_table.setColumnWidth(1, 120)  # Value
+        monitor_table.setColumnWidth(2, 80)   # Trend (sparkline)
+        # Column 3 (Updated) will stretch
+        
+        # Define signals with their display names and keys
+        signals = [
+            ('Current Signal', 'current_signal'),
+            ('Feedback Signal', 'feedback_signal'),
+            ('Enable Relay', 'enable_relay'),
+            ('Enable PFC', 'enable_pfc'),
+            ('PFC Power Good', 'pfc_power_good'),
+            ('Output Current', 'output_current'),
+        ]
+        
+        # Populate table rows
+        for row, (display_name, signal_key) in enumerate(signals):
+            # Signal name (column 0)
+            name_item = QtWidgets.QTableWidgetItem(display_name)
+            name_item.setFlags(name_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            name_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            font = name_item.font()
+            font.setBold(True)
+            name_item.setFont(font)
+            monitor_table.setItem(row, 0, name_item)
+            
+            # Value (column 1) - will be updated dynamically
+            value_item = QtWidgets.QTableWidgetItem('N/A')
+            value_item.setFlags(value_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            value_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            value_font = value_item.font()
+            value_font.setBold(True)
+            value_font.setPointSize(11)
+            value_item.setFont(value_font)
+            monitor_table.setItem(row, 1, value_item)
+            self._monitor_labels[signal_key] = value_item
+            self._monitor_table_rows[signal_key] = row
+            
+            # Sparkline/Trend (column 2)
+            if matplotlib_available:
+                sparkline = self._create_sparkline_widget()
+                if sparkline:
+                    monitor_table.setCellWidget(row, 2, sparkline['widget'])
+                    monitor_table.setRowHeight(row, 40)  # Make row taller for sparkline
+                    self._monitor_sparklines[signal_key] = sparkline
+                else:
+                    no_trend_item = QtWidgets.QTableWidgetItem('N/A')
+                    no_trend_item.setFlags(no_trend_item.flags() & ~QtCore.Qt.ItemIsEditable)
+                    no_trend_item.setTextAlignment(QtCore.Qt.AlignCenter)
+                    monitor_table.setItem(row, 2, no_trend_item)
+            else:
+                no_trend_item = QtWidgets.QTableWidgetItem('N/A')
+                no_trend_item.setFlags(no_trend_item.flags() & ~QtCore.Qt.ItemIsEditable)
+                no_trend_item.setTextAlignment(QtCore.Qt.AlignCenter)
+                monitor_table.setItem(row, 2, no_trend_item)
+            
+            # Timestamp (column 3)
+            timestamp_item = QtWidgets.QTableWidgetItem('')
+            timestamp_item.setFlags(timestamp_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            timestamp_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            timestamp_font = timestamp_item.font()
+            timestamp_font.setPointSize(9)
+            timestamp_item.setFont(timestamp_font)
+            timestamp_item.setForeground(QtGui.QColor('gray'))
+            monitor_table.setItem(row, 3, timestamp_item)
+            self._monitor_timestamps[signal_key] = timestamp_item
+        
+        # Store reference to table for backward compatibility
+        self.current_signal_label = self._monitor_labels['current_signal']
+        self.feedback_signal_label = self._monitor_labels['feedback_signal']
+        self.enable_relay_monitor_label = self._monitor_labels['enable_relay']
+        self.enable_pfc_monitor_label = self._monitor_labels['enable_pfc']
+        self.pfc_power_good_monitor_label = self._monitor_labels['pfc_power_good']
+        self.output_current_monitor_label = self._monitor_labels['output_current']
+        
+        # Store timestamp references for backward compatibility
+        self.current_signal_timestamp = self._monitor_timestamps['current_signal']
+        self.feedback_signal_timestamp = self._monitor_timestamps['feedback_signal']
+        self.enable_relay_timestamp = self._monitor_timestamps['enable_relay']
+        self.enable_pfc_timestamp = self._monitor_timestamps['enable_pfc']
+        self.pfc_power_good_timestamp = self._monitor_timestamps['pfc_power_good']
+        self.output_current_timestamp = self._monitor_timestamps['output_current']
+        
+        monitor_main_layout.addWidget(monitor_table)
+        
+        # Refresh rate indicator
+        refresh_rate_layout = QtWidgets.QHBoxLayout()
+        self.update_rate_label = QtWidgets.QLabel('Update Rate: -- Hz')
+        self.update_rate_label.setStyleSheet('font-size: 9pt; color: gray; font-style: italic;')
+        refresh_rate_layout.addStretch()
+        refresh_rate_layout.addWidget(self.update_rate_label)
+        monitor_main_layout.addLayout(refresh_rate_layout)
+        
+        # Initialize monitor data structures
+        for signal_name in ['current_signal', 'feedback_signal', 'enable_relay', 'enable_pfc', 'pfc_power_good', 'output_current']:
+            self._monitor_data[signal_name] = {
+                'value': None,
+                'timestamp': None,
+                'history': [],
+                'history_max_size': 50  # Keep last 50 values for sparkline
+            }
+        
         left_layout.addWidget(monitor_group)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
@@ -2605,38 +2718,277 @@ Data Points Used: {data_points}"""
         except Exception as e:
             logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
 
-    def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
-        """Update real-time monitoring labels for charger-related signals."""
-        label_map = {
-            'enable_relay': getattr(self, 'enable_relay_monitor_label', None),
-            'enable_pfc': getattr(self, 'enable_pfc_monitor_label', None),
-            'pfc_power_good': getattr(self, 'pfc_power_good_monitor_label', None),
-            'output_current': getattr(self, 'output_current_monitor_label', None),
+    def _create_sparkline_widget(self):
+        """Create a small sparkline widget for value history visualization."""
+        if not matplotlib_available:
+            return None
+        
+        fig = Figure(figsize=(2, 0.5), dpi=100)
+        ax = fig.add_subplot(111)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.set_facecolor('white')
+        fig.patch.set_facecolor('white')
+        canvas = FigureCanvasQTAgg(fig)
+        canvas.setMinimumWidth(80)
+        canvas.setMaximumWidth(80)
+        canvas.setMinimumHeight(30)
+        canvas.setMaximumHeight(30)
+        
+        return {'widget': canvas, 'figure': fig, 'axes': ax, 'data': []}
+    
+    def _format_signal_value(self, value: Any, signal_type: str) -> str:
+        """Format signal value with appropriate units and precision.
+        
+        Args:
+            value: The signal value to format
+            signal_type: Type of signal ('voltage', 'current', 'temperature', 'frequency', 'duty', 'digital', 'generic')
+        
+        Returns:
+            Formatted string with value and unit
+        """
+        if value is None:
+            return 'N/A'
+        
+        try:
+            float_val = float(value)
+        except (ValueError, TypeError):
+            return str(value)
+        
+        formatters = {
+            'voltage': lambda v: f"{v:.2f} V",
+            'current': lambda v: f"{v:.2f} A",
+            'temperature': lambda v: f"{v:.2f} °C",
+            'frequency': lambda v: f"{v:.2f} Hz",
+            'duty': lambda v: f"{v:.2f} %",
+            'digital': lambda v: f"{int(round(v))}",
+            'generic': lambda v: f"{v:.2f}",
         }
-        label = label_map.get(key)
+        
+        formatter = formatters.get(signal_type, lambda v: f"{v:.2f}")
+        return formatter(float_val)
+    
+    def _get_signal_type(self, signal_name: str) -> str:
+        """Determine signal type from signal name."""
+        name_lower = signal_name.lower()
+        if 'voltage' in name_lower or 'dac' in name_lower:
+            return 'voltage'
+        elif 'current' in name_lower:
+            return 'current'
+        elif 'temp' in name_lower:
+            return 'temperature'
+        elif 'freq' in name_lower or 'frequency' in name_lower:
+            return 'frequency'
+        elif 'duty' in name_lower:
+            return 'duty'
+        elif 'relay' in name_lower or 'pfc' in name_lower or 'enable' in name_lower or 'power' in name_lower:
+            return 'digital'
+        else:
+            return 'generic'
+    
+    def _update_signal_with_status(self, signal_name: str, value: Any, 
+                                   threshold_good: Optional[Tuple[float, float]] = None,
+                                   threshold_warn: Optional[Tuple[float, float]] = None) -> None:
+        """Update signal label with value, formatting, color coding, timestamp, and sparkline.
+        
+        Args:
+            signal_name: Name of the signal ('current_signal', 'feedback_signal', etc.)
+            value: The signal value to display
+            threshold_good: Optional tuple (min, max) for good range (green)
+            threshold_warn: Optional tuple (min, max) for warning range (orange)
+        """
+        import time
+        from datetime import datetime
+        
+        # Get signal type and format value
+        signal_type = self._get_signal_type(signal_name)
+        formatted_value = self._format_signal_value(value, signal_type)
+        
+        # Get label and timestamp items (can be QTableWidgetItem or QLabel for backward compatibility)
+        label = self._monitor_labels.get(signal_name)
+        timestamp_item = self._monitor_timestamps.get(signal_name)
+        
         if label is None:
             return
+        
+        # Update label text
+        if isinstance(label, QtWidgets.QTableWidgetItem):
+            label.setText(formatted_value)
+        elif hasattr(label, 'setText'):
+            label.setText(formatted_value)
+        
+        # Update timestamp
+        if timestamp_item is not None:
+            timestamp_str = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            if isinstance(timestamp_item, QtWidgets.QTableWidgetItem):
+                timestamp_item.setText(timestamp_str)
+            elif hasattr(timestamp_item, 'setText'):
+                timestamp_item.setText(f"Updated: {timestamp_str}")
+        
+        # Color coding based on thresholds
         if value is None:
-            label.setText('N/A')
+            # Gray for N/A
+            if isinstance(label, QtWidgets.QTableWidgetItem):
+                label.setForeground(QtGui.QColor('gray'))
+                label.setBackground(QtGui.QColor('#f5f5f5'))
+            elif hasattr(label, 'setStyleSheet'):
+                label.setStyleSheet('color: gray; font-weight: bold; font-size: 11pt; padding: 5px; background-color: #f5f5f5;')
+        else:
+            try:
+                float_val = float(value)
+                
+                # Determine colors based on thresholds
+                if threshold_good is not None and threshold_warn is not None:
+                    if threshold_good[0] <= float_val <= threshold_good[1]:
+                        text_color = QtGui.QColor('green')
+                        bg_color = QtGui.QColor('#e8f5e9')
+                    elif threshold_warn[0] <= float_val <= threshold_warn[1]:
+                        text_color = QtGui.QColor('orange')
+                        bg_color = QtGui.QColor('#fff3e0')
+                    else:
+                        text_color = QtGui.QColor('red')
+                        bg_color = QtGui.QColor('#ffebee')
+                elif signal_type == 'digital':
+                    # Digital signals: 1 = green, 0 = red
+                    if float_val >= 0.5:
+                        text_color = QtGui.QColor('green')
+                        bg_color = QtGui.QColor('#e8f5e9')
+                    else:
+                        text_color = QtGui.QColor('red')
+                        bg_color = QtGui.QColor('#ffebee')
+                else:
+                    # Default: blue for analog values
+                    text_color = QtGui.QColor('blue')
+                    bg_color = QtGui.QColor('#e3f2fd')
+                
+                # Apply colors
+                if isinstance(label, QtWidgets.QTableWidgetItem):
+                    label.setForeground(text_color)
+                    label.setBackground(bg_color)
+                elif hasattr(label, 'setStyleSheet'):
+                    style = f'color: {text_color.name()}; font-weight: bold; font-size: 11pt; padding: 5px; background-color: {bg_color.name()};'
+                    label.setStyleSheet(style)
+            except (ValueError, TypeError):
+                # Default blue for non-numeric values
+                if isinstance(label, QtWidgets.QTableWidgetItem):
+                    label.setForeground(QtGui.QColor('blue'))
+                    label.setBackground(QtGui.QColor('#e3f2fd'))
+                elif hasattr(label, 'setStyleSheet'):
+                    label.setStyleSheet('color: blue; font-weight: bold; font-size: 11pt; padding: 5px; background-color: #e3f2fd;')
+        
+        # Update value history and sparkline
+        if signal_name in self._monitor_data:
+            data_entry = self._monitor_data[signal_name]
+            data_entry['value'] = value
+            data_entry['timestamp'] = time.time()
+            
+            # Add to history
+            if value is not None:
+                try:
+                    float_val = float(value)
+                    data_entry['history'].append(float_val)
+                    # Keep only last N values
+                    max_size = data_entry.get('history_max_size', 50)
+                    if len(data_entry['history']) > max_size:
+                        data_entry['history'] = data_entry['history'][-max_size:]
+                except (ValueError, TypeError):
+                    pass
+            
+            # Update sparkline
+            if signal_name in self._monitor_sparklines and matplotlib_available:
+                sparkline = self._monitor_sparklines[signal_name]
+                if sparkline and len(data_entry['history']) > 1:
+                    try:
+                        ax = sparkline['axes']
+                        ax.clear()
+                        history = data_entry['history']
+                        if len(history) > 0:
+                            ax.plot(history, 'b-', linewidth=1.5, alpha=0.7)
+                            ax.set_ylim(min(history) * 0.95 if min(history) > 0 else min(history) * 1.05,
+                                       max(history) * 1.05 if max(history) > 0 else max(history) * 0.95)
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ax.spines['top'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                        ax.spines['bottom'].set_visible(False)
+                        ax.spines['left'].set_visible(False)
+                        sparkline['figure'].tight_layout(pad=0.1)
+                        sparkline['widget'].draw()
+                    except Exception as e:
+                        logger.debug(f"Failed to update sparkline for {signal_name}: {e}")
+        
+        # Update refresh rate
+        now = time.time()
+        if signal_name in self._monitor_last_update_times:
+            dt = now - self._monitor_last_update_times[signal_name]
+            if dt > 0:
+                rate = 1.0 / dt
+                if hasattr(self, 'update_rate_label'):
+                    self.update_rate_label.setText(f"Update Rate: {rate:.1f} Hz")
+        self._monitor_last_update_times[signal_name] = now
+    
+    def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
+        """Update real-time monitoring labels for charger-related signals.
+        
+        This method now uses the enhanced display system with formatting, colors, timestamps, and sparklines.
+        """
+        # Map old keys to new signal names
+        key_map = {
+            'enable_relay': 'enable_relay',
+            'enable_pfc': 'enable_pfc',
+            'pfc_power_good': 'pfc_power_good',
+            'output_current': 'output_current',
+        }
+        
+        signal_name = key_map.get(key)
+        if signal_name is None:
             return
-        try:
-            if key == 'output_current':
-                label.setText(f"{float(value):.2f} A")
-            else:
-                label.setText(str(int(round(float(value)))))
-        except (ValueError, TypeError):
-            label.setText(str(value))
+        
+        # Determine thresholds based on signal type
+        threshold_good = None
+        threshold_warn = None
+        
+        if key == 'output_current':
+            # Current: good if > 0, warn if very low
+            threshold_good = (0.1, float('inf'))
+            threshold_warn = (0.01, 0.1)
+        elif key in ['enable_relay', 'enable_pfc', 'pfc_power_good']:
+            # Digital signals: 1 = good, 0 = bad
+            threshold_good = (0.5, 1.5)
+            threshold_warn = (0.0, 0.5)
+        
+        self._update_signal_with_status(signal_name, value, threshold_good, threshold_warn)
 
     def reset_monitor_signals(self) -> None:
         """Reset real-time monitoring labels to their default state."""
-        for label in (
-            getattr(self, 'enable_relay_monitor_label', None),
-            getattr(self, 'enable_pfc_monitor_label', None),
-            getattr(self, 'pfc_power_good_monitor_label', None),
-            getattr(self, 'output_current_monitor_label', None),
-        ):
-            if label is not None:
-                label.setText('N/A')
+        for signal_name in self._monitor_labels.keys():
+            self._update_signal_with_status(signal_name, None)
+        
+        # Clear history
+        for signal_name in self._monitor_data.keys():
+            self._monitor_data[signal_name]['history'] = []
+            self._monitor_data[signal_name]['value'] = None
+            self._monitor_data[signal_name]['timestamp'] = None
+        
+        # Clear sparklines
+        for signal_name, sparkline in self._monitor_sparklines.items():
+            if sparkline and matplotlib_available:
+                try:
+                    ax = sparkline['axes']
+                    ax.clear()
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    sparkline['widget'].draw()
+                except Exception:
+                    pass
+        
+        # Reset refresh rate
+        if hasattr(self, 'update_rate_label'):
+            self.update_rate_label.setText('Update Rate: -- Hz')
 
     def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
         """Update the plot with a new data point (DAC voltage, feedback value).
@@ -13592,7 +13944,7 @@ Data Points Used: {data_points}"""
                     ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
                     if v is not None:
                         try:
-                            self.feedback_signal_label.setText(str(v))
+                            self._update_signal_with_status('feedback_signal', v)
                         except Exception:
                             pass
             except Exception:
@@ -14043,7 +14395,7 @@ Data Points Used: {data_points}"""
                     ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
                     if v is not None:
                         try:
-                            self.feedback_signal_label.setText(str(v))
+                            self._update_signal_with_status('feedback_signal', v)
                         except Exception:
                             pass
         except Exception:
@@ -14886,7 +15238,7 @@ Data Points Used: {data_points}"""
                                         if cur_id is not None and this_id is not None and cur_id == this_id:
                                             try:
                                                 # Use the gain-adjusted value for feedback label
-                                                self.feedback_signal_label.setText(str(val))
+                                                self._update_signal_with_status('feedback_signal', val)
                                             except Exception:
                                                 pass
                                     except Exception:

@@ -130,7 +130,11 @@ class TestRunner:
             else:
                 self.plot_clear_callback = plot_clear_callback
             
-            if label_update_callback is None and hasattr(gui, 'current_signal_label'):
+            if label_update_callback is None and hasattr(gui, '_update_signal_with_status'):
+                # Use the new enhanced signal update method
+                self.label_update_callback = lambda text: gui._update_signal_with_status('current_signal', text)
+            elif label_update_callback is None and hasattr(gui, 'current_signal_label'):
+                # Fallback to old method for backwards compatibility
                 self.label_update_callback = lambda text: gui.current_signal_label.setText(str(text))
             else:
                 self.label_update_callback = label_update_callback
@@ -1541,7 +1545,12 @@ class TestRunner:
                                 temperature_values.append(temp_float)
                                 
                                 # Update real-time display with latest value (feedback signal, not current signal)
-                                if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
+                                if self.gui is not None and hasattr(self.gui, '_update_signal_with_status'):
+                                    try:
+                                        self.gui._update_signal_with_status('feedback_signal', temp_float)
+                                    except Exception as e:
+                                        logger.debug(f"Failed to update feedback signal label: {e}")
+                                elif self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
                                     try:
                                         self.gui.feedback_signal_label.setText(f"{temp_float:.2f} °C")
                                     except Exception as e:
@@ -1696,9 +1705,16 @@ class TestRunner:
                                 latest_freq = pwm_frequency_values[-1] if pwm_frequency_values else None
                                 if latest_freq is not None:
                                     display_text = f"Freq: {latest_freq:.2f} Hz, Duty: {duty_float:.2f} %"
+                                    # For PWM signals, we show both frequency and duty in the feedback signal
+                                    # Store as a formatted string since it's a composite value
                                     if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
                                         try:
-                                            self.gui.feedback_signal_label.setText(display_text)
+                                            # Use the new method but with formatted text for composite values
+                                            if hasattr(self.gui, '_update_signal_with_status'):
+                                                # For composite values, we'll just set the text directly
+                                                self.gui.feedback_signal_label.setText(display_text)
+                                            else:
+                                                self.gui.feedback_signal_label.setText(display_text)
                                         except Exception as e:
                                             logger.debug(f"Failed to update feedback signal label: {e}")
                                     elif self.label_update_callback:
@@ -2243,7 +2259,12 @@ class TestRunner:
                                 fan_tach_values.append(tach_float)
                                 
                                 # Update real-time display with latest value (feedback signal, not current signal)
-                                if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
+                                if self.gui is not None and hasattr(self.gui, '_update_signal_with_status'):
+                                    try:
+                                        self.gui._update_signal_with_status('feedback_signal', tach_float)
+                                    except Exception as e:
+                                        logger.debug(f"Failed to update feedback signal label: {e}")
+                                elif self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
                                     try:
                                         self.gui.feedback_signal_label.setText(f"{tach_float:.2f}")
                                     except Exception as e:
