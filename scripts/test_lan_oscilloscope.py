@@ -2,6 +2,9 @@
 """
 Test script to discover and connect to oscilloscope via LAN/Ethernet.
 
+NOTE: For a unified test script that checks both LAN (preferred) and USB (fallback)
+      connections, use: scripts/test_oscilloscope_connection.py
+
 This script:
 1. Scans for TCPIP oscilloscope resources
 2. Connects to the first available device (or manually specified IP)
