@@ -280,8 +280,8 @@ def main():
     # create QApplication and show main window
     app = QtWidgets.QApplication(sys.argv)
     win = BaseGUI()
-    win.show()
-    logger.info('GUI shown; entering Qt event loop')
+    win.showMaximized()
+    logger.info('GUI shown maximized; entering Qt event loop')
     sys.exit(app.exec())
 
 

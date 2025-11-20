@@ -1160,7 +1160,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             f'An error occurred with the DUT UID input.\n\n{details}'
         ))
         
-        self.status_label.setText('DUT UID error')
+        self.status_label.setText('Test Status : DUT UID error')
         self.tabs_main.setCurrentIndex(self.status_tab_index)
         QtWidgets.QMessageBox.warning(self, title, message)
         
@@ -1250,15 +1250,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.resume_test_btn)
         btn_layout.addWidget(dut_uid_label)
         btn_layout.addWidget(self.dut_uid_input)
+        self.clear_results_btn = QtWidgets.QPushButton('Clear Results')
+        btn_layout.addWidget(self.clear_results_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-
-        # Control buttons
-        ctrl_layout = QtWidgets.QHBoxLayout()
-        self.clear_results_btn = QtWidgets.QPushButton('Clear Results')
-        ctrl_layout.addWidget(self.clear_results_btn)
-        ctrl_layout.addStretch()
-        layout.addLayout(ctrl_layout)
 
         # Status display
         status_group = QtWidgets.QGroupBox('Test Execution Status')
@@ -1269,10 +1264,6 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.progress_bar.setVisible(False)
         status_layout.addWidget(self.progress_bar)
 
-        # Status label
-        self.status_label = QtWidgets.QLabel('Ready')
-        status_layout.addWidget(self.status_label)
-
         # Create horizontal splitter for two-column layout
         main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         
@@ -1281,39 +1272,28 @@ class BaseGUI(QtWidgets.QMainWindow):
         left_layout = QtWidgets.QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Real-time monitoring with compact table view
+        # Real-time monitoring with compact grid layout (3 rows x 2 columns)
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
         monitor_main_layout = QtWidgets.QVBoxLayout(monitor_group)
-        monitor_main_layout.setContentsMargins(5, 5, 5, 5)
+        monitor_main_layout.setContentsMargins(2, 2, 2, 2)
+        monitor_main_layout.setSpacing(1)
         
         # Initialize monitoring data structures
         self._monitor_data = {}  # Store signal data: {signal_name: {'value': val, 'timestamp': ts, 'history': []}}
         self._monitor_last_update_times = {}  # Track update times for refresh rate
-        self._monitor_sparklines = {}  # Store sparkline widgets
-        self._monitor_labels = {}  # Store all label widgets (QTableWidgetItem)
-        self._monitor_timestamps = {}  # Store timestamp items (QTableWidgetItem)
-        self._monitor_table_rows = {}  # Map signal names to table row indices
+        self._monitor_sparklines = {}  # Store sparkline widgets (not used in compact grid)
+        self._monitor_labels = {}  # Store all label widgets (QLabel)
+        self._monitor_timestamps = {}  # Store timestamp items (QLabel)
+        self._monitor_table_rows = {}  # Map signal names to grid position (for backward compatibility)
+        self._monitor_display_names = {}  # Map signal keys to display names
         
-        # Create compact table
-        monitor_table = QtWidgets.QTableWidget(6, 4)  # 6 signals, 4 columns
-        monitor_table.setHorizontalHeaderLabels(['Signal', 'Value', 'Trend', 'Updated'])
-        monitor_table.horizontalHeader().setStretchLastSection(True)
-        monitor_table.verticalHeader().setVisible(False)
-        monitor_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        monitor_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        monitor_table.setAlternatingRowColors(True)
-        monitor_table.setMaximumHeight(280)  # Fixed compact height, no scroll needed
-        monitor_table.setMinimumHeight(280)
-        monitor_table.setShowGrid(True)
-        monitor_table.setGridStyle(QtCore.Qt.SolidLine)
+        # Create compact grid layout (3 rows x 2 columns)
+        grid_widget = QtWidgets.QWidget()
+        grid_layout = QtWidgets.QGridLayout(grid_widget)
+        grid_layout.setContentsMargins(1, 1, 1, 1)
+        grid_layout.setSpacing(1)
         
-        # Set column widths
-        monitor_table.setColumnWidth(0, 150)  # Signal name
-        monitor_table.setColumnWidth(1, 120)  # Value
-        monitor_table.setColumnWidth(2, 80)   # Trend (sparkline)
-        # Column 3 (Updated) will stretch
-        
-        # Define signals with their display names and keys
+        # Define signals with their display names and keys, arranged in 3x2 grid
         signals = [
             ('Current Signal', 'current_signal'),
             ('Feedback Signal', 'feedback_signal'),
@@ -1323,59 +1303,44 @@ class BaseGUI(QtWidgets.QMainWindow):
             ('Output Current', 'output_current'),
         ]
         
-        # Populate table rows
-        for row, (display_name, signal_key) in enumerate(signals):
-            # Signal name (column 0)
-            name_item = QtWidgets.QTableWidgetItem(display_name)
-            name_item.setFlags(name_item.flags() & ~QtCore.Qt.ItemIsEditable)
-            name_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            font = name_item.font()
-            font.setBold(True)
-            name_item.setFont(font)
-            monitor_table.setItem(row, 0, name_item)
+        # Populate grid: 3 rows x 2 columns
+        for idx, (display_name, signal_key) in enumerate(signals):
+            row = idx // 2  # Row: 0, 0, 1, 1, 2, 2
+            col = idx % 2   # Column: 0, 1, 0, 1, 0, 1
             
-            # Value (column 1) - will be updated dynamically
-            value_item = QtWidgets.QTableWidgetItem('N/A')
-            value_item.setFlags(value_item.flags() & ~QtCore.Qt.ItemIsEditable)
-            value_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            value_font = value_item.font()
-            value_font.setBold(True)
-            value_font.setPointSize(11)
-            value_item.setFont(value_font)
-            monitor_table.setItem(row, 1, value_item)
-            self._monitor_labels[signal_key] = value_item
-            self._monitor_table_rows[signal_key] = row
+            # Store display name for this signal
+            self._monitor_display_names[signal_key] = display_name
             
-            # Sparkline/Trend (column 2)
-            if matplotlib_available:
-                sparkline = self._create_sparkline_widget()
-                if sparkline:
-                    monitor_table.setCellWidget(row, 2, sparkline['widget'])
-                    monitor_table.setRowHeight(row, 40)  # Make row taller for sparkline
-                    self._monitor_sparklines[signal_key] = sparkline
-                else:
-                    no_trend_item = QtWidgets.QTableWidgetItem('N/A')
-                    no_trend_item.setFlags(no_trend_item.flags() & ~QtCore.Qt.ItemIsEditable)
-                    no_trend_item.setTextAlignment(QtCore.Qt.AlignCenter)
-                    monitor_table.setItem(row, 2, no_trend_item)
-            else:
-                no_trend_item = QtWidgets.QTableWidgetItem('N/A')
-                no_trend_item.setFlags(no_trend_item.flags() & ~QtCore.Qt.ItemIsEditable)
-                no_trend_item.setTextAlignment(QtCore.Qt.AlignCenter)
-                monitor_table.setItem(row, 2, no_trend_item)
+            # Create single label showing "Signal Name : value unit"
+            signal_label = QtWidgets.QLabel(f'{display_name} : N/A')
+            signal_font = signal_label.font()
+            signal_font.setPointSize(8)
+            signal_font.setBold(True)
+            signal_label.setFont(signal_font)
+            signal_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            signal_label.setStyleSheet('padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+            signal_label.setMinimumHeight(20)
+            signal_label.setMaximumHeight(25)
             
-            # Timestamp (column 3)
-            timestamp_item = QtWidgets.QTableWidgetItem('')
-            timestamp_item.setFlags(timestamp_item.flags() & ~QtCore.Qt.ItemIsEditable)
-            timestamp_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            timestamp_font = timestamp_item.font()
-            timestamp_font.setPointSize(9)
-            timestamp_item.setFont(timestamp_font)
-            timestamp_item.setForeground(QtGui.QColor('gray'))
-            monitor_table.setItem(row, 3, timestamp_item)
-            self._monitor_timestamps[signal_key] = timestamp_item
+            # Store label reference
+            self._monitor_labels[signal_key] = signal_label
+            self._monitor_table_rows[signal_key] = row  # Store for backward compatibility
+            
+            # Add to grid
+            grid_layout.addWidget(signal_label, row, col)
         
-        # Store reference to table for backward compatibility
+        # Set row and column stretch to make cells equal size
+        grid_layout.setRowStretch(0, 1)
+        grid_layout.setRowStretch(1, 1)
+        grid_layout.setRowStretch(2, 1)
+        grid_layout.setColumnStretch(0, 1)
+        grid_layout.setColumnStretch(1, 1)
+        
+        # Set fixed compact height for the grid
+        grid_widget.setMaximumHeight(90)
+        grid_widget.setMinimumHeight(90)
+        
+        # Store reference to labels for backward compatibility
         self.current_signal_label = self._monitor_labels['current_signal']
         self.feedback_signal_label = self._monitor_labels['feedback_signal']
         self.enable_relay_monitor_label = self._monitor_labels['enable_relay']
@@ -1383,15 +1348,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.pfc_power_good_monitor_label = self._monitor_labels['pfc_power_good']
         self.output_current_monitor_label = self._monitor_labels['output_current']
         
-        # Store timestamp references for backward compatibility
-        self.current_signal_timestamp = self._monitor_timestamps['current_signal']
-        self.feedback_signal_timestamp = self._monitor_timestamps['feedback_signal']
-        self.enable_relay_timestamp = self._monitor_timestamps['enable_relay']
-        self.enable_pfc_timestamp = self._monitor_timestamps['enable_pfc']
-        self.pfc_power_good_timestamp = self._monitor_timestamps['pfc_power_good']
-        self.output_current_timestamp = self._monitor_timestamps['output_current']
+        # Store timestamp references for backward compatibility (set to None since we don't display timestamps in compact format)
+        self.current_signal_timestamp = None
+        self.feedback_signal_timestamp = None
+        self.enable_relay_timestamp = None
+        self.enable_pfc_timestamp = None
+        self.pfc_power_good_timestamp = None
+        self.output_current_timestamp = None
         
-        monitor_main_layout.addWidget(monitor_table)
+        monitor_main_layout.addWidget(grid_widget)
         
         # Refresh rate indicator
         refresh_rate_layout = QtWidgets.QHBoxLayout()
@@ -2815,11 +2780,14 @@ Data Points Used: {data_points}"""
         if label is None:
             return
         
-        # Update label text
+        # Get display name for this signal
+        display_name = self._monitor_display_names.get(signal_name, signal_name)
+        
+        # Update label text with format: "Display Name : formatted_value"
         if isinstance(label, QtWidgets.QTableWidgetItem):
-            label.setText(formatted_value)
+            label.setText(f'{display_name} : {formatted_value}')
         elif hasattr(label, 'setText'):
-            label.setText(formatted_value)
+            label.setText(f'{display_name} : {formatted_value}')
         
         # Update timestamp
         if timestamp_item is not None:
@@ -2827,7 +2795,7 @@ Data Points Used: {data_points}"""
             if isinstance(timestamp_item, QtWidgets.QTableWidgetItem):
                 timestamp_item.setText(timestamp_str)
             elif hasattr(timestamp_item, 'setText'):
-                timestamp_item.setText(f"Updated: {timestamp_str}")
+                timestamp_item.setText(timestamp_str)  # Compact: just show time, no "Updated:" prefix
         
         # Color coding based on thresholds
         if value is None:
@@ -2836,7 +2804,7 @@ Data Points Used: {data_points}"""
                 label.setForeground(QtGui.QColor('gray'))
                 label.setBackground(QtGui.QColor('#f5f5f5'))
             elif hasattr(label, 'setStyleSheet'):
-                label.setStyleSheet('color: gray; font-weight: bold; font-size: 11pt; padding: 5px; background-color: #f5f5f5;')
+                label.setStyleSheet('color: gray; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
         else:
             try:
                 float_val = float(value)
@@ -2870,7 +2838,7 @@ Data Points Used: {data_points}"""
                     label.setForeground(text_color)
                     label.setBackground(bg_color)
                 elif hasattr(label, 'setStyleSheet'):
-                    style = f'color: {text_color.name()}; font-weight: bold; font-size: 11pt; padding: 5px; background-color: {bg_color.name()};'
+                    style = f'color: {text_color.name()}; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: {bg_color.name()}; border: 1px solid #ddd; border-radius: 1px;'
                     label.setStyleSheet(style)
             except (ValueError, TypeError):
                 # Default blue for non-numeric values
@@ -2878,7 +2846,7 @@ Data Points Used: {data_points}"""
                     label.setForeground(QtGui.QColor('blue'))
                     label.setBackground(QtGui.QColor('#e3f2fd'))
                 elif hasattr(label, 'setStyleSheet'):
-                    label.setStyleSheet('color: blue; font-weight: bold; font-size: 11pt; padding: 5px; background-color: #e3f2fd;')
+                    label.setStyleSheet('color: blue; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: #e3f2fd; border: 1px solid #ddd; border-radius: 1px;')
         
         # Update value history and sparkline
         if signal_name in self._monitor_data:
@@ -5298,8 +5266,14 @@ Data Points Used: {data_points}"""
 
     def _build_statusbar(self):
         sb = self.statusBar()
+        
+        # Test execution status label (on the left)
+        self.status_label = QtWidgets.QLabel('Test Status : Ready')
+        sb.addWidget(self.status_label)  # addWidget adds to the left
+        
+        # Adapter connection indicator (on the right)
         self.conn_indicator = QtWidgets.QLabel('Adapter: stopped')
-        sb.addPermanentWidget(self.conn_indicator)
+        sb.addPermanentWidget(self.conn_indicator)  # addPermanentWidget adds to the right
 
     def _find_message_by_id(self, can_id: int) -> Optional[Any]:
         """Find message by CAN ID in loaded DBC. Uses cache for performance.
@@ -13927,12 +13901,12 @@ Data Points Used: {data_points}"""
         """
         idx = self.test_list.currentRow()
         if idx < 0 or idx >= len(self._tests):
-            self.status_label.setText('No test selected')
+            self.status_label.setText('Test Status : No test selected')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
             return
         t = self._tests[idx]
         self.tabs_main.setCurrentIndex(self.status_tab_index)
-        self.status_label.setText(f'Running test: {t.get("name", "<unnamed>")}')
+        self.status_label.setText(f'Test Status : Running test: {t.get("name", "<unnamed>")}')
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Starting test: {t.get("name", "<unnamed>")}')
         start_time = time.time()
@@ -13954,7 +13928,7 @@ Data Points Used: {data_points}"""
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
             result = 'PASS' if ok else 'FAIL'
-            self.status_label.setText(f'Test completed: {result}')
+            self.status_label.setText(f'Test Status : Test completed: {result}')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
             # Add to table
@@ -13986,7 +13960,7 @@ Data Points Used: {data_points}"""
         except Exception as e:
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
-            self.status_label.setText('Test error')
+            self.status_label.setText('Test Status : Test error')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
             # Retrieve plot data that was captured at the end of run_single_test (even if failed, may have partial data)
@@ -14037,7 +14011,7 @@ Data Points Used: {data_points}"""
         
         # Clear execution log
         self.test_log.clear()
-        self.status_label.setText('Results cleared')
+        self.status_label.setText('Test Status : Results cleared')
         
         # Clear DUT UID input and state (user must enter it again for next test sequence)
         if hasattr(self, 'dut_uid_input'):
@@ -14224,7 +14198,7 @@ Data Points Used: {data_points}"""
         
         if not self._tests:
             logger.warning("Run Sequence called but _tests is empty")
-            self.status_label.setText('No tests to run - Load tests first')
+            self.status_label.setText('Test Status : No tests to run - Load tests first')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
             QtWidgets.QMessageBox.warning(self, 'No Tests', 'No tests loaded. Please load a test profile from Test Configurator tab first.')
             return
@@ -14264,7 +14238,7 @@ Data Points Used: {data_points}"""
         
         if not can_connected:
             logger.warning("Run Sequence called but CAN adapter not connected")
-            self.status_label.setText('CAN adapter not connected')
+            self.status_label.setText('Test Status : CAN adapter not connected')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
             QtWidgets.QMessageBox.warning(self, 'Adapter Not Connected', 'CAN adapter must be connected before running tests.\n\nPlease go to CAN Data View tab and click "Connect".')
             return
@@ -14315,7 +14289,7 @@ Data Points Used: {data_points}"""
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, len(self._tests))
         self.progress_bar.setValue(0)
-        self.status_label.setText('Starting test sequence...')
+        self.status_label.setText('Test Status : Starting test sequence...')
         
         # Update run button to cancel button
         try:
@@ -14334,7 +14308,7 @@ Data Points Used: {data_points}"""
             logger.info(f"Started test sequence thread with {len(self._tests)} tests")
         except Exception as e:
             logger.error(f"Failed to start test execution thread: {e}", exc_info=True)
-            self.status_label.setText(f'Error starting tests: {e}')
+            self.status_label.setText(f'Test Status : Error starting tests: {e}')
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to start test sequence:\n{e}')
             # Clean up on failure
             try:
@@ -14351,7 +14325,7 @@ Data Points Used: {data_points}"""
         if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
             logger.info("Cancelling test sequence")
             self.test_execution_thread.stop()
-            self.status_label.setText('Cancelling test sequence...')
+            self.status_label.setText('Test Status : Cancelling test sequence...')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Test sequence cancellation requested')
         else:
@@ -14361,7 +14335,7 @@ Data Points Used: {data_points}"""
         """Handle sequence started signal from TestExecutionThread."""
         self.progress_bar.setRange(0, total_tests)
         self.progress_bar.setValue(0)
-        self.status_label.setText(f'Running test sequence ({total_tests} tests)...')
+        self.status_label.setText(f'Test Status : Running test sequence ({total_tests} tests)...')
         logger.debug(f"Sequence started: {total_tests} tests")
         
         # Enable pause button for all test sequences (including single test)
@@ -14371,7 +14345,7 @@ Data Points Used: {data_points}"""
     def _on_sequence_progress(self, current: int, total: int) -> None:
         """Handle sequence progress signal from TestExecutionThread."""
         self.progress_bar.setValue(current)
-        self.status_label.setText(f'Running test {current}/{total}...')
+        self.status_label.setText(f'Test Status : Running test {current}/{total}...')
         
         # Keep pause button enabled for all tests (including last test)
         # User can pause even on the last test to review results before sequence ends
@@ -14668,7 +14642,7 @@ Data Points Used: {data_points}"""
         # Parse results for UI update
         pass_count = sum(1 for _, success, _ in results if success)
         total = len(results)
-        self.status_label.setText(f'Sequence completed: {pass_count}/{total} passed')
+        self.status_label.setText(f'Test Status : Sequence completed: {pass_count}/{total} passed')
         
         # Log summary
         timestamp = datetime.now().strftime('%H:%M:%S')
@@ -14702,7 +14676,7 @@ Data Points Used: {data_points}"""
     def _on_sequence_cancelled(self) -> None:
         """Handle sequence cancelled signal from TestExecutionThread."""
         self.progress_bar.setVisible(False)
-        self.status_label.setText('Test sequence cancelled')
+        self.status_label.setText('Test Status : Test sequence cancelled')
         
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Test sequence was cancelled by user')
@@ -14760,7 +14734,7 @@ Data Points Used: {data_points}"""
     
     def _on_sequence_paused(self) -> None:
         """Handle sequence paused signal from TestExecutionThread."""
-        self.status_label.setText('Paused - waiting to resume...')
+        self.status_label.setText('Test Status : Paused - waiting to resume...')
         self.pause_test_btn.setEnabled(False)
         self.resume_test_btn.setEnabled(True)
         
@@ -14775,9 +14749,9 @@ Data Points Used: {data_points}"""
             current = getattr(self.test_execution_thread, '_current_test_index', -1) + 1
             total = len(self._tests)
             if current > 0 and current <= total:
-                self.status_label.setText(f'Running test {current}/{total}...')
+                self.status_label.setText(f'Test Status : Running test {current}/{total}...')
             else:
-                self.status_label.setText('Resuming test sequence...')
+                self.status_label.setText('Test Status : Resuming test sequence...')
         
         self.pause_test_btn.setEnabled(True)
         self.resume_test_btn.setEnabled(False)
