@@ -1,13 +1,14 @@
 """
-Service for managing oscilloscope connections via USBTMC.
+Service for managing oscilloscope connections via USB (USBTMC) and LAN (TCPIP).
 
 This service provides a high-level interface for:
-- Scanning for available USBTMC oscilloscopes
+- Scanning for available oscilloscopes (USB and LAN)
 - Connecting/disconnecting oscilloscopes
 - Managing oscilloscope-specific configuration
 - Clean termination of connections
 
-Supports Siglent SDS1104X-U and other USBTMC-compatible oscilloscopes.
+Supports Siglent SDS1104X-U and other USBTMC/TCPIP-compatible oscilloscopes.
+Connection priority: LAN (TCPIP) is preferred over USB (USBTMC).
 """
 import logging
 import os
@@ -36,13 +37,13 @@ except ImportError:
 
 
 class OscilloscopeService:
-    """Service for managing oscilloscope connections via USBTMC.
+    """Service for managing oscilloscope connections via USB (USBTMC) and LAN (TCPIP).
     
     Attributes:
         resource_manager: PyVISA ResourceManager instance (None if PyVISA unavailable)
         oscilloscope: Currently connected oscilloscope resource (None when disconnected)
         connected_resource: Resource string of currently connected oscilloscope
-        available_resources: List of available USBTMC resources
+        available_resources: List of available oscilloscope resources (USB and LAN)
     """
     
     def __init__(self):
@@ -63,15 +64,17 @@ class OscilloscopeService:
             logger.warning("OscilloscopeService initialized without PyVISA support")
     
     def scan_for_devices(self) -> List[str]:
-        """Scan for available USBTMC oscilloscopes.
+        """Scan for available oscilloscopes via USB (USBTMC) and LAN (TCPIP).
         
         Uses multiple detection methods:
-        1. PyVISA list_resources() - primary method
-        2. Check /dev/usbtmc* device files - fallback if PyVISA doesn't auto-detect
-        3. Direct USB device detection via pyusb - for constructing resource strings
+        1. PyVISA list_resources() - primary method for both USB and LAN
+        2. Check /dev/usbtmc* device files - fallback for USB if PyVISA doesn't auto-detect
+        3. Direct USB device detection via pyusb - for constructing USB resource strings
+        
+        Connection priority: LAN (TCPIP) resources are listed first, followed by USB (USBTMC).
         
         Returns:
-            List of resource strings for available USBTMC devices.
+            List of resource strings for available oscilloscopes (LAN first, then USB).
             Empty list if PyVISA unavailable or scan fails.
         """
         self.available_resources = []
@@ -84,6 +87,32 @@ class OscilloscopeService:
             # Method 1: List all resources via PyVISA
             resources = self.resource_manager.list_resources()
             logger.debug(f"PyVISA found {len(resources)} total resources")
+            
+            # Filter for TCPIP/LAN devices (preferred connection method)
+            tcpip_resources = []
+            for resource in resources:
+                # Check if it's a TCPIP resource (TCPIP::*)
+                if resource.startswith('TCPIP') and '::' in resource:
+                    # Try to identify oscilloscopes
+                    try:
+                        # Open briefly to query identification
+                        temp_resource = self.resource_manager.open_resource(resource)
+                        try:
+                            temp_resource.timeout = 5000  # 5 second timeout for network
+                            # Query IDN (Identification) command
+                            idn = temp_resource.query('*IDN?')
+                            logger.info(f"Found LAN device: {resource} - {idn.strip()}")
+                            tcpip_resources.append(resource)
+                        except Exception as e:
+                            # Even if IDN fails, add it as TCPIP if it starts with TCPIP
+                            logger.debug(f"Found TCPIP resource (IDN query failed): {e}")
+                            tcpip_resources.append(resource)
+                        finally:
+                            temp_resource.close()
+                    except Exception as e:
+                        logger.debug(f"Could not query TCPIP resource {resource}: {e}")
+                        # Still add it as potential TCPIP device
+                        tcpip_resources.append(resource)
             
             # Filter for USBTMC devices (USB::* or USB0::*)
             usbtmc_resources = []
@@ -112,7 +141,8 @@ class OscilloscopeService:
                         if 'USBTMC' in str(resource) or resource.startswith('USB'):
                             usbtmc_resources.append(resource)
             
-            # Method 2: Check for /dev/usbtmc* device files if PyVISA didn't find anything
+            # Method 2: Check for /dev/usbtmc* device files if PyVISA didn't find USB devices
+            # (This only applies to USB, not LAN)
             if not usbtmc_resources:
                 import glob
                 usbtmc_files = glob.glob('/dev/usbtmc*')
@@ -176,12 +206,23 @@ class OscilloscopeService:
                         except Exception as e:
                             logger.debug(f"Could not access {usbtmc_file}: {e}")
             
-            self.available_resources = usbtmc_resources
-            logger.info(f"Found {len(usbtmc_resources)} USBTMC oscilloscope(s)")
-            return usbtmc_resources
+            # Combine resources: LAN first (preferred), then USB
+            all_resources = tcpip_resources + usbtmc_resources
+            self.available_resources = all_resources
+            
+            total_count = len(all_resources)
+            lan_count = len(tcpip_resources)
+            usb_count = len(usbtmc_resources)
+            
+            if total_count > 0:
+                logger.info(f"Found {total_count} oscilloscope(s): {lan_count} LAN, {usb_count} USB")
+            else:
+                logger.info("No oscilloscopes found")
+            
+            return all_resources
             
         except Exception as e:
-            logger.error(f"Error scanning for USBTMC devices: {e}", exc_info=True)
+            logger.error(f"Error scanning for oscilloscopes: {e}", exc_info=True)
             return []
     
     def connect(self, resource: str) -> bool:
@@ -205,8 +246,14 @@ class OscilloscopeService:
             logger.info(f"Connecting to oscilloscope: {resource}")
             self.oscilloscope = self.resource_manager.open_resource(resource)
             
-            # Set timeout (5 seconds)
-            self.oscilloscope.timeout = 5000
+            # Set timeout based on connection type
+            # LAN connections may need longer timeout due to network latency
+            if resource.startswith('TCPIP'):
+                self.oscilloscope.timeout = 10000  # 10 seconds for LAN
+                logger.debug("Using LAN timeout: 10000ms")
+            else:
+                self.oscilloscope.timeout = 5000  # 5 seconds for USB
+                logger.debug("Using USB timeout: 5000ms")
             
             # Query identification to verify connection
             try:

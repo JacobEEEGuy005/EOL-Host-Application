@@ -36,9 +36,9 @@ The application has been refactored to use a service layer for better modularity
   - Caches latest signal values for quick lookup
   - Provides signal value retrieval by message ID and signal name
 
-- **OscilloscopeService** (`oscilloscope_service.py`): Oscilloscope connection and configuration via USBTMC
-  - Scans for available USBTMC oscilloscopes
-  - Connects/disconnects oscilloscopes
+- **OscilloscopeService** (`oscilloscope_service.py`): Oscilloscope connection and configuration via USB (USBTMC) and LAN (TCPIP)
+  - Scans for available oscilloscopes (LAN preferred, USB fallback)
+  - Connects/disconnects oscilloscopes via USB or LAN
   - Configures channels, timebase, probe attenuation
   - Sends SCPI commands and queries
   - Retrieves waveform data

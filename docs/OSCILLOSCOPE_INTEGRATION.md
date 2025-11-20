@@ -2,12 +2,28 @@
 
 ## Overview
 
-The EOL Host Application integrates with USBTMC-compatible oscilloscopes via the `OscilloscopeService`. This service provides a high-level interface for connecting to oscilloscopes, configuring channels, and retrieving waveform data.
+The EOL Host Application integrates with oscilloscopes via USB (USBTMC) and LAN (TCPIP) connections through the `OscilloscopeService`. This service provides a high-level interface for connecting to oscilloscopes, configuring channels, and retrieving waveform data.
+
+**Connection Priority**: LAN (TCPIP) connections are preferred over USB (USBTMC) connections when both are available.
 
 ## Supported Oscilloscopes
 
 - **Siglent SDS1104X-U** (primary, tested)
-- Other USBTMC-compatible oscilloscopes
+- Other USBTMC/TCPIP-compatible oscilloscopes
+
+## Connection Methods
+
+### USB (USBTMC)
+- Direct USB connection
+- Automatic device detection
+- Requires USB drivers and permissions (Linux: udev rules)
+
+### LAN (TCPIP)
+- Network-based connection
+- Requires oscilloscope SCPI over LAN enabled
+- Default port: 5555 (Siglent devices)
+- Resource string format: `TCPIP::<IP>::<PORT>::INSTR`
+- Example: `TCPIP::192.168.1.100::5555::INSTR`
 
 ## OscilloscopeService
 
@@ -24,20 +40,27 @@ The `OscilloscopeService` class (`host_gui/services/oscilloscope_service.py`) pr
 
 ### Required Libraries
 
-- **PyVISA**: For USBTMC communication
+- **PyVISA**: For USB (USBTMC) and LAN (TCPIP) communication
   ```bash
-  pip install pyvisa
+  pip install pyvisa pyvisa-py
   ```
 
 ### Optional Libraries
 
-- **pyusb**: For enhanced USB device detection (optional)
+- **pyusb**: For enhanced USB device detection (optional, USB only)
 
 ### System Requirements
 
+**For USB (USBTMC):**
 - Linux: May require udev rules for USB device access
 - Windows: PyVISA should handle device access automatically
 - macOS: PyVISA should handle device access automatically
+
+**For LAN (TCPIP):**
+- Network connectivity to oscilloscope
+- Oscilloscope SCPI over LAN enabled
+- Firewall configured to allow connections (default port: 5555)
+- See [Siglent LAN Setup Guide](SIGLENT_LAN_SETUP.md) for detailed network configuration
 
 ## Basic Usage
 
@@ -56,10 +79,13 @@ devices = osc_service.scan_for_devices()
 if devices:
     print(f"Found {len(devices)} oscilloscope(s):")
     for device in devices:
-        print(f"  - {device}")
+        connection_type = "LAN" if device.startswith("TCPIP") else "USB"
+        print(f"  - {device} ({connection_type})")
 else:
     print("No oscilloscopes found")
 ```
+
+**Note**: The scan method returns LAN (TCPIP) devices first, followed by USB (USBTMC) devices. This reflects the connection priority preference.
 
 ### Connecting
 

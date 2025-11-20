@@ -4470,7 +4470,7 @@ Data Points Used: {data_points}"""
         
         # Oscilloscope dropdown
         self.oscilloscope_combo = QtWidgets.QComboBox()
-        self.oscilloscope_combo.setToolTip('Select an available USBTMC oscilloscope')
+        self.oscilloscope_combo.setToolTip('Select an available oscilloscope (USB or LAN)')
         # Initialize with placeholder if service not available
         if self.oscilloscope_service is None:
             self.oscilloscope_combo.addItem('PyVISA not available')
@@ -4726,7 +4726,7 @@ Data Points Used: {data_points}"""
             if not devices:
                 self.oscilloscope_combo.addItem('No devices found')
                 self.oscilloscope_combo.setEnabled(False)
-                logger.info("No USBTMC oscilloscopes found")
+                logger.info("No oscilloscopes found (USB or LAN)")
             else:
                 for device in devices:
                     # Try to get device info for display
