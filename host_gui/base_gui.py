@@ -1427,7 +1427,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             plot_group.setVisible(False)
         # Plot will be added to plot_log_container later, not to left_layout
         # Set minimum height for Plot section but allow proportional sizing
-        plot_group.setMinimumHeight(250)  # Minimum height for plot visibility
+        plot_group.setMinimumHeight(300)  # Minimum height: 270px (canvas) + 20px (title) + 10px (margins) = 300px
         # Remove maximum height to allow proportional sizing based on available space
         plot_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
@@ -1519,8 +1519,8 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Add plot_group to plot_log_layout with stretch factor 2 (takes ~67% of available space)
         plot_log_layout.addWidget(plot_group, 2)  # Stretch factor 2 - larger proportion
         
-        # Add log_group to plot_log_layout with stretch factor 1 (takes ~33% of available space)
-        plot_log_layout.addWidget(log_group, 1)  # Stretch factor 1 - smaller proportion but proportional
+        # Add log_group to plot_log_layout with stretch factor 0.7 (takes ~26% of available space)
+        plot_log_layout.addWidget(log_group, 0.7)  # Stretch factor 0.7 - reduced proportion
         
         # Add plot_log_container to bottom_layout (left side, with stretch)
         bottom_layout.addWidget(plot_log_container, 1)  # Stretch factor 1
