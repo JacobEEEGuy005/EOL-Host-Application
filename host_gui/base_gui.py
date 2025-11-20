@@ -1345,9 +1345,9 @@ class BaseGUI(QtWidgets.QMainWindow):
         grid_layout.setColumnStretch(0, 1)
         grid_layout.setColumnStretch(1, 1)
         
-        # Set fixed compact height for the grid
-        grid_widget.setMaximumHeight(90)
-        grid_widget.setMinimumHeight(90)
+        # Set minimum height for the grid but allow proportional sizing
+        grid_widget.setMinimumHeight(80)  # Minimum height for usability
+        # Remove maximum height to allow proportional sizing
         
         # Initialize with empty labels (will be configured when test starts)
         # Store backward compatibility references as None initially (will be set dynamically)
@@ -1387,10 +1387,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Add Real-Time Monitoring to status_layout (inside Test Execution Status group)
         status_layout.addWidget(monitor_group, 0)  # No stretch factor - fixed size
-        # Set fixed height for Real-Time Monitoring to prevent resizing
-        monitor_group.setMinimumHeight(120)  # Grid (90px) + refresh rate label + margins
-        monitor_group.setMaximumHeight(120)
-        monitor_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        # Set minimum height for Real-Time Monitoring but allow proportional sizing
+        monitor_group.setMinimumHeight(100)  # Minimum height for usability
+        # Remove maximum height to allow proportional sizing based on available space
+        monitor_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
         plot_group = QtWidgets.QGroupBox('Feedback vs DAC Output Voltage')
@@ -1426,19 +1426,19 @@ class BaseGUI(QtWidgets.QMainWindow):
             plot_layout.addWidget(no_plot_label)
             plot_group.setVisible(False)
         # Plot will be added to plot_log_container later, not to left_layout
-        # Set fixed height for Plot section to prevent resizing
-        plot_group.setMinimumHeight(300)  # Adjust based on desired plot size
-        plot_group.setMaximumHeight(300)
-        plot_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        # Set minimum height for Plot section but allow proportional sizing
+        plot_group.setMinimumHeight(250)  # Minimum height for plot visibility
+        # Remove maximum height to allow proportional sizing based on available space
+        plot_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
         self.test_log.setReadOnly(True)
-        # Set size constraints on log widget - use Fixed to prevent overlap
-        self.test_log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        # Set fixed height to prevent overlap with plot section - further reduced
-        self.test_log.setMinimumHeight(100)  # Further reduced height to prevent overlap
-        self.test_log.setMaximumHeight(100)  # Fixed height to prevent overlap
+        # Set size constraints on log widget - use Preferred to allow proportional sizing
+        self.test_log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        # Set minimum height but allow proportional sizing based on available space
+        self.test_log.setMinimumHeight(80)  # Minimum height for usability
+        # Remove maximum height to allow proportional sizing
         
         # Log in a group
         log_group = QtWidgets.QGroupBox('Execution Log')
@@ -1446,12 +1446,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         log_layout.setContentsMargins(5, 5, 5, 5)  # Add margins inside log group
         log_layout.setSpacing(0)  # No spacing inside log group
         log_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)  # Respect parent boundaries
-        log_layout.addWidget(self.test_log, 0)  # No stretch - fixed size to prevent overlap
+        log_layout.addWidget(self.test_log, 1)  # Stretch factor 1 - takes proportional space
         # Log will be added to plot_log_container later, not to left_layout
-        # Set fixed height for Execution Log to prevent overlap with plot section - further reduced
-        log_group.setMinimumHeight(130)  # Fixed height: 100px (text) + 20px (title) + 10px (margins)
-        log_group.setMaximumHeight(130)  # Fixed height to prevent overlap
-        log_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        # Set minimum height for Execution Log but allow proportional sizing
+        log_group.setMinimumHeight(110)  # Minimum height: 80px (text) + 20px (title) + 10px (margins)
+        # Remove maximum height to allow proportional sizing based on available space
+        log_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         
         # left_column is now empty (plot and log moved out), so we don't need it in main_layout
         # Instead, we'll add plot_log_container to the main tab layout
@@ -1516,11 +1516,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Use SetNoConstraint to allow layout to respect parent widget boundaries
         plot_log_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         
-        # Add plot_group to plot_log_layout (fixed size, no stretch)
-        plot_log_layout.addWidget(plot_group, 0)
+        # Add plot_group to plot_log_layout with stretch factor 2 (takes ~67% of available space)
+        plot_log_layout.addWidget(plot_group, 2)  # Stretch factor 2 - larger proportion
         
-        # Add log_group to plot_log_layout with no stretch to prevent overlap
-        plot_log_layout.addWidget(log_group, 0)  # No stretch - fixed size to prevent overlap
+        # Add log_group to plot_log_layout with stretch factor 1 (takes ~33% of available space)
+        plot_log_layout.addWidget(log_group, 1)  # Stretch factor 1 - smaller proportion but proportional
         
         # Add plot_log_container to bottom_layout (left side, with stretch)
         bottom_layout.addWidget(plot_log_container, 1)  # Stretch factor 1
