@@ -1218,6 +1218,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         """
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        # Use SetNoConstraint to allow layout to respect parent widget boundaries
+        layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
 
         # Run buttons and DUT UID input
         btn_layout = QtWidgets.QHBoxLayout()
@@ -1258,13 +1262,16 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Status display
         status_group = QtWidgets.QGroupBox('Test Execution Status')
         status_layout = QtWidgets.QVBoxLayout(status_group)
-
+        status_layout.setContentsMargins(5, 5, 5, 5)
+        status_layout.setSpacing(5)
+        status_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)  # Prevent compression
+        
         # Progress bar for sequence
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setVisible(False)
         # Ensure progress bar doesn't cause layout shifts
         self.progress_bar.setFixedHeight(25)  # Fixed height for progress bar
-        status_layout.addWidget(self.progress_bar)
+        status_layout.addWidget(self.progress_bar, 0)  # No stretch - fixed size
 
         # Create horizontal layout for two-column layout (no splitter handle)
         main_layout_widget = QtWidgets.QWidget()
@@ -1272,7 +1279,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # Left column: Real-time monitoring, plot, and execution log
+        # Left column: plot and execution log (Real-Time Monitoring is now in status_group)
         left_column = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_column)
         left_layout.setContentsMargins(5, 5, 5, 5)  # Add margins for proper spacing
@@ -1281,10 +1288,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         left_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
         # Set size policy for left column - Expanding horizontally, Minimum vertically (prevents compression)
         left_column.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
-        # Set minimum height: 120 (monitor) + 8 (spacing) + 300 (plot) + 8 (spacing) + 200 (log) + 10 (margins) = 646px
-        left_column.setMinimumHeight(646)
+        # Set minimum height: 300 (plot) + 8 (spacing) + 200 (log) + 10 (margins) = 518px
+        left_column.setMinimumHeight(518)
 
         # Real-time monitoring with compact grid layout (3 rows x 2 columns)
+        # Note: This will be added directly to status_layout, not to left_layout
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
         monitor_main_layout = QtWidgets.QVBoxLayout(monitor_group)
         monitor_main_layout.setContentsMargins(2, 2, 2, 2)
@@ -1377,7 +1385,8 @@ class BaseGUI(QtWidgets.QMainWindow):
                 'history_max_size': 50  # Keep last 50 values for sparkline
             }
         
-        left_layout.addWidget(monitor_group, 0)  # No stretch factor - fixed size
+        # Add Real-Time Monitoring to status_layout (inside Test Execution Status group)
+        status_layout.addWidget(monitor_group, 0)  # No stretch factor - fixed size
         # Set fixed height for Real-Time Monitoring to prevent resizing
         monitor_group.setMinimumHeight(120)  # Grid (90px) + refresh rate label + margins
         monitor_group.setMaximumHeight(120)
@@ -1416,7 +1425,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
             plot_layout.addWidget(no_plot_label)
             plot_group.setVisible(False)
-        left_layout.addWidget(plot_group, 0)  # No stretch factor - fixed size
+        # Plot will be added to plot_log_container later, not to left_layout
         # Set fixed height for Plot section to prevent resizing
         plot_group.setMinimumHeight(300)  # Adjust based on desired plot size
         plot_group.setMaximumHeight(300)
@@ -1425,27 +1434,29 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
         self.test_log.setReadOnly(True)
-        # Set size constraints on log widget to prevent expansion beyond group bounds
+        # Set size constraints on log widget - use Fixed to prevent overlap
         self.test_log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        # Calculate available height: 200px (group) - ~20px (title) - 10px (margins) = 170px
-        self.test_log.setMinimumHeight(170)
-        self.test_log.setMaximumHeight(170)
+        # Set fixed height to prevent overlap with plot section - further reduced
+        self.test_log.setMinimumHeight(100)  # Further reduced height to prevent overlap
+        self.test_log.setMaximumHeight(100)  # Fixed height to prevent overlap
         
         # Log in a group
         log_group = QtWidgets.QGroupBox('Execution Log')
         log_layout = QtWidgets.QVBoxLayout(log_group)
         log_layout.setContentsMargins(5, 5, 5, 5)  # Add margins inside log group
         log_layout.setSpacing(0)  # No spacing inside log group
-        log_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)  # Prevent compression
-        log_layout.addWidget(self.test_log, 0, QtCore.Qt.AlignTop)  # Align to top, no stretch
-        left_layout.addWidget(log_group, 0)  # No stretch factor - fixed size
-        # Set fixed height for Execution Log to prevent resizing
-        log_group.setMinimumHeight(200)  # Adjust based on desired log size
-        log_group.setMaximumHeight(200)
+        log_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)  # Respect parent boundaries
+        log_layout.addWidget(self.test_log, 0)  # No stretch - fixed size to prevent overlap
+        # Log will be added to plot_log_container later, not to left_layout
+        # Set fixed height for Execution Log to prevent overlap with plot section - further reduced
+        log_group.setMinimumHeight(130)  # Fixed height: 100px (text) + 20px (title) + 10px (margins)
+        log_group.setMaximumHeight(130)  # Fixed height to prevent overlap
         log_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         
-        # Add left column to main layout (with stretch to take remaining space)
-        main_layout.addWidget(left_column, 1)  # Stretch factor 1
+        # left_column is now empty (plot and log moved out), so we don't need it in main_layout
+        # Instead, we'll add plot_log_container to the main tab layout
+        # Remove left_column from main_layout - we'll use plot_log_container instead
+        # main_layout.addWidget(left_column, 1)  # Commented out - not needed anymore
         
         # Right column: Test Plan
         # Test Plan table (renamed from Results table)
@@ -1475,12 +1486,54 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Set fixed width for Test Plan to ensure all columns are visible
         table_group.setFixedWidth(410)  # 200 + 100 + 100 + margins
         
-        # Add Test Plan to main layout (no stretch - fixed width)
-        main_layout.addWidget(table_group, 0)  # Stretch factor 0 (fixed width)
+        # Test Plan will be added to bottom_container later, not to main_layout
+        # main_layout is now empty, so we don't need main_layout_widget
+        # Just add an empty widget or remove main_layout_widget entirely
         
-        status_layout.addWidget(main_layout_widget)
+        # Add main_layout_widget to status_layout with no stretch to prevent expansion
+        # Since main_layout is now empty, we can skip adding it or add a placeholder
+        # Actually, we don't need main_layout_widget anymore since Test Plan is moved out
+        # status_layout.addWidget(main_layout_widget, 0)  # Commented out - not needed
 
         layout.addWidget(status_group)
+        
+        # Add Plot and Execution Log as separate sections outside Test Execution Status
+        # Create a horizontal layout for plot/log (left) and test plan (right)
+        bottom_container = QtWidgets.QWidget()
+        # Set size policy to prevent container from expanding beyond available space
+        bottom_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        bottom_layout = QtWidgets.QHBoxLayout(bottom_container)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(8)
+        
+        # Create container for plot and log (left side)
+        plot_log_container = QtWidgets.QWidget()
+        # Set size policy to prevent container from expanding beyond available space
+        plot_log_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        plot_log_layout = QtWidgets.QVBoxLayout(plot_log_container)
+        plot_log_layout.setContentsMargins(0, 0, 0, 0)
+        plot_log_layout.setSpacing(8)
+        # Use SetNoConstraint to allow layout to respect parent widget boundaries
+        plot_log_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
+        
+        # Add plot_group to plot_log_layout (fixed size, no stretch)
+        plot_log_layout.addWidget(plot_group, 0)
+        
+        # Add log_group to plot_log_layout with no stretch to prevent overlap
+        plot_log_layout.addWidget(log_group, 0)  # No stretch - fixed size to prevent overlap
+        
+        # Add plot_log_container to bottom_layout (left side, with stretch)
+        bottom_layout.addWidget(plot_log_container, 1)  # Stretch factor 1
+        
+        # Add Test Plan to bottom_layout (right side, fixed width)
+        bottom_layout.addWidget(table_group, 0)  # Stretch factor 0 (fixed width)
+        
+        # Add bottom_container to main layout with stretch factor 1 to take remaining space
+        # but respect the parent widget's boundaries
+        layout.addWidget(bottom_container, 1)  # Stretch factor 1 - takes remaining space
+        
+        # Add stretch at the end to prevent widgets from extending beyond status bar
+        layout.addStretch(0)  # Stretch factor 0 - minimal stretch, just prevents overflow
 
         # Connect buttons
         self.run_seq_btn.clicked.connect(self._on_run_sequence)
