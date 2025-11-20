@@ -4,6 +4,10 @@ This folder contains screenshots of all tabs and views in the EOL Host Applicati
 
 ## Screenshots
 
+### Dialogs
+
+- **00_Connect_EOL_Dialog.png** - Connect EOL dialog (accessible via EOL -> Connect EOL menu) for configuring CAN interface, CAN settings, and oscilloscope connections
+
 ### Main Tabs
 
 1. **01_Home.png** - Welcome/home tab with application overview
@@ -32,7 +36,7 @@ To regenerate these screenshots, run:
 .venv/bin/python scripts/capture_gui_screenshots.py
 ```
 
-**Note:** This requires a display server (X11) to be available. The script will automatically capture all tabs and save them to this directory.
+**Note:** This requires a display server (X11) to be available. The script will automatically capture all tabs, dialogs, and save them to this directory.
 
 ## Last Updated
 

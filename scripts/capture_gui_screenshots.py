@@ -7,7 +7,8 @@ This script:
 2. Waits for it to fully initialize
 3. Iterates through all main tabs
 4. For CAN Data View, also captures inner tabs
-5. Saves screenshots as PNG files
+5. Captures the Connect EOL dialog (EOL -> Connect EOL menu)
+6. Saves screenshots as PNG files
 """
 
 import sys
@@ -115,6 +116,32 @@ def capture_gui_screenshots():
                     
                     # Capture screenshot
                     capture_window_screenshot(window, inner_output_path)
+    
+    # Capture Connect EOL dialog
+    print("\nCapturing Connect EOL dialog...")
+    try:
+        # Show the Connect EOL dialog
+        window._show_connect_eol_dialog()
+        app.processEvents()
+        time.sleep(0.5)  # Wait for dialog to render
+        
+        # Get the dialog reference
+        if hasattr(window, '_connect_eol_dialog') and window._connect_eol_dialog is not None:
+            dialog = window._connect_eol_dialog
+            # Capture the dialog window
+            dialog_pixmap = dialog.grab()
+            dialog_output_path = output_dir / "00_Connect_EOL_Dialog.png"
+            dialog_pixmap.save(str(dialog_output_path), "PNG")
+            print(f"Saved screenshot: {dialog_output_path}")
+            
+            # Close the dialog
+            dialog.close()
+            app.processEvents()
+            time.sleep(0.2)
+        else:
+            print("  Warning: Could not find Connect EOL dialog")
+    except Exception as e:
+        print(f"  Warning: Could not capture Connect EOL dialog: {e}")
     
     print(f"\n✓ All screenshots saved to: {output_dir}")
     print("Closing GUI...")

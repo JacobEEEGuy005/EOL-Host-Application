@@ -377,6 +377,18 @@ class BaseGUI(QtWidgets.QMainWindow):
             except Exception:
                 self._can_bitrate = CAN_BITRATE_DEFAULT
 
+        # Shared connection widgets for dialog/backwards compatibility
+        self.device_combo = QtWidgets.QComboBox()
+        self.refresh_btn = QtWidgets.QPushButton('Refresh')
+        self.connect_btn = QtWidgets.QPushButton('Connect')
+        self.can_channel_combo = QtWidgets.QComboBox()
+        self.can_bitrate_combo = QtWidgets.QComboBox()
+        self.oscilloscope_combo = QtWidgets.QComboBox()
+        self.osc_refresh_btn = QtWidgets.QPushButton('Refresh')
+        self.osc_connect_btn = QtWidgets.QPushButton('Connect')
+        self.osc_status_label = QtWidgets.QLabel('Status: Disconnected')
+        self.osc_status_label.setStyleSheet('color: gray;')
+
         self._build_menu()
         self._build_toolbar()
         self._build_central()
@@ -403,18 +415,186 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.poll_timer.setInterval(FRAME_POLL_INTERVAL_MS)
         self.poll_timer.timeout.connect(self._poll_frames)
 
+        # Initialize dialog reference
+        self._connect_eol_dialog = None
+
     def _build_menu(self):
-        """Build the application menu bar with File and Help menus."""
+        """Build the application menu bar with File, EOL, and Help menus."""
         menubar = self.menuBar()
+        
+        # Add logo to menu bar (left side)
+        logo_label = QtWidgets.QLabel()
+        logo_pix = self._generate_logo_pixmap(LOGO_WIDTH, LOGO_HEIGHT)
+        logo_label.setPixmap(logo_pix)
+        logo_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        logo_label.setContentsMargins(5, 0, 10, 0)
+        menubar.setCornerWidget(logo_label, QtCore.Qt.TopLeftCorner)
+        
+        # File menu
         file_menu = menubar.addMenu('&File')
         exit_act = QtGui.QAction('E&xit', self)
         exit_act.triggered.connect(self.close)
         file_menu.addAction(exit_act)
 
+        # EOL menu (new)
+        eol_menu = menubar.addMenu('&EOL')
+        connect_eol_act = QtGui.QAction('&Connect EOL', self)
+        connect_eol_act.triggered.connect(self._show_connect_eol_dialog)
+        eol_menu.addAction(connect_eol_act)
+
+        # Help menu
         help_menu = menubar.addMenu('&Help')
+        help_act = QtGui.QAction('&Help', self)
+        help_act.triggered.connect(self._open_help)
+        help_menu.addAction(help_act)
         about_act = QtGui.QAction('&About', self)
         about_act.triggered.connect(lambda: QtWidgets.QMessageBox.information(self, 'About', 'EOL Host Native GUI'))
         help_menu.addAction(about_act)
+
+    def _show_connect_eol_dialog(self):
+        """Show the Connect EOL dialog with CAN and Oscilloscope connection options."""
+        if not hasattr(self, '_connect_eol_dialog') or self._connect_eol_dialog is None:
+            self._connect_eol_dialog = self._create_connect_eol_dialog()
+        self._connect_eol_dialog.show()
+        self._connect_eol_dialog.raise_()
+        self._connect_eol_dialog.activateWindow()
+
+    def _create_connect_eol_dialog(self) -> QtWidgets.QDialog:
+        """Create the Connect EOL dialog window."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Connect EOL')
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(500)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # CAN Interface section
+        dev_group = QtWidgets.QGroupBox('CAN Interface')
+        dg = QtWidgets.QVBoxLayout(dev_group)
+        dg.addWidget(self.device_combo)
+        hb = QtWidgets.QHBoxLayout()
+        try:
+            self.refresh_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.refresh_btn.clicked.connect(self._refresh_can_devices)
+        try:
+            self.connect_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.connect_btn.clicked.connect(self._connect_selected_device)
+        hb.addWidget(self.refresh_btn)
+        hb.addWidget(self.connect_btn)
+        dg.addLayout(hb)
+        layout.addWidget(dev_group)
+        
+        # CAN Settings section
+        can_settings = QtWidgets.QGroupBox('CAN Settings')
+        cs_layout = QtWidgets.QFormLayout(can_settings)
+        cs_layout.addRow('Channel:', self.can_channel_combo)
+        self.can_bitrate_combo.clear()
+        bitrate_choices = ['10 kbps','20 kbps','50 kbps','125 kbps','250 kbps','500 kbps','800 kbps','1000 kbps']
+        self.can_bitrate_combo.addItems(bitrate_choices)
+        self.can_bitrate_combo.setToolTip('Bitrate in kbps (e.g. 500). Canalystii backend will be converted to bps automatically.')
+        # Set default if present
+        try:
+            if self._can_bitrate:
+                kb = str(int(self._can_bitrate))
+                for i in range(self.can_bitrate_combo.count()):
+                    if self.can_bitrate_combo.itemText(i).startswith(kb):
+                        self.can_bitrate_combo.setCurrentIndex(i)
+                        break
+        except Exception as e:
+            logger.debug(f"Failed to load CAN settings: {e}")
+        cs_layout.addRow('Bitrate (kbps):', self.can_bitrate_combo)
+        apply_btn = QtWidgets.QPushButton('Apply')
+        def _apply_settings():
+            self._can_channel = self.can_channel_combo.currentText().strip() or self._can_channel
+            try:
+                txt = self.can_bitrate_combo.currentText().strip()
+                if txt:
+                    self._can_bitrate = int(txt.split()[0])
+            except Exception as e:
+                logger.warning(f"Failed to save CAN settings: {e}", exc_info=True)
+            if self.can_service is not None:
+                if self._can_channel:
+                    self.can_service.channel = self._can_channel
+                if self._can_bitrate:
+                    self.can_service.bitrate = self._can_bitrate
+                logger.info(f"Updated CanService settings: channel={self.can_service.channel}, bitrate={self.can_service.bitrate}kbps")
+            QtWidgets.QMessageBox.information(dialog, 'Settings', 'CAN settings applied')
+        apply_btn.clicked.connect(_apply_settings)
+        cs_layout.addRow(apply_btn)
+        layout.addWidget(can_settings)
+        
+        # Oscilloscope Connection section
+        osc_group = QtWidgets.QGroupBox('Oscilloscope Connection')
+        osc_layout = QtWidgets.QVBoxLayout(osc_group)
+        self.oscilloscope_combo.clear()
+        self.oscilloscope_combo.setToolTip('Select an available oscilloscope (USB or LAN)')
+        if self.oscilloscope_service is None:
+            self.oscilloscope_combo.addItem('PyVISA not available')
+            self.oscilloscope_combo.setEnabled(False)
+        osc_layout.addWidget(self.oscilloscope_combo)
+        osc_btn_layout = QtWidgets.QHBoxLayout()
+        try:
+            self.osc_refresh_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.osc_refresh_btn.clicked.connect(self._refresh_oscilloscopes)
+        if self.oscilloscope_service is None:
+            self.osc_refresh_btn.setEnabled(False)
+        osc_btn_layout.addWidget(self.osc_refresh_btn)
+        try:
+            self.osc_connect_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.osc_connect_btn.clicked.connect(self._toggle_oscilloscope_connection)
+        if self.oscilloscope_service is None:
+            self.osc_connect_btn.setEnabled(False)
+        osc_btn_layout.addWidget(self.osc_connect_btn)
+        osc_layout.addLayout(osc_btn_layout)
+        osc_layout.addWidget(self.osc_status_label)
+        layout.addWidget(osc_group)
+        
+        # Device changed handler
+        def _on_device_changed(text: str):
+            text = (text or '').strip()
+            channels = []
+            if text.lower().startswith('pcan'):
+                channels = ['PCAN_USBBUS1','PCAN_USBBUS2','PCAN_USBBUS3','PCAN_USBBUS4']
+            elif text.lower().startswith('socketcan'):
+                channels = ['can0','can1','can2']
+            elif text.lower().startswith('canalystii') or text.lower() == 'canalystii':
+                channels = ['0','1']
+            elif text.lower().startswith('sim'):
+                channels = ['sim']
+            else:
+                channels = [self._can_channel]
+            self.can_channel_combo.clear()
+            self.can_channel_combo.addItems(channels)
+            try:
+                self.can_channel_combo.setCurrentIndex(0)
+            except Exception:
+                pass
+        
+        self.device_combo.currentTextChanged.connect(_on_device_changed)
+        
+        # Close button
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        button_box.rejected.connect(dialog.close)
+        layout.addWidget(button_box)
+        
+        # Initialize device list
+        self._refresh_can_devices()
+        self._refresh_oscilloscopes()
+        
+        # Set start_btn reference for compatibility
+        self.start_btn = self.connect_btn
+        
+        return dialog
 
     def _build_eol_hw_configurator(self) -> QtWidgets.QWidget:
         """Builds the EOL H/W Configuration tab widget.
@@ -4421,158 +4601,12 @@ Data Points Used: {data_points}"""
         tb.addWidget(self.status_label)
 
     def _build_central(self):
-        # Central layout: left persistent device controls, right main tabs
+        # Central layout: just main tabs (no left panel - moved to dialog)
         central = QtWidgets.QWidget()
         main_h = QtWidgets.QHBoxLayout(central)
+        main_h.setContentsMargins(0, 0, 0, 0)
 
-        # Left: persistent device controls (top-left corner, global)
-        left_panel = QtWidgets.QWidget()
-        left_panel.setMinimumWidth(LEFT_PANEL_MIN_WIDTH)
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
-
-        # Logo and welcome buttons at top of left panel
-        logo_label = QtWidgets.QLabel()
-        logo_pix = self._generate_logo_pixmap(LOGO_WIDTH, LOGO_HEIGHT)
-        logo_label.setPixmap(logo_pix)
-        logo_label.setAlignment(QtCore.Qt.AlignCenter)
-        left_layout.addWidget(logo_label)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        test_menu_btn = QtWidgets.QPushButton('Test Menu')
-        test_menu_btn.clicked.connect(self._open_test_menu)
-        cfg_btn = QtWidgets.QPushButton('Test Configurator')
-        cfg_btn.clicked.connect(self._open_test_configurator)
-        help_btn = QtWidgets.QPushButton('Help')
-        help_btn.clicked.connect(self._open_help)
-        btn_row.addWidget(test_menu_btn)
-        btn_row.addWidget(cfg_btn)
-        btn_row.addWidget(help_btn)
-        left_layout.addLayout(btn_row)
-
-        left_layout.addSpacing(8)
-
-        # Device controls (global)
-        dev_group = QtWidgets.QGroupBox('CAN Interface')
-        dg = QtWidgets.QVBoxLayout(dev_group)
-        self.device_combo = QtWidgets.QComboBox()
-        dg.addWidget(self.device_combo)
-        hb = QtWidgets.QHBoxLayout()
-        self.refresh_btn = QtWidgets.QPushButton('Refresh')
-        self.refresh_btn.clicked.connect(self._refresh_can_devices)
-        self.connect_btn = QtWidgets.QPushButton('Connect')
-        self.connect_btn.clicked.connect(self._connect_selected_device)
-        hb.addWidget(self.refresh_btn)
-        hb.addWidget(self.connect_btn)
-        dg.addLayout(hb)
-        left_layout.addWidget(dev_group)
-
-        # General CAN settings (generic)
-        can_settings = QtWidgets.QGroupBox('CAN Settings')
-        cs_layout = QtWidgets.QFormLayout(can_settings)
-        # channel dropdown will be populated based on selected adapter
-        self.can_channel_combo = QtWidgets.QComboBox()
-        cs_layout.addRow('Channel:', self.can_channel_combo)
-        # bitrate dropdown (kbps)
-        self.can_bitrate_combo = QtWidgets.QComboBox()
-        bitrate_choices = ['10 kbps','20 kbps','50 kbps','125 kbps','250 kbps','500 kbps','800 kbps','1000 kbps']
-        self.can_bitrate_combo.addItems(bitrate_choices)
-        # tooltip to clarify units; Canalystii backend expects bitrate in bits-per-second,
-        # the GUI accepts kbps and will auto-convert when Canalystii is selected.
-        self.can_bitrate_combo.setToolTip('Bitrate in kbps (e.g. 500). Canalystii backend will be converted to bps automatically.')
-        # set default if present
-        try:
-            if self._can_bitrate:
-                kb = str(int(self._can_bitrate))
-                # prefer matching choice
-                for i in range(self.can_bitrate_combo.count()):
-                    if self.can_bitrate_combo.itemText(i).startswith(kb):
-                        self.can_bitrate_combo.setCurrentIndex(i)
-                        break
-        except Exception as e:
-            logger.debug(f"Failed to load CAN settings: {e}")
-        cs_layout.addRow('Bitrate (kbps):', self.can_bitrate_combo)
-        apply_btn = QtWidgets.QPushButton('Apply')
-        def _apply_settings():
-            self._can_channel = self.can_channel_combo.currentText().strip() or self._can_channel
-            # parse kbps value
-            try:
-                txt = self.can_bitrate_combo.currentText().strip()
-                if txt:
-                    self._can_bitrate = int(txt.split()[0])
-            except Exception as e:
-                logger.warning(f"Failed to save CAN settings: {e}", exc_info=True)
-            QtWidgets.QMessageBox.information(self, 'Settings', 'CAN settings applied')
-        apply_btn.clicked.connect(_apply_settings)
-        cs_layout.addRow(apply_btn)
-        left_layout.addWidget(can_settings)
-
-        # Oscilloscope Connection section
-        osc_group = QtWidgets.QGroupBox('Oscilloscope Connection')
-        osc_layout = QtWidgets.QVBoxLayout(osc_group)
-        
-        # Oscilloscope dropdown
-        self.oscilloscope_combo = QtWidgets.QComboBox()
-        self.oscilloscope_combo.setToolTip('Select an available oscilloscope (USB or LAN)')
-        # Initialize with placeholder if service not available
-        if self.oscilloscope_service is None:
-            self.oscilloscope_combo.addItem('PyVISA not available')
-            self.oscilloscope_combo.setEnabled(False)
-        osc_layout.addWidget(self.oscilloscope_combo)
-        
-        # Buttons layout
-        osc_btn_layout = QtWidgets.QHBoxLayout()
-        
-        # Refresh button
-        self.osc_refresh_btn = QtWidgets.QPushButton('Refresh')
-        self.osc_refresh_btn.clicked.connect(self._refresh_oscilloscopes)
-        if self.oscilloscope_service is None:
-            self.osc_refresh_btn.setEnabled(False)
-        osc_btn_layout.addWidget(self.osc_refresh_btn)
-        
-        # Connect/Disconnect button (will toggle)
-        self.osc_connect_btn = QtWidgets.QPushButton('Connect')
-        self.osc_connect_btn.clicked.connect(self._toggle_oscilloscope_connection)
-        if self.oscilloscope_service is None:
-            self.osc_connect_btn.setEnabled(False)
-        osc_btn_layout.addWidget(self.osc_connect_btn)
-        
-        osc_layout.addLayout(osc_btn_layout)
-        
-        # Status label
-        self.osc_status_label = QtWidgets.QLabel('Status: Disconnected')
-        self.osc_status_label.setStyleSheet('color: gray;')
-        osc_layout.addWidget(self.osc_status_label)
-        
-        left_layout.addWidget(osc_group)
-
-        # when adapter selection changes, update available channels
-        def _on_device_changed(text: str):
-            text = (text or '').strip()
-            channels = []
-            if text.lower().startswith('pcan'):
-                channels = ['PCAN_USBBUS1','PCAN_USBBUS2','PCAN_USBBUS3','PCAN_USBBUS4']
-            elif text.lower().startswith('socketcan'):
-                channels = ['can0','can1','can2']
-            elif text.lower().startswith('canalystii') or text.lower() == 'canalystii':
-                channels = ['0','1']
-            elif text.lower().startswith('sim'):
-                channels = ['sim']
-            else:
-                # default to previous or current
-                channels = [self._can_channel]
-            self.can_channel_combo.clear()
-            self.can_channel_combo.addItems(channels)
-            # select first
-            try:
-                self.can_channel_combo.setCurrentIndex(0)
-            except Exception:
-                pass
-
-        self.device_combo.currentTextChanged.connect(_on_device_changed)
-
-        left_layout.addStretch()
-
-        # Right: main tab widget
+        # Main tab widget (full width now)
         main_tabs = QtWidgets.QTabWidget()
         self.tabs_main = main_tabs
 
@@ -4660,18 +4694,15 @@ Data Points Used: {data_points}"""
         can_layout.addWidget(inner)
         main_tabs.addTab(can_tab, 'CAN Data View')
 
-        # assemble central layout
-        main_h.addWidget(left_panel)
+        # assemble central layout (no left panel)
         main_h.addWidget(main_tabs, 1)
         self.setCentralWidget(central)
 
         # keep references for switching and controls
         self.tabs_main = main_tabs
-        self._refresh_can_devices()
-        try:
-            self.start_btn = self.connect_btn
-        except Exception:
-            self.start_btn = None
+        # Note: _refresh_can_devices() will be called when dialog opens
+        # Store reference to connect_btn for start_btn (will be set when dialog is created)
+        self.start_btn = None
 
         # build EOL H/W Configuration tab and wire into main_tabs
         try:
@@ -4713,6 +4744,10 @@ Data Points Used: {data_points}"""
         - Canalystii: Canalystii hardware via python-can
         - SocketCAN: Linux SocketCAN interfaces
         """
+        # Check if widget exists (dialog may not be created yet)
+        if not hasattr(self, 'device_combo') or self.device_combo is None:
+            return
+        
         # Probe available adapters
         devices = []
         # SimAdapter always available as a software option
@@ -4754,8 +4789,14 @@ Data Points Used: {data_points}"""
     def _refresh_oscilloscopes(self) -> None:
         """Refresh the list of available oscilloscopes."""
         if self.oscilloscope_service is None:
-            QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
-                'Oscilloscope service not available. Please install PyVISA.')
+            # Only show warning if dialog is open (widget exists)
+            if hasattr(self, 'oscilloscope_combo') and self.oscilloscope_combo is not None:
+                QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
+                    'Oscilloscope service not available. Please install PyVISA.')
+            return
+        
+        # Check if widget exists (dialog may not be created yet)
+        if not hasattr(self, 'oscilloscope_combo') or self.oscilloscope_combo is None:
             return
         
         try:
@@ -14506,8 +14547,12 @@ Data Points Used: {data_points}"""
 
     def _toggle_adapter_with_service(self):
         """Connect or disconnect adapter using CanService (Phase 1 implementation)."""
+        device_combo = getattr(self, 'device_combo', None)
+        if device_combo is None:
+            QtWidgets.QMessageBox.warning(self, 'Connection', 'Please open EOL -> Connect EOL to configure connection settings.')
+            return
         try:
-            selected = self.device_combo.currentText()
+            selected = device_combo.currentText()
         except Exception:
             selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
         
@@ -14525,6 +14570,19 @@ Data Points Used: {data_points}"""
         
         # Connect
         try:
+            channel_combo = getattr(self, 'can_channel_combo', None)
+            if channel_combo is not None:
+                channel_value = channel_combo.currentText().strip()
+                if channel_value:
+                    self.can_service.channel = channel_value
+            bitrate_combo = getattr(self, 'can_bitrate_combo', None)
+            if bitrate_combo is not None:
+                try:
+                    bitrate_value = bitrate_combo.currentText().strip()
+                    if bitrate_value:
+                        self.can_service.bitrate = int(bitrate_value.split()[0])
+                except Exception:
+                    pass
             success = self.can_service.connect(selected)
             if not success:
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect to {selected}')
