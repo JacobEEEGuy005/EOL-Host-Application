@@ -9,6 +9,7 @@ The Host GUI provides a comprehensive interface for:
 - Loading and managing DBC (Database CAN) files for signal decoding
 - Configuring and executing test sequences (12 test types)
 - Real-time monitoring of CAN frames and decoded signals
+- **Dynamic Real-Time Monitoring**: Test-specific signal display that adapts to each test type
 - Visualizing test results with live plots
 - Managing oscilloscope connections for advanced tests
 
@@ -212,6 +213,7 @@ See [Exception Handling](../docs/EXCEPTION_HANDLING.md) for details.
 - [Exception Handling](../docs/EXCEPTION_HANDLING.md) - Error handling
 - [Test Type System Overview](../docs/TEST_TYPE_SYSTEM_OVERVIEW.md) - Test type architecture
 - [Adding New Test Types](../docs/ADDING_NEW_TEST_TYPES.md) - Guide for adding test types
+- [Real-Time Monitoring](../docs/REAL_TIME_MONITORING.md) - Dynamic test-specific monitoring system
 
 ## Testing
 

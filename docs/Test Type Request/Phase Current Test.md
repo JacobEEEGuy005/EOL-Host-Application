@@ -364,6 +364,27 @@ Specify the UI fields needed:
   - Ideal calibration line (Y = X) can be displayed for reference
   - Linear regression line can be displayed after test completion
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Set Id**: Displays the latest `id_ref_signal` value sent (tracked from command messages)
+  - Updates when trigger messages are sent with Id_ref values
+  - Format: `Set Id : X.XX A`
+  
+- **Set Iq**: Displays the latest `iq_ref_signal` value sent (tracked from command messages)
+  - Updates when trigger messages are sent with Iq_ref values
+  - Format: `Set Iq : X.XX A`
+  
+- **DUT Phase V Current**: Displays `phase_v_signal` from data collection
+  - Updates in real-time during signal collection via phase_current_service
+  - Format: `DUT Phase V Current : X.XX A`
+  
+- **DUT Phase W Current**: Displays `phase_w_signal` from data collection
+  - Updates in real-time during signal collection via phase_current_service
+  - Format: `DUT Phase W Current : X.XX A`
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

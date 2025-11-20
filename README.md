@@ -12,6 +12,7 @@ The EOL Host Application is a comprehensive testing framework for End of Line (E
 - **DBC File Management**: Load and manage DBC (Database CAN) files for signal decoding
 - **Test Configuration**: Create and manage test profiles with visual configuration interface
 - **Test Execution**: Execute test sequences with real-time monitoring and progress tracking
+- **Dynamic Real-Time Monitoring**: Test-specific signal display that automatically adapts to show relevant signals for each test type
 - **Oscilloscope Integration**: Support for USBTMC oscilloscopes (Siglent SDS1104X-U and compatible)
 - **Live Data Visualization**: Real-time CAN frame monitoring and signal visualization
 - **Test Results**: Comprehensive test reports with pass/fail status and detailed information
@@ -167,6 +168,7 @@ python main.py --headless-test
 - [Test Type System Overview](docs/TEST_TYPE_SYSTEM_OVERVIEW.md) - Test type architecture
 - [Adding New Test Types](docs/ADDING_NEW_TEST_TYPES.md) - Guide for adding test types
 - [Test Type Quick Reference](docs/TEST_TYPE_QUICK_REFERENCE.md) - Quick reference guide
+- [Real-Time Monitoring](docs/REAL_TIME_MONITORING.md) - Dynamic test-specific monitoring system
 
 ## Development
 

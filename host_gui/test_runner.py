@@ -681,10 +681,22 @@ class TestRunner:
                     while True:
                         if state == 'ENSURE_LOW':
                             _send_bytes(low_bytes)
+                            # Track sent command value for monitoring
+                            if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
+                                try:
+                                    self.gui.track_sent_command_value('applied_input', _parse_expected(low_val))
+                                except Exception:
+                                    pass
                             _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                             state = 'ACTUATE_HIGH'
                         elif state == 'ACTUATE_HIGH':
                             _send_bytes(high_bytes)
+                            # Track sent command value for monitoring
+                            if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
+                                try:
+                                    self.gui.track_sent_command_value('applied_input', _parse_expected(high_val))
+                                except Exception:
+                                    pass
                             # wait for HIGH dwell (may return early on observation)
                             high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
                             logger.debug(f'HIGH dwell: {high_info}')
@@ -696,6 +708,12 @@ class TestRunner:
                             state = 'ENSURE_LOW_AFTER_HIGH'
                         elif state == 'ENSURE_LOW_AFTER_HIGH':
                             _send_bytes(low_bytes)
+                            # Track sent command value for monitoring
+                            if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
+                                try:
+                                    self.gui.track_sent_command_value('applied_input', _parse_expected(low_val))
+                                except Exception:
+                                    pass
                             _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                             state = 'WAIT_LOW_DWELL'
                         elif state == 'WAIT_LOW_DWELL':
@@ -1547,7 +1565,15 @@ class TestRunner:
                                 # Update real-time display with latest value (feedback signal, not current signal)
                                 if self.gui is not None and hasattr(self.gui, '_update_signal_with_status'):
                                     try:
-                                        self.gui._update_signal_with_status('feedback_signal', temp_float)
+                                        # Update temperature monitoring
+                                        if self.gui is not None:
+                                            try:
+                                                if hasattr(self.gui, 'update_monitor_signal_by_name'):
+                                                    self.gui.update_monitor_signal_by_name('dut_temperature', temp_float)
+                                                elif hasattr(self.gui, '_update_signal_with_status'):
+                                                    self.gui._update_signal_with_status('dut_temperature', temp_float)
+                                            except Exception:
+                                                pass
                                     except Exception as e:
                                         logger.debug(f"Failed to update feedback signal label: {e}")
                                 elif self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
@@ -2261,7 +2287,15 @@ class TestRunner:
                                 # Update real-time display with latest value (feedback signal, not current signal)
                                 if self.gui is not None and hasattr(self.gui, '_update_signal_with_status'):
                                     try:
-                                        self.gui._update_signal_with_status('feedback_signal', tach_float)
+                                        # Update fan tach monitoring
+                                        if self.gui is not None:
+                                            try:
+                                                if hasattr(self.gui, 'update_monitor_signal_by_name'):
+                                                    self.gui.update_monitor_signal_by_name('fan_tach_signal', tach_float)
+                                                elif hasattr(self.gui, '_update_signal_with_status'):
+                                                    self.gui._update_signal_with_status('fan_tach_signal', tach_float)
+                                            except Exception:
+                                                pass
                                     except Exception as e:
                                         logger.debug(f"Failed to update feedback signal label: {e}")
                                 elif self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
@@ -4272,6 +4306,13 @@ class TestRunner:
                     if not self.can_service.send_frame(frame):
                         return False, "Failed to send initial current setpoint message to DUT"
                     
+                    # Track sent command value for monitoring
+                    if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
+                        try:
+                            self.gui.track_sent_command_value('output_current_reference', first_setpoint)
+                        except Exception:
+                            pass
+                    
                     logger.info("Initial current setpoint sent successfully")
                     _nb_sleep(0.2)  # Small delay
                 except Exception as e:
@@ -4404,6 +4445,13 @@ class TestRunner:
                         if not self.can_service.send_frame(frame):
                             logger.warning(f"Failed to send current setpoint {setpoint}A, continuing...")
                             continue
+                        
+                        # Track sent command value for monitoring
+                        if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
+                            try:
+                                self.gui.track_sent_command_value('output_current_reference', setpoint)
+                            except Exception:
+                                pass
                         
                         logger.info(f"Sent current setpoint: {setpoint}A")
                     except Exception as e:

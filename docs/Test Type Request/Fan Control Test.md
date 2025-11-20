@@ -285,6 +285,23 @@ Specify the UI fields needed:
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Fan Enabled**: Displays the fan enabled status signal
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `Fan Enabled : 0` or `Fan Enabled : 1`
+  
+- **Fan Tach Signal**: Displays the fan tachometer signal
+  - Updates in real-time via periodic polling (100ms) and during data collection
+  - Format: `Fan Tach Signal : X.XX` (unit depends on signal type)
+  
+- **Fan Fault**: Displays the fan fault status signal
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `Fan Fault : 0` or `Fan Fault : 1`
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

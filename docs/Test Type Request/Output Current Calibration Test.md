@@ -682,6 +682,19 @@ Specify the UI fields needed:
     - Both plots must be included in the test report
     - Each plot must be clearly labeled with the trim value used for that sweep
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Output Current Reference**: Displays the latest `current_setpoint_signal` value sent (tracked from command messages)
+  - Updates when current setpoint commands are sent during sweep
+  - Format: `Output Current Reference : X.XX A`
+  
+- **DUT Output Current**: Displays the feedback output current signal from DUT
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `DUT Output Current : X.XX A`
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

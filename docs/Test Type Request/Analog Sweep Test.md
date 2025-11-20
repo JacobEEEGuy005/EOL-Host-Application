@@ -323,6 +323,19 @@ Specify the UI fields needed:
   - Each point represents one data sample (DAC voltage, feedback value)
   - Plot shows relationship between DAC voltage and feedback response
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Current Signal**: Displays the DAC voltage command value (in Volts, converted from millivolts)
+  - Updates in real-time as DAC commands are sent
+  - Format: `Current Signal : X.XX V`
+  
+- **Feedback Signal**: Displays the feedback signal value from DUT
+  - Updates in real-time during data collection
+  - Format: `Feedback Signal : X.XX <unit>` (unit depends on signal type)
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

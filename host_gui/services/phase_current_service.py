@@ -332,6 +332,15 @@ class PhaseCurrentTestStateMachine:
                                 if is_new_sample:
                                     logger.info(f"Phase V Current: {v_val} A, Phase W Current: {w_val} A")
                                     self.collected_signals.append((signal_timestamp, v_val, w_val))
+                                    
+                                    # Update real-time monitoring
+                                    if self.gui is not None:
+                                        try:
+                                            if hasattr(self.gui, 'update_monitor_signal_by_name'):
+                                                self.gui.update_monitor_signal_by_name('dut_phase_v_current', v_val)
+                                                self.gui.update_monitor_signal_by_name('dut_phase_w_current', w_val)
+                                        except Exception as e:
+                                            logger.debug(f"Failed to update phase current monitoring: {e}")
                         except Exception as e:
                             logger.warning(f"Failed to collect signals from cache: {e}", exc_info=True)
                     
@@ -699,6 +708,15 @@ class PhaseCurrentTestStateMachine:
             if not self.can_service.send_frame(frame):
                 logger.error("Failed to send trigger message")
                 return False
+            
+            # Track sent command values for monitoring
+            if self.gui is not None:
+                try:
+                    if hasattr(self.gui, 'track_sent_command_value'):
+                        self.gui.track_sent_command_value('set_iq', iq_ref)
+                        self.gui.track_sent_command_value('set_id', 0.0)  # id_ref is always 0.0 in current implementation
+                except Exception as e:
+                    logger.debug(f"Failed to track sent command values: {e}")
             
             return True
         except Exception as e:

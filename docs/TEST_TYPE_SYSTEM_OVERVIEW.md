@@ -137,9 +137,20 @@ Results displayed in GUI and reports
 - Contains type-specific execution branches
 - Can work with services directly (decoupled mode) or via GUI (legacy mode)
 - Handles CAN communication, signal reading, data collection via services
+- Updates Real-Time Monitoring with sent command values and feedback signals
 - Returns pass/fail results
 
-### 5. Service Layer (`host_gui/services/`)
+### 5. Real-Time Monitoring System (`host_gui/base_gui.py`)
+
+- **Dynamic Configuration**: Automatically configures monitoring labels based on test type
+- **Test-Specific Signals**: Displays only relevant signals for each test type
+- **Command Tracking**: Tracks and displays latest sent command values
+- **Static Reference Values**: Displays constant values from test configuration
+- **Automatic Updates**: Updates signals via periodic polling and event-driven callbacks
+
+For detailed documentation, see [Real-Time Monitoring](REAL_TIME_MONITORING.md).
+
+### 6. Service Layer (`host_gui/services/`)
 
 The service layer provides decoupled business logic that can be used by both GUI and headless execution:
 
@@ -300,6 +311,7 @@ For detailed service architecture documentation, see [Service Architecture](SERV
 - **Full Guide**: `docs/ADDING_NEW_TEST_TYPES.md`
 - **Quick Reference**: `docs/TEST_TYPE_QUICK_REFERENCE.md`
 - **Service Architecture**: `docs/SERVICE_ARCHITECTURE.md`
+- **Real-Time Monitoring**: `docs/REAL_TIME_MONITORING.md`
 - **Schema**: `backend/data/tests/schema.json`
 - **Data Model**: `host_gui/models/test_profile.py`
 - **GUI**: `host_gui/base_gui.py`

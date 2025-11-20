@@ -248,6 +248,27 @@ Specify the UI fields needed:
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Reference PWM Frequency**: Displays the static reference PWM frequency value from test configuration
+  - Set once from `reference_pwm_frequency` in test config, remains constant during test
+  - Format: `Reference PWM Frequency : X.XX Hz`
+  
+- **DUT PWM Frequency**: Displays the feedback PWM frequency signal from DUT
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `DUT PWM Frequency : X.XX Hz`
+  
+- **Reference Duty**: Displays the static reference duty cycle value from test configuration
+  - Set once from `reference_duty` in test config, remains constant during test
+  - Format: `Reference Duty : X.XX %`
+  
+- **DUT Duty**: Displays the feedback duty cycle signal from DUT
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `DUT Duty : X.XX %`
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

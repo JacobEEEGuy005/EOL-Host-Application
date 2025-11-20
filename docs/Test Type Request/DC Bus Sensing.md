@@ -251,6 +251,15 @@ Specify the UI fields needed:
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **DUT DC Bus Voltage**: Displays the DC bus voltage signal from DUT
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `DUT DC Bus Voltage : X.XX V`
+
+The monitoring section automatically configures this label when the test starts and clears it when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

@@ -312,6 +312,19 @@ Specify the UI fields needed:
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **EOL Measurement**: Displays the EOL measurement signal value
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `EOL Measurement : X.XX <unit>` (unit depends on signal type)
+  
+- **DUT Measurement**: Displays the DUT measurement signal value
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `DUT Measurement : X.XX <unit>` (unit depends on signal type)
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation

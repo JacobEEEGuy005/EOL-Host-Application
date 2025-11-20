@@ -1262,15 +1262,22 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Progress bar for sequence
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setVisible(False)
+        # Ensure progress bar doesn't cause layout shifts
+        self.progress_bar.setFixedHeight(25)  # Fixed height for progress bar
         status_layout.addWidget(self.progress_bar)
 
-        # Create horizontal splitter for two-column layout
-        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        # Create horizontal layout for two-column layout (no splitter handle)
+        main_layout_widget = QtWidgets.QWidget()
+        main_layout = QtWidgets.QHBoxLayout(main_layout_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
         # Left column: Real-time monitoring, plot, and execution log
         left_column = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        # Set size policy for left column to prevent unwanted resizing
+        left_column.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
         # Real-time monitoring with compact grid layout (3 rows x 2 columns)
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
@@ -1282,10 +1289,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._monitor_data = {}  # Store signal data: {signal_name: {'value': val, 'timestamp': ts, 'history': []}}
         self._monitor_last_update_times = {}  # Track update times for refresh rate
         self._monitor_sparklines = {}  # Store sparkline widgets (not used in compact grid)
-        self._monitor_labels = {}  # Store all label widgets (QLabel)
+        self._monitor_labels = {}  # Store all label widgets (QLabel) - can be any signal name
         self._monitor_timestamps = {}  # Store timestamp items (QLabel)
         self._monitor_table_rows = {}  # Map signal names to grid position (for backward compatibility)
         self._monitor_display_names = {}  # Map signal keys to display names
+        self._monitor_sent_values = {}  # Track latest sent command values (for Digital Logic, Phase Current, etc.)
+        self._monitor_static_values = {}  # Store static reference values from test config
+        self._monitor_label_slots = []  # List of 6 label slots (QLabel widgets) in grid order
         
         # Create compact grid layout (3 rows x 2 columns)
         grid_widget = QtWidgets.QWidget()
@@ -1293,26 +1303,13 @@ class BaseGUI(QtWidgets.QMainWindow):
         grid_layout.setContentsMargins(1, 1, 1, 1)
         grid_layout.setSpacing(1)
         
-        # Define signals with their display names and keys, arranged in 3x2 grid
-        signals = [
-            ('Current Signal', 'current_signal'),
-            ('Feedback Signal', 'feedback_signal'),
-            ('Enable Relay', 'enable_relay'),
-            ('Enable PFC', 'enable_pfc'),
-            ('PFC Power Good', 'pfc_power_good'),
-            ('Output Current', 'output_current'),
-        ]
-        
-        # Populate grid: 3 rows x 2 columns
-        for idx, (display_name, signal_key) in enumerate(signals):
+        # Create 6 empty label slots for dynamic configuration (3 rows x 2 columns)
+        for idx in range(6):
             row = idx // 2  # Row: 0, 0, 1, 1, 2, 2
             col = idx % 2   # Column: 0, 1, 0, 1, 0, 1
             
-            # Store display name for this signal
-            self._monitor_display_names[signal_key] = display_name
-            
-            # Create single label showing "Signal Name : value unit"
-            signal_label = QtWidgets.QLabel(f'{display_name} : N/A')
+            # Create empty label slot
+            signal_label = QtWidgets.QLabel('')
             signal_font = signal_label.font()
             signal_font.setPointSize(8)
             signal_font.setBold(True)
@@ -1322,9 +1319,8 @@ class BaseGUI(QtWidgets.QMainWindow):
             signal_label.setMinimumHeight(20)
             signal_label.setMaximumHeight(25)
             
-            # Store label reference
-            self._monitor_labels[signal_key] = signal_label
-            self._monitor_table_rows[signal_key] = row  # Store for backward compatibility
+            # Store label slot reference
+            self._monitor_label_slots.append(signal_label)
             
             # Add to grid
             grid_layout.addWidget(signal_label, row, col)
@@ -1340,13 +1336,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         grid_widget.setMaximumHeight(90)
         grid_widget.setMinimumHeight(90)
         
-        # Store reference to labels for backward compatibility
-        self.current_signal_label = self._monitor_labels['current_signal']
-        self.feedback_signal_label = self._monitor_labels['feedback_signal']
-        self.enable_relay_monitor_label = self._monitor_labels['enable_relay']
-        self.enable_pfc_monitor_label = self._monitor_labels['enable_pfc']
-        self.pfc_power_good_monitor_label = self._monitor_labels['pfc_power_good']
-        self.output_current_monitor_label = self._monitor_labels['output_current']
+        # Initialize with empty labels (will be configured when test starts)
+        # Store backward compatibility references as None initially (will be set dynamically)
+        self.current_signal_label = None
+        self.feedback_signal_label = None
+        self.enable_relay_monitor_label = None
+        self.enable_pfc_monitor_label = None
+        self.pfc_power_good_monitor_label = None
+        self.output_current_monitor_label = None
         
         # Store timestamp references for backward compatibility (set to None since we don't display timestamps in compact format)
         self.current_signal_timestamp = None
@@ -1376,6 +1373,9 @@ class BaseGUI(QtWidgets.QMainWindow):
             }
         
         left_layout.addWidget(monitor_group)
+        # Set fixed height for Real-Time Monitoring to prevent resizing
+        monitor_group.setMinimumHeight(120)  # Grid (90px) + refresh rate label + margins
+        monitor_group.setMaximumHeight(120)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
         plot_group = QtWidgets.QGroupBox('Feedback vs DAC Output Voltage')
@@ -1402,6 +1402,9 @@ class BaseGUI(QtWidgets.QMainWindow):
             plot_layout.addWidget(no_plot_label)
             plot_group.setVisible(False)
         left_layout.addWidget(plot_group)
+        # Set fixed height for Plot section to prevent resizing
+        plot_group.setMinimumHeight(300)  # Adjust based on desired plot size
+        plot_group.setMaximumHeight(300)
 
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
@@ -1412,31 +1415,45 @@ class BaseGUI(QtWidgets.QMainWindow):
         log_layout = QtWidgets.QVBoxLayout(log_group)
         log_layout.addWidget(self.test_log)
         left_layout.addWidget(log_group)
+        # Set fixed height for Execution Log to prevent resizing
+        log_group.setMinimumHeight(200)  # Adjust based on desired log size
+        log_group.setMaximumHeight(200)
         
-        main_splitter.addWidget(left_column)
+        # Add left column to main layout (with stretch to take remaining space)
+        main_layout.addWidget(left_column, 1)  # Stretch factor 1
         
         # Right column: Test Plan
         # Test Plan table (renamed from Results table)
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(3)
         self.results_table.setHorizontalHeaderLabels(['Test Name', 'Type', 'Status'])
-        self.results_table.horizontalHeader().setStretchLastSection(True)
+        
+        # Set fixed column widths to ensure all columns are visible
+        self.results_table.setColumnWidth(0, 200)  # Test Name
+        self.results_table.setColumnWidth(1, 100)   # Type
+        self.results_table.setColumnWidth(2, 100)   # Status
+        
+        # Disable column resizing to lock the layout
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)  # Test Name
+        self.results_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)  # Type
+        self.results_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Status
+        
         self.results_table.setAlternatingRowColors(True)
         # Enable single-click to show details
         self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.results_table.itemClicked.connect(self._on_test_plan_item_clicked)
         
-        # Test Plan in a group
+        # Test Plan in a group with fixed width
         table_group = QtWidgets.QGroupBox('Test Plan')
         table_layout = QtWidgets.QVBoxLayout(table_group)
         table_layout.addWidget(self.results_table)
-        main_splitter.addWidget(table_group)
+        # Set fixed width for Test Plan to ensure all columns are visible
+        table_group.setFixedWidth(410)  # 200 + 100 + 100 + margins
         
-        # Set splitter proportions (left column gets more space initially)
-        main_splitter.setStretchFactor(0, 2)  # Left column
-        main_splitter.setStretchFactor(1, 1)  # Right column (Test Plan)
+        # Add Test Plan to main layout (no stretch - fixed width)
+        main_layout.addWidget(table_group, 0)  # Stretch factor 0 (fixed width)
         
-        status_layout.addWidget(main_splitter)
+        status_layout.addWidget(main_layout_widget)
 
         layout.addWidget(status_group)
 
@@ -2740,25 +2757,84 @@ Data Points Used: {data_points}"""
     def _get_signal_type(self, signal_name: str) -> str:
         """Determine signal type from signal name."""
         name_lower = signal_name.lower()
-        if 'voltage' in name_lower or 'dac' in name_lower:
+        if 'voltage' in name_lower or 'dac' in name_lower or 'dc bus' in name_lower:
             return 'voltage'
         elif 'current' in name_lower:
             return 'current'
-        elif 'temp' in name_lower:
+        elif 'temp' in name_lower or 'temperature' in name_lower:
             return 'temperature'
-        elif 'freq' in name_lower or 'frequency' in name_lower:
+        elif 'freq' in name_lower or 'frequency' in name_lower or 'pwm' in name_lower:
             return 'frequency'
         elif 'duty' in name_lower:
             return 'duty'
-        elif 'relay' in name_lower or 'pfc' in name_lower or 'enable' in name_lower or 'power' in name_lower:
+        elif 'relay' in name_lower or 'pfc' in name_lower or 'enable' in name_lower or 'power' in name_lower or 'fault' in name_lower or 'applied' in name_lower or 'digital' in name_lower:
             return 'digital'
         else:
             return 'generic'
     
+    def track_sent_command_value(self, signal_key: str, value: Any) -> None:
+        """Track a sent command value for display in monitoring.
+        
+        Args:
+            signal_key: Internal signal key (e.g., 'applied_input', 'set_id', 'set_iq', 'output_current_reference')
+            value: The value that was sent
+        """
+        if signal_key in self._monitor_labels:
+            self._monitor_sent_values[signal_key] = value
+            # Update the display immediately
+            signal_type = self._get_signal_type(signal_key)
+            formatted_value = self._format_signal_value(value, signal_type)
+            display_name = self._monitor_display_names.get(signal_key, signal_key)
+            label = self._monitor_labels[signal_key]
+            if hasattr(label, 'setText'):
+                label.setText(f'{display_name} : {formatted_value}')
+    
+    def update_monitor_signal_by_name(self, signal_key: str, value: Optional[float], 
+                                     threshold_good: Optional[Tuple[float, float]] = None,
+                                     threshold_warn: Optional[Tuple[float, float]] = None) -> None:
+        """Update a monitor signal by its internal key name.
+        
+        This is a wrapper that maps various signal names to the internal monitoring system.
+        
+        Args:
+            signal_key: Internal signal key (e.g., 'feedback_signal', 'dut_temperature', 'fan_enabled')
+            value: Signal value to display
+            threshold_good: Optional tuple (min, max) for good range (green)
+            threshold_warn: Optional tuple (min, max) for warning range (orange)
+        """
+        if signal_key in self._monitor_labels:
+            self._update_signal_with_status(signal_key, value, threshold_good, threshold_warn)
+    
+    def update_feedback_signal_for_test(self, value: Optional[float], signal_name: Optional[str] = None) -> None:
+        """Update feedback signal monitoring based on current test configuration.
+        
+        This method automatically maps feedback signals to the correct monitoring label
+        based on what's currently configured for the active test.
+        
+        Args:
+            value: Feedback signal value
+            signal_name: Optional specific signal name to update (if None, uses configured feedback signal)
+        """
+        # Try to find the appropriate feedback signal label based on current configuration
+        if 'feedback_signal' in self._monitor_labels:
+            self._update_signal_with_status('feedback_signal', value)
+        elif 'dut_feedback_signal' in self._monitor_labels:
+            self._update_signal_with_status('dut_feedback_signal', value)
+        elif 'digital_input' in self._monitor_labels:
+            self._update_signal_with_status('digital_input', value)
+        elif 'dut_temperature' in self._monitor_labels:
+            self._update_signal_with_status('dut_temperature', value)
+        elif 'dut_measurement' in self._monitor_labels:
+            self._update_signal_with_status('dut_measurement', value)
+        elif 'dut_dc_bus_voltage' in self._monitor_labels:
+            self._update_signal_with_status('dut_dc_bus_voltage', value)
+        elif 'dut_output_current' in self._monitor_labels:
+            self._update_signal_with_status('dut_output_current', value)
+    
     def _update_signal_with_status(self, signal_name: str, value: Any, 
                                    threshold_good: Optional[Tuple[float, float]] = None,
                                    threshold_warn: Optional[Tuple[float, float]] = None) -> None:
-        """Update signal label with value, formatting, color coding, timestamp, and sparkline.
+        """Update signal label with value, formatting, and color coding.
         
         Args:
             signal_name: Name of the signal ('current_signal', 'feedback_signal', etc.)
@@ -2902,7 +2978,7 @@ Data Points Used: {data_points}"""
     def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
         """Update real-time monitoring labels for charger-related signals.
         
-        This method now uses the enhanced display system with formatting, colors, timestamps, and sparklines.
+        This method uses the dynamic monitoring system with formatting and color coding.
         """
         # Map old keys to new signal names
         key_map = {
@@ -2931,10 +3007,23 @@ Data Points Used: {data_points}"""
         
         self._update_signal_with_status(signal_name, value, threshold_good, threshold_warn)
 
-    def reset_monitor_signals(self) -> None:
-        """Reset real-time monitoring labels to their default state."""
-        for signal_name in self._monitor_labels.keys():
-            self._update_signal_with_status(signal_name, None)
+    def reset_monitor_signals(self, test: Optional[Dict[str, Any]] = None) -> None:
+        """Reset real-time monitoring labels and configure for test type.
+        
+        Args:
+            test: Optional test configuration dictionary. If provided, configures labels based on test type.
+                  If None, clears all labels.
+        """
+        # Clear all label slots
+        for label in self._monitor_label_slots:
+            label.setText('')
+            label.setStyleSheet('padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+        
+        # Clear all monitoring data
+        self._monitor_labels.clear()
+        self._monitor_display_names.clear()
+        self._monitor_sent_values.clear()
+        self._monitor_static_values.clear()
         
         # Clear history
         for signal_name in self._monitor_data.keys():
@@ -2957,9 +3046,379 @@ Data Points Used: {data_points}"""
         # Reset refresh rate
         if hasattr(self, 'update_rate_label'):
             self.update_rate_label.setText('Update Rate: -- Hz')
+        
+        # Stop update timer if no test is provided
+        if test is None:
+            if hasattr(self, '_monitor_update_timer'):
+                try:
+                    self._monitor_update_timer.stop()
+                except Exception:
+                    pass
+        
+        # Configure labels based on test type if test provided
+        if test is not None:
+            self._configure_monitor_signals_for_test(test)
+    
+    def _configure_monitor_signals_for_test(self, test: Dict[str, Any]) -> None:
+        """Configure real-time monitoring labels based on test type.
+        
+        Args:
+            test: Test configuration dictionary with 'actuation' field containing test type and parameters.
+        """
+        actuation = test.get('actuation', {})
+        test_type = actuation.get('type', '')
+        slot_idx = 0
+        
+        # Initialize signal data structures for all signals we'll use
+        def _setup_signal(signal_key: str, display_name: str, initial_value: Any = None) -> None:
+            """Helper to set up a signal in the next available slot."""
+            nonlocal slot_idx
+            if slot_idx >= len(self._monitor_label_slots):
+                return  # No more slots available
+            
+            label = self._monitor_label_slots[slot_idx]
+            self._monitor_labels[signal_key] = label
+            self._monitor_display_names[signal_key] = display_name
+            
+            # Initialize data structure
+            if signal_key not in self._monitor_data:
+                self._monitor_data[signal_key] = {
+                    'value': initial_value,
+                    'timestamp': None,
+                    'history': [],
+                    'history_max_size': 50
+                }
+            
+            # Set initial display
+            if initial_value is not None:
+                signal_type = self._get_signal_type(signal_key)
+                formatted = self._format_signal_value(initial_value, signal_type)
+                label.setText(f'{display_name} : {formatted}')
+            else:
+                label.setText(f'{display_name} : N/A')
+            
+            slot_idx += 1
+        
+        # Configure based on test type
+        if test_type == 'Digital Logic Test':
+            # Applied Input: Track last sent command (value_high or value_low)
+            value_high = actuation.get('value_high', '1')
+            value_low = actuation.get('value_low', '0')
+            # Initialize with empty, will be updated when command is sent
+            _setup_signal('applied_input', 'Applied Input', None)
+            self._monitor_sent_values['applied_input'] = None
+            self._monitor_sent_values['value_high'] = value_high
+            self._monitor_sent_values['value_low'] = value_low
+            
+            # Digital Input: feedback_signal
+            _setup_signal('digital_input', 'Digital Input', None)
+            
+        elif test_type == 'Analog Sweep Test':
+            _setup_signal('current_signal', 'Current Signal', None)
+            _setup_signal('feedback_signal', 'Feedback Signal', None)
+            
+        elif test_type == 'Phase Current Test':
+            # Set Id: Track latest id_ref_signal value sent
+            _setup_signal('set_id', 'Set Id', None)
+            self._monitor_sent_values['set_id'] = None
+            
+            # Set Iq: Track latest iq_ref_signal value sent
+            _setup_signal('set_iq', 'Set Iq', None)
+            self._monitor_sent_values['set_iq'] = None
+            
+            # DUT Phase V Current: phase_v_signal from data_collection
+            data_collection = actuation.get('data_collection', {})
+            phase_v_signal = data_collection.get('phase_v_signal', 'Phase_V_Current')
+            _setup_signal('dut_phase_v_current', 'DUT Phase V Current', None)
+            self._monitor_sent_values['phase_v_signal_name'] = phase_v_signal
+            
+            # DUT Phase W Current: phase_w_signal from data_collection
+            phase_w_signal = data_collection.get('phase_w_signal', 'Phase_W_Current')
+            _setup_signal('dut_phase_w_current', 'DUT Phase W Current', None)
+            self._monitor_sent_values['phase_w_signal_name'] = phase_w_signal
+            
+        elif test_type == 'Analog Static Test':
+            _setup_signal('eol_measured_signal', 'EOL Measured Signal', None)
+            _setup_signal('dut_feedback_signal', 'DUT Feedback Signal', None)
+            # Store signal names for reading from CAN
+            self._monitor_sent_values['eol_signal_name'] = actuation.get('eol_signal')
+            self._monitor_sent_values['eol_msg_id'] = actuation.get('eol_signal_source')
+            self._monitor_sent_values['feedback_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['feedback_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Analog PWM Sensor':
+            # Reference PWM Frequency: Static value from config
+            ref_freq = actuation.get('reference_pwm_frequency', 0)
+            _setup_signal('ref_pwm_frequency', 'Reference PWM Frequency', ref_freq)
+            self._monitor_static_values['ref_pwm_frequency'] = ref_freq
+            
+            # DUT PWM Frequency: feedback_pwm_frequency_signal
+            _setup_signal('dut_pwm_frequency', 'DUT PWM Frequency', None)
+            self._monitor_sent_values['pwm_freq_signal_name'] = actuation.get('feedback_pwm_frequency_signal')
+            self._monitor_sent_values['pwm_freq_msg_id'] = actuation.get('feedback_signal_source')
+            
+            # Reference Duty: Static value from config
+            ref_duty = actuation.get('reference_duty', 0)
+            _setup_signal('ref_duty', 'Reference Duty', ref_duty)
+            self._monitor_static_values['ref_duty'] = ref_duty
+            
+            # DUT Duty: feedback_duty_signal
+            _setup_signal('dut_duty', 'DUT Duty', None)
+            self._monitor_sent_values['duty_signal_name'] = actuation.get('feedback_duty_signal')
+            self._monitor_sent_values['duty_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Temperature Validation Test':
+            # Reference Temperature: Static value from config
+            ref_temp = actuation.get('reference_temperature_c', 0)
+            _setup_signal('ref_temperature', 'Reference Temperature', ref_temp)
+            self._monitor_static_values['ref_temperature'] = ref_temp
+            
+            # DUT Temperature: feedback_signal
+            _setup_signal('dut_temperature', 'DUT Temperature', None)
+            self._monitor_sent_values['temp_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['temp_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Fan Control Test':
+            _setup_signal('fan_enabled', 'Fan Enabled', None)
+            self._monitor_sent_values['fan_enabled_signal_name'] = actuation.get('fan_enabled_signal')
+            self._monitor_sent_values['fan_enabled_msg_id'] = actuation.get('fan_control_feedback_source')
+            
+            _setup_signal('fan_tach_signal', 'Fan Tach Signal', None)
+            self._monitor_sent_values['fan_tach_signal_name'] = actuation.get('fan_tach_feedback_signal')
+            self._monitor_sent_values['fan_tach_msg_id'] = actuation.get('fan_control_feedback_source')
+            
+            _setup_signal('fan_fault', 'Fan Fault', None)
+            self._monitor_sent_values['fan_fault_signal_name'] = actuation.get('fan_fault_feedback_signal')
+            self._monitor_sent_values['fan_fault_msg_id'] = actuation.get('fan_control_feedback_source')
+            
+        elif test_type == 'External 5V Test':
+            _setup_signal('eol_measurement', 'EOL Measurement', None)
+            self._monitor_sent_values['eol_ext_5v_signal_name'] = actuation.get('eol_ext_5v_measurement_signal')
+            self._monitor_sent_values['eol_ext_5v_msg_id'] = actuation.get('eol_ext_5v_measurement_source')
+            
+            _setup_signal('dut_measurement', 'DUT Measurement', None)
+            self._monitor_sent_values['dut_measurement_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['dut_measurement_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'DC Bus Sensing':
+            _setup_signal('dut_dc_bus_voltage', 'DUT DC Bus Voltage', None)
+            self._monitor_sent_values['dc_bus_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['dc_bus_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Output Current Calibration':
+            # Output Current Reference: Track latest current_setpoint_signal value sent
+            _setup_signal('output_current_reference', 'Output Current Reference', None)
+            self._monitor_sent_values['output_current_reference'] = None
+            
+            # DUT Output Current: feedback_signal
+            _setup_signal('dut_output_current', 'DUT Output Current', None)
+            self._monitor_sent_values['output_current_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['output_current_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Charged HV Bus Test':
+            _setup_signal('enable_relay', 'Enable Relay', None)
+            self._monitor_sent_values['enable_relay_signal_name'] = actuation.get('enable_relay_signal')
+            self._monitor_sent_values['enable_relay_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('enable_pfc', 'Enable PFC', None)
+            self._monitor_sent_values['enable_pfc_signal_name'] = actuation.get('enable_pfc_signal')
+            self._monitor_sent_values['enable_pfc_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('pfc_power_good', 'PFC Power Good', None)
+            self._monitor_sent_values['pfc_power_good_signal_name'] = actuation.get('pfc_power_good_signal')
+            self._monitor_sent_values['pfc_power_good_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Charger Functional Test':
+            _setup_signal('enable_relay', 'Enable Relay', None)
+            self._monitor_sent_values['enable_relay_signal_name'] = actuation.get('enable_relay_signal')
+            self._monitor_sent_values['enable_relay_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('enable_pfc', 'Enable PFC', None)
+            self._monitor_sent_values['enable_pfc_signal_name'] = actuation.get('enable_pfc_signal')
+            self._monitor_sent_values['enable_pfc_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('pfc_power_good', 'PFC Power Good', None)
+            self._monitor_sent_values['pfc_power_good_signal_name'] = actuation.get('pfc_power_good_signal')
+            self._monitor_sent_values['pfc_power_good_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('output_current', 'Output Current', None)
+            self._monitor_sent_values['output_current_signal_name'] = actuation.get('output_current_signal')
+            self._monitor_sent_values['output_current_msg_id'] = actuation.get('feedback_signal_source')
+        
+        # Update backward compatibility references
+        self.current_signal_label = self._monitor_labels.get('current_signal')
+        self.feedback_signal_label = self._monitor_labels.get('feedback_signal')
+        self.enable_relay_monitor_label = self._monitor_labels.get('enable_relay')
+        self.enable_pfc_monitor_label = self._monitor_labels.get('enable_pfc')
+        self.pfc_power_good_monitor_label = self._monitor_labels.get('pfc_power_good')
+        self.output_current_monitor_label = self._monitor_labels.get('output_current')
+        
+        # Start periodic update timer for monitored signals if any are configured
+        if self._monitor_labels:
+            self._start_monitor_update_timer()
+    
+    def _start_monitor_update_timer(self) -> None:
+        """Start a timer to periodically update monitored signals from CAN."""
+        # Stop existing timer if any
+        if hasattr(self, '_monitor_update_timer'):
+            try:
+                self._monitor_update_timer.stop()
+            except Exception:
+                pass
+        
+        # Create new timer to update signals every 100ms
+        self._monitor_update_timer = QtCore.QTimer(self)
+        self._monitor_update_timer.timeout.connect(self._update_monitored_signals_from_can)
+        self._monitor_update_timer.start(100)  # Update every 100ms
+    
+    def _update_monitored_signals_from_can(self) -> None:
+        """Periodically update monitored signals by reading from CAN cache."""
+        if not self._monitor_labels:
+            return
+        
+        # Update signals based on stored signal names and message IDs
+        for signal_key, label in self._monitor_labels.items():
+            try:
+                # Get signal name and message ID from stored values
+                signal_name_key = f'{signal_key}_signal_name'
+                msg_id_key = f'{signal_key}_msg_id'
+                
+                signal_name = self._monitor_sent_values.get(signal_name_key)
+                msg_id = self._monitor_sent_values.get(msg_id_key)
+                
+                if signal_name and msg_id is not None:
+                    # Get latest signal value from cache
+                    ts, val = self.get_latest_signal(msg_id, signal_name)
+                    if val is not None:
+                        self._update_signal_with_status(signal_key, val)
+                
+                # Special handling for Digital Logic Test feedback
+                if signal_key == 'digital_input':
+                    # Get feedback signal from current test config if available
+                    if hasattr(self, '_current_test_index') and self._current_test_index is not None:
+                        try:
+                            if self._current_test_index < len(self._tests):
+                                test = self._tests[self._current_test_index]
+                                fb_signal = test.get('feedback_signal')
+                                fb_msg_id = test.get('feedback_message_id')
+                                if fb_signal and fb_msg_id is not None:
+                                    ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                                    if val is not None:
+                                        self._update_signal_with_status('digital_input', val)
+                        except Exception:
+                            pass
+                
+                # Special handling for Analog Static Test - both signals
+                if signal_key == 'eol_measured_signal':
+                    eol_signal = self._monitor_sent_values.get('eol_signal_name')
+                    eol_msg_id = self._monitor_sent_values.get('eol_msg_id')
+                    if eol_signal and eol_msg_id is not None:
+                        ts, val = self.get_latest_signal(eol_msg_id, eol_signal)
+                        if val is not None:
+                            self._update_signal_with_status('eol_measured_signal', val)
+                
+                if signal_key == 'dut_feedback_signal':
+                    fb_signal = self._monitor_sent_values.get('feedback_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('feedback_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_feedback_signal', val)
+                
+                # Special handling for External 5V Test
+                if signal_key == 'eol_measurement':
+                    eol_signal = self._monitor_sent_values.get('eol_ext_5v_signal_name')
+                    eol_msg_id = self._monitor_sent_values.get('eol_ext_5v_msg_id')
+                    if eol_signal and eol_msg_id is not None:
+                        ts, val = self.get_latest_signal(eol_msg_id, eol_signal)
+                        if val is not None:
+                            self._update_signal_with_status('eol_measurement', val)
+                
+                if signal_key == 'dut_measurement':
+                    fb_signal = self._monitor_sent_values.get('dut_measurement_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('dut_measurement_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_measurement', val)
+                
+                # Special handling for DC Bus Sensing
+                if signal_key == 'dut_dc_bus_voltage':
+                    fb_signal = self._monitor_sent_values.get('dc_bus_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('dc_bus_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_dc_bus_voltage', val)
+                
+                # Special handling for Output Current Calibration
+                if signal_key == 'dut_output_current':
+                    fb_signal = self._monitor_sent_values.get('output_current_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('output_current_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_output_current', val)
+                
+                # Special handling for Fan Control Test
+                if signal_key == 'fan_enabled':
+                    fb_signal = self._monitor_sent_values.get('fan_enabled_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('fan_enabled_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('fan_enabled', val)
+                
+                if signal_key == 'fan_tach_signal':
+                    fb_signal = self._monitor_sent_values.get('fan_tach_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('fan_tach_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('fan_tach_signal', val)
+                
+                if signal_key == 'fan_fault':
+                    fb_signal = self._monitor_sent_values.get('fan_fault_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('fan_fault_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('fan_fault', val)
+                
+                # Special handling for Analog PWM Sensor Test
+                if signal_key == 'dut_pwm_frequency':
+                    fb_signal = self._monitor_sent_values.get('pwm_freq_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('pwm_freq_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_pwm_frequency', val)
+                
+                if signal_key == 'dut_duty':
+                    fb_signal = self._monitor_sent_values.get('duty_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('duty_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_duty', val)
+                
+                # Special handling for Temperature Validation Test
+                if signal_key == 'dut_temperature':
+                    fb_signal = self._monitor_sent_values.get('temp_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('temp_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_temperature', val)
+                
+                # Charger tests are handled through update_monitor_signal which already works
+            except Exception as e:
+                logger.debug(f"Error updating monitored signal {signal_key}: {e}")
 
     def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
         """Update the plot with a new data point (DAC voltage, feedback value).
+        
+        Also updates real-time monitoring for Analog Sweep Test.
         
         Args:
             dac_voltage: DAC output voltage in millivolts (or oscilloscope value for Output Current Calibration)
@@ -3039,6 +3498,17 @@ Data Points Used: {data_points}"""
                 # Auto-scale axes to fit all data
                 self.plot_axes.relim()
                 self.plot_axes.autoscale()
+                
+                # Update real-time monitoring for Analog Sweep Test
+                if not is_output_current_calibration:
+                    # For Analog Sweep Test: update current_signal (DAC voltage) and feedback_signal
+                    if 'current_signal' in self._monitor_labels:
+                        # Convert DAC voltage from mV to V for display
+                        dac_voltage_v = dac_voltage / 1000.0
+                        self._update_signal_with_status('current_signal', dac_voltage_v)
+                    
+                    if 'feedback_signal' in self._monitor_labels:
+                        self._update_signal_with_status('feedback_signal', feedback_value)
                 
                 # Force immediate redraw (draw_idle may not refresh fast enough)
                 self.plot_canvas.draw()
@@ -14359,17 +14829,27 @@ Data Points Used: {data_points}"""
         # Store current test index for plot detection
         self._current_test_index = test_index
         
-        # Update Test Plan status to "Running..."
+        # Update Test Plan status to "Running..." and configure monitoring
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
                 self._update_test_plan_row(t, 'Running...', 'N/A', 'Test execution in progress...')
+                
+                # Configure real-time monitoring for this test
+                self.reset_monitor_signals(t)
+                
                 self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
                 if self._current_feedback and self._current_feedback[1]:
                     ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
                     if v is not None:
                         try:
-                            self._update_signal_with_status('feedback_signal', v)
+                            # Update feedback signal if it's being monitored
+                            if 'feedback_signal' in self._monitor_labels:
+                                self._update_signal_with_status('feedback_signal', v)
+                            elif 'dut_feedback_signal' in self._monitor_labels:
+                                self._update_signal_with_status('dut_feedback_signal', v)
+                            elif 'digital_input' in self._monitor_labels:
+                                self._update_signal_with_status('digital_input', v)
                         except Exception:
                             pass
         except Exception:

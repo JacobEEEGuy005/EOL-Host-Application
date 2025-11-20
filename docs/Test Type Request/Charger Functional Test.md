@@ -179,7 +179,7 @@ Describe the step-by-step execution flow:
         - If value = 7: DUT has fault → Test FAIL immediately, stop logging, send trigger = 0
         - If value = test_trigger_signal_value: No fault (normal operation)
      4. Continue monitoring until (current_time - t0) >= test_time_ms
-     5. Display the latest values of `enable_relay_signal`, `enable_pfc_signal`, `pfc_power_good_signal`, and `output_current_signal` in the Real-Time Monitoring panel during the test so operators can observe live status.
+     5. Display the latest values of `enable_relay_signal`, `enable_pfc_signal`, `pfc_power_good_signal`, and `output_current_signal` in the Real-Time Monitoring section during the test so operators can observe live status.
    - Duration: test_time_ms milliseconds
    - Expected result: All feedback signals logged throughout test duration, no fault detected
 
@@ -459,6 +459,27 @@ Specify the UI fields needed:
 - **X-Axis**: `N/A`
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
+
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Enable Relay**: Displays the enable relay status signal
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `Enable Relay : 0` or `Enable Relay : 1`
+  
+- **Enable PFC**: Displays the enable PFC status signal
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `Enable PFC : 0` or `Enable PFC : 1`
+  
+- **PFC Power Good**: Displays the PFC power good status signal
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `PFC Power Good : 0` or `PFC Power Good : 1`
+  
+- **Output Current**: Displays the output current signal
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `Output Current : X.XX A`
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
 
 ### Pre-Test Safety Dialog Requirements
 - **Show Pre-Test Dialog**: `Yes` - Dialog must appear before test execution starts

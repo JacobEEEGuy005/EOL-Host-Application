@@ -253,6 +253,20 @@ Specify the UI fields needed:
 - **Y-Axis**: `N/A`
 - **Update Frequency**: `N/A`
 
+### Real-Time Monitoring
+The Real-Time Monitoring section displays the following signals during test execution:
+
+- **Applied Input**: Displays the last sent command value (HIGH=1 or LOW=0)
+  - Tracks `value_high` and `value_low` from test configuration
+  - Updates when HIGH or LOW commands are sent during state machine transitions
+  - Format: `Applied Input : 1` or `Applied Input : 0`
+  
+- **Digital Input**: Displays the feedback signal value from DUT
+  - Updates in real-time via periodic polling (100ms)
+  - Format: `Digital Input : 0` or `Digital Input : 1`
+
+The monitoring section automatically configures these labels when the test starts and clears them when the test completes. See [Real-Time Monitoring](../REAL_TIME_MONITORING.md) for detailed documentation.
+
 ## Validation Rules
 
 ### Schema Validation
