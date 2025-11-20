@@ -153,6 +153,13 @@ class TestExecutionThread(QtCore.QThread):
                 test_name = test.get('name', '<unnamed>')
                 current_test_mode = test.get('test_mode', 0)  # Get current test's test_mode
                 
+                # Reset real-time monitoring labels before each test
+                try:
+                    if hasattr(self.test_runner, 'reset_monitor_signals'):
+                        self.test_runner.reset_monitor_signals()
+                except Exception as e:
+                    logger.debug(f"Failed to reset monitor signals: {e}")
+                
                 # Emit test started signal
                 self.test_started.emit(i, test_name)
                 self.sequence_progress.emit(i, total_tests)

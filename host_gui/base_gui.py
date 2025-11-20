@@ -1108,6 +1108,15 @@ class BaseGUI(QtWidgets.QMainWindow):
         monitor_layout.addRow('Current Signal Value:', self.current_signal_label)
         self.feedback_signal_label = QtWidgets.QLabel('N/A')
         monitor_layout.addRow('Feedback Signal Value:', self.feedback_signal_label)
+        # Additional monitoring labels for charger tests
+        self.enable_relay_monitor_label = QtWidgets.QLabel('N/A')
+        monitor_layout.addRow('Enable Relay Signal:', self.enable_relay_monitor_label)
+        self.enable_pfc_monitor_label = QtWidgets.QLabel('N/A')
+        monitor_layout.addRow('Enable PFC Signal:', self.enable_pfc_monitor_label)
+        self.pfc_power_good_monitor_label = QtWidgets.QLabel('N/A')
+        monitor_layout.addRow('PFC Power Good Signal:', self.pfc_power_good_monitor_label)
+        self.output_current_monitor_label = QtWidgets.QLabel('N/A')
+        monitor_layout.addRow('Output Current Signal:', self.output_current_monitor_label)
         left_layout.addWidget(monitor_group)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
@@ -2415,6 +2424,39 @@ Data Points Used: {data_points}"""
             logger.debug(f"Initialized plot for Output Current Calibration: {test_name}")
         except Exception as e:
             logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
+
+    def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
+        """Update real-time monitoring labels for charger-related signals."""
+        label_map = {
+            'enable_relay': getattr(self, 'enable_relay_monitor_label', None),
+            'enable_pfc': getattr(self, 'enable_pfc_monitor_label', None),
+            'pfc_power_good': getattr(self, 'pfc_power_good_monitor_label', None),
+            'output_current': getattr(self, 'output_current_monitor_label', None),
+        }
+        label = label_map.get(key)
+        if label is None:
+            return
+        if value is None:
+            label.setText('N/A')
+            return
+        try:
+            if key == 'output_current':
+                label.setText(f"{float(value):.2f} A")
+            else:
+                label.setText(str(int(round(float(value)))))
+        except (ValueError, TypeError):
+            label.setText(str(value))
+
+    def reset_monitor_signals(self) -> None:
+        """Reset real-time monitoring labels to their default state."""
+        for label in (
+            getattr(self, 'enable_relay_monitor_label', None),
+            getattr(self, 'enable_pfc_monitor_label', None),
+            getattr(self, 'pfc_power_good_monitor_label', None),
+            getattr(self, 'output_current_monitor_label', None),
+        ):
+            if label is not None:
+                label.setText('N/A')
 
     def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
         """Update the plot with a new data point (DAC voltage, feedback value).

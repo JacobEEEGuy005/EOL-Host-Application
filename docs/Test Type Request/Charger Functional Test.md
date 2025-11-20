@@ -179,6 +179,7 @@ Describe the step-by-step execution flow:
         - If value = 7: DUT has fault → Test FAIL immediately, stop logging, send trigger = 0
         - If value = test_trigger_signal_value: No fault (normal operation)
      4. Continue monitoring until (current_time - t0) >= test_time_ms
+     5. Display the latest values of `enable_relay_signal`, `enable_pfc_signal`, `pfc_power_good_signal`, and `output_current_signal` in the Real-Time Monitoring panel during the test so operators can observe live status.
    - Duration: test_time_ms milliseconds
    - Expected result: All feedback signals logged throughout test duration, no fault detected
 

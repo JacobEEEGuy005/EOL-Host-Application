@@ -89,7 +89,9 @@ class TestRunner:
         plot_update_callback: Optional[Callable[[float, float, Optional[str]], None]] = None,
         plot_clear_callback: Optional[Callable[[], None]] = None,
         label_update_callback: Optional[Callable[[str], None]] = None,
-        oscilloscope_init_callback: Optional[Callable[[Dict[str, Any]], bool]] = None
+        oscilloscope_init_callback: Optional[Callable[[Dict[str, Any]], bool]] = None,
+        monitor_signal_update_callback: Optional[Callable[[str, Optional[float]], None]] = None,
+        monitor_signal_reset_callback: Optional[Callable[[], None]] = None
     ):
         """Initialize the TestRunner.
         
@@ -104,6 +106,8 @@ class TestRunner:
             plot_clear_callback: Optional callback to clear plots
             label_update_callback: Optional callback to update UI labels (text)
             oscilloscope_init_callback: Optional callback to initialize oscilloscope (test) -> bool
+            monitor_signal_update_callback: Optional callback to update real-time monitor (key, value)
+            monitor_signal_reset_callback: Optional callback to reset real-time monitor labels
         """
         self.gui = gui
         
@@ -135,6 +139,16 @@ class TestRunner:
                 self.oscilloscope_init_callback = lambda test: gui._initialize_oscilloscope_for_test(test)
             else:
                 self.oscilloscope_init_callback = oscilloscope_init_callback
+            
+            if monitor_signal_update_callback is None and hasattr(gui, 'update_monitor_signal'):
+                self.monitor_signal_update_callback = lambda key, val: gui.update_monitor_signal(key, val)
+            else:
+                self.monitor_signal_update_callback = monitor_signal_update_callback
+            
+            if monitor_signal_reset_callback is None and hasattr(gui, 'reset_monitor_signals'):
+                self.monitor_signal_reset_callback = lambda: gui.reset_monitor_signals()
+            else:
+                self.monitor_signal_reset_callback = monitor_signal_reset_callback
         else:
             # Direct service injection mode (fully decoupled)
             self.can_service = can_service
@@ -146,6 +160,24 @@ class TestRunner:
             self.plot_clear_callback = plot_clear_callback
             self.label_update_callback = label_update_callback
             self.oscilloscope_init_callback = oscilloscope_init_callback
+            self.monitor_signal_update_callback = monitor_signal_update_callback
+            self.monitor_signal_reset_callback = monitor_signal_reset_callback
+    
+    def reset_monitor_signals(self) -> None:
+        """Reset real-time monitor labels (if callback available)."""
+        if getattr(self, 'monitor_signal_reset_callback', None):
+            try:
+                self.monitor_signal_reset_callback()
+            except Exception as e:
+                logger.debug(f"Failed to reset monitor signals: {e}")
+
+    def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
+        """Update real-time monitor label for the specified key."""
+        if getattr(self, 'monitor_signal_update_callback', None):
+            try:
+                self.monitor_signal_update_callback(key, value)
+            except Exception as e:
+                logger.debug(f"Failed to update monitor signal '{key}': {e}")
 
     def check_test_mode(self, test: Dict[str, Any]) -> Tuple[bool, str]:
         """Check if DUT is in correct test mode before test execution.
@@ -2726,6 +2758,14 @@ class TestRunner:
                     
                     return data_bytes
                 
+                monitor_signal_map = {}
+                if enable_relay_signal:
+                    monitor_signal_map[enable_relay_signal] = 'enable_relay'
+                if enable_pfc_signal:
+                    monitor_signal_map[enable_pfc_signal] = 'enable_pfc'
+                if pfc_power_good_signal:
+                    monitor_signal_map[pfc_power_good_signal] = 'pfc_power_good'
+
                 # Step 1: Get Output Current Trim Value
                 logger.info("Charged HV Bus Test: Step 1 - Getting output current trim value...")
                 logger.info(f"Charged HV Bus Test: Fallback trim value from config: {fallback_trim:.2f}%")
@@ -3050,6 +3090,9 @@ class TestRunner:
                             if val is not None:
                                 try:
                                     val_float = float(val)
+                                    monitor_key = monitor_signal_map.get(signal_name)
+                                    if monitor_key:
+                                        self.update_monitor_signal(monitor_key, val_float)
                                     logged_data.append({
                                         'timestamp': current_time,
                                         'signal_name': log_key,
@@ -3338,6 +3381,16 @@ class TestRunner:
                 if output_current_tolerance is None or output_current_tolerance < 0:
                     return False, "Output current tolerance must be >= 0"
                 
+                monitor_signal_map = {}
+                if enable_relay_signal:
+                    monitor_signal_map[enable_relay_signal] = 'enable_relay'
+                if enable_pfc_signal:
+                    monitor_signal_map[enable_pfc_signal] = 'enable_pfc'
+                if pfc_power_good_signal:
+                    monitor_signal_map[pfc_power_good_signal] = 'pfc_power_good'
+                if output_current_signal:
+                    monitor_signal_map[output_current_signal] = 'output_current'
+                
                 # Import AdapterFrame at function level
                 try:
                     from backend.adapters.interface import Frame as AdapterFrame
@@ -3602,6 +3655,9 @@ class TestRunner:
                             if val is not None:
                                 try:
                                     val_float = float(val)
+                                    monitor_key = monitor_signal_map.get(signal_name)
+                                    if monitor_key:
+                                        self.update_monitor_signal(monitor_key, val_float)
                                     logged_data.append({
                                         'timestamp': current_time,
                                         'signal_name': log_key,
