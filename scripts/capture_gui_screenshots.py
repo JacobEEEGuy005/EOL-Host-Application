@@ -42,16 +42,11 @@ def capture_gui_screenshots():
     # Create and show GUI
     print("Initializing GUI...")
     window = BaseGUI()
-    window.show()
+    window.showMaximized()  # Match the actual application behavior
     
     # Process events to ensure window is fully rendered
     app.processEvents()
     time.sleep(1)  # Give it a moment to fully render
-    
-    # Resize window to a standard size for consistent screenshots
-    window.resize(1400, 900)
-    app.processEvents()
-    time.sleep(0.5)
     
     # Get main tabs widget
     if not hasattr(window, 'tabs_main'):
@@ -143,7 +138,7 @@ def capture_gui_screenshots():
     except Exception as e:
         print(f"  Warning: Could not capture Connect EOL dialog: {e}")
     
-    print(f"\n✓ All screenshots saved to: {output_dir}")
+    print(f"\nAll screenshots saved to: {output_dir}")
     print("Closing GUI...")
     
     # Quit application (this will trigger closeEvent)

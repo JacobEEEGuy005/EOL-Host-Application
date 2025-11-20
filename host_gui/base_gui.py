@@ -1275,9 +1275,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Left column: Real-time monitoring, plot, and execution log
         left_column = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_column)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        # Set size policy for left column to prevent unwanted resizing
-        left_column.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        left_layout.setContentsMargins(5, 5, 5, 5)  # Add margins for proper spacing
+        left_layout.setSpacing(8)  # Add spacing between widgets to prevent overlap (increased for better separation)
+        # Prevent layout from compressing widgets below their minimum sizes
+        left_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
+        # Set size policy for left column - Expanding horizontally, Minimum vertically (prevents compression)
+        left_column.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        # Set minimum height: 120 (monitor) + 8 (spacing) + 300 (plot) + 8 (spacing) + 200 (log) + 10 (margins) = 646px
+        left_column.setMinimumHeight(646)
 
         # Real-time monitoring with compact grid layout (3 rows x 2 columns)
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
@@ -1372,19 +1377,29 @@ class BaseGUI(QtWidgets.QMainWindow):
                 'history_max_size': 50  # Keep last 50 values for sparkline
             }
         
-        left_layout.addWidget(monitor_group)
+        left_layout.addWidget(monitor_group, 0)  # No stretch factor - fixed size
         # Set fixed height for Real-Time Monitoring to prevent resizing
         monitor_group.setMinimumHeight(120)  # Grid (90px) + refresh rate label + margins
         monitor_group.setMaximumHeight(120)
+        monitor_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
         plot_group = QtWidgets.QGroupBox('Feedback vs DAC Output Voltage')
         plot_layout = QtWidgets.QVBoxLayout(plot_group)
+        plot_layout.setContentsMargins(5, 5, 5, 5)  # Add margins inside plot group
+        plot_layout.setSpacing(0)  # No spacing inside plot group
+        plot_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)  # Prevent compression
         if matplotlib_available:
             try:
                 self._init_plot()
                 if hasattr(self, 'plot_canvas') and self.plot_canvas is not None:
-                    plot_layout.addWidget(self.plot_canvas)
+                    # Set size constraints on plot canvas to prevent expansion beyond group bounds
+                    self.plot_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                    # Calculate available height: 300px (group) - ~20px (title) - 10px (margins) = 270px
+                    self.plot_canvas.setMinimumHeight(270)
+                    self.plot_canvas.setMaximumHeight(270)
+                    self.plot_canvas.setMinimumWidth(100)  # Allow horizontal expansion but constrain vertically
+                    plot_layout.addWidget(self.plot_canvas, 0, QtCore.Qt.AlignTop)  # Align to top, no stretch
                     plot_group.setVisible(True)
                 else:
                     no_plot_label = QtWidgets.QLabel('Plot initialization failed.')
@@ -1401,23 +1416,33 @@ class BaseGUI(QtWidgets.QMainWindow):
             no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
             plot_layout.addWidget(no_plot_label)
             plot_group.setVisible(False)
-        left_layout.addWidget(plot_group)
+        left_layout.addWidget(plot_group, 0)  # No stretch factor - fixed size
         # Set fixed height for Plot section to prevent resizing
         plot_group.setMinimumHeight(300)  # Adjust based on desired plot size
         plot_group.setMaximumHeight(300)
+        plot_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
         self.test_log.setReadOnly(True)
+        # Set size constraints on log widget to prevent expansion beyond group bounds
+        self.test_log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        # Calculate available height: 200px (group) - ~20px (title) - 10px (margins) = 170px
+        self.test_log.setMinimumHeight(170)
+        self.test_log.setMaximumHeight(170)
         
         # Log in a group
         log_group = QtWidgets.QGroupBox('Execution Log')
         log_layout = QtWidgets.QVBoxLayout(log_group)
-        log_layout.addWidget(self.test_log)
-        left_layout.addWidget(log_group)
+        log_layout.setContentsMargins(5, 5, 5, 5)  # Add margins inside log group
+        log_layout.setSpacing(0)  # No spacing inside log group
+        log_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)  # Prevent compression
+        log_layout.addWidget(self.test_log, 0, QtCore.Qt.AlignTop)  # Align to top, no stretch
+        left_layout.addWidget(log_group, 0)  # No stretch factor - fixed size
         # Set fixed height for Execution Log to prevent resizing
         log_group.setMinimumHeight(200)  # Adjust based on desired log size
         log_group.setMaximumHeight(200)
+        log_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         
         # Add left column to main layout (with stretch to take remaining space)
         main_layout.addWidget(left_column, 1)  # Stretch factor 1
@@ -2620,8 +2645,13 @@ Data Points Used: {data_points}"""
             return
         try:
             # Create figure and canvas
+            # Note: figsize is in inches, but actual size will be constrained by setMinimumHeight/setMaximumHeight
             self.plot_figure = Figure(figsize=(8, 4))
             self.plot_canvas = FigureCanvasQTAgg(self.plot_figure)
+            # Set size policy to respect parent constraints - Fixed vertically to prevent expansion
+            self.plot_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            # Ensure canvas respects maximum height constraint
+            self.plot_canvas.setMaximumHeight(270)
             self.plot_axes = self.plot_figure.add_subplot(111)
             
             # Initialize data storage
