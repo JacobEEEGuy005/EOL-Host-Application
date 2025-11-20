@@ -159,50 +159,11 @@ class TestExecutionThread(QtCore.QThread):
                 
                 logger.info(f"Executing test {i+1}/{total_tests}: {test_name} (test_mode={current_test_mode})")
                 
-                # Handle test mode check based on previous test mode
+                # Handle test mode checks for every test
                 if previous_test_mode is None:
-                    # First test - always do full test mode check
                     logger.info("First test in sequence - performing full test mode check")
-                    test_mode_check_passed = False
-                    while not test_mode_check_passed:
-                        # Check if paused or cancelled
-                        if self._stop_requested:
-                            cancelled = True
-                            break
-                        
-                        # Perform test mode check
-                        check_passed, check_msg = self.test_runner.check_test_mode(test)
-                        
-                        if check_passed:
-                            test_mode_check_passed = True
-                            logger.info(f"Test mode check passed for {test_name}: {check_msg}")
-                        else:
-                            # Pause test sequence
-                            self._pause_lock.lock()
-                            self._is_paused = True
-                            self.sequence_paused.emit()
-                            
-                            # Show warning dialog (must be done in main thread via signal)
-                            logger.warning(f"Test mode mismatch for {test_name}: {check_msg}")
-                            self.test_mode_mismatch.emit(test_name, check_msg)
-                            
-                            # Wait for resume
-                            logger.info(f"Waiting for resume after test mode mismatch for {test_name}")
-                            self._pause_condition.wait(self._pause_lock)
-                            self._is_paused = False
-                            self._pause_lock.unlock()
-                            
-                            # When resumed, loop will check again
-                            logger.info(f"Resumed after test mode mismatch for {test_name}, re-checking...")
-                    
-                    # If cancelled during test mode check, break out
-                    if self._stop_requested:
-                        cancelled = True
-                        break
-                        
                 elif current_test_mode == previous_test_mode:
-                    # Test modes match - skip test mode check and proceed directly
-                    logger.info(f"Test mode matches previous test ({current_test_mode}) - skipping test mode check and proceeding")
+                    logger.info(f"Test mode matches previous test ({current_test_mode}) - refreshing command and verifying again")
                 else:
                     # Test modes don't match - send Idle (0) first, then set new test mode
                     logger.info(f"Test mode changed from {previous_test_mode} to {current_test_mode} - sending Idle (0) command first")
@@ -210,44 +171,44 @@ class TestExecutionThread(QtCore.QThread):
                     if not idle_success:
                         logger.warning(f"Failed to send Idle command: {idle_msg}")
                         # Continue anyway - may still work
-                    
-                    # Now do normal test mode check for the new test mode
-                    test_mode_check_passed = False
-                    while not test_mode_check_passed:
-                        # Check if paused or cancelled
-                        if self._stop_requested:
-                            cancelled = True
-                            break
-                        
-                        # Perform test mode check
-                        check_passed, check_msg = self.test_runner.check_test_mode(test)
-                        
-                        if check_passed:
-                            test_mode_check_passed = True
-                            logger.info(f"Test mode check passed for {test_name}: {check_msg}")
-                        else:
-                            # Pause test sequence
-                            self._pause_lock.lock()
-                            self._is_paused = True
-                            self.sequence_paused.emit()
-                            
-                            # Show warning dialog (must be done in main thread via signal)
-                            logger.warning(f"Test mode mismatch for {test_name}: {check_msg}")
-                            self.test_mode_mismatch.emit(test_name, check_msg)
-                            
-                            # Wait for resume
-                            logger.info(f"Waiting for resume after test mode mismatch for {test_name}")
-                            self._pause_condition.wait(self._pause_lock)
-                            self._is_paused = False
-                            self._pause_lock.unlock()
-                            
-                            # When resumed, loop will check again
-                            logger.info(f"Resumed after test mode mismatch for {test_name}, re-checking...")
-                    
-                    # If cancelled during test mode check, break out
+                
+                # Always perform test mode check to send command periodically for this test
+                test_mode_check_passed = False
+                while not test_mode_check_passed:
+                    # Check if paused or cancelled
                     if self._stop_requested:
                         cancelled = True
                         break
+                    
+                    # Perform test mode check (sends set_dut_test_mode_signal periodically)
+                    check_passed, check_msg = self.test_runner.check_test_mode(test)
+                    
+                    if check_passed:
+                        test_mode_check_passed = True
+                        logger.info(f"Test mode check passed for {test_name}: {check_msg}")
+                    else:
+                        # Pause test sequence
+                        self._pause_lock.lock()
+                        self._is_paused = True
+                        self.sequence_paused.emit()
+                        
+                        # Show warning dialog (must be done in main thread via signal)
+                        logger.warning(f"Test mode mismatch for {test_name}: {check_msg}")
+                        self.test_mode_mismatch.emit(test_name, check_msg)
+                        
+                        # Wait for resume
+                        logger.info(f"Waiting for resume after test mode mismatch for {test_name}")
+                        self._pause_condition.wait(self._pause_lock)
+                        self._is_paused = False
+                        self._pause_lock.unlock()
+                        
+                        # When resumed, loop will check again
+                        logger.info(f"Resumed after test mode mismatch for {test_name}, re-checking...")
+                
+                # If cancelled during test mode check, break out
+                if self._stop_requested:
+                    cancelled = True
+                    break
                 
                 start_time = time.time()
                 test_paused = False  # Flag to track if test requested pause (not a failure)

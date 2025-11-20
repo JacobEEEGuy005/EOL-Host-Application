@@ -25,7 +25,8 @@ try:
         CAN_ID_MIN, CAN_ID_MAX, DWELL_TIME_DEFAULT, DWELL_TIME_MIN,
         SLEEP_INTERVAL_SHORT, SLEEP_INTERVAL_MEDIUM, MSG_TYPE_SET_RELAY,
         DAC_VOLTAGE_MIN, DAC_VOLTAGE_MAX, DAC_SETTLING_TIME_MS, DATA_COLLECTION_PERIOD_MS,
-        POLL_INTERVAL_MS, TEST_MODE_CONTINUOUS_MATCH_REQUIRED, TEST_MODE_TOTAL_TIMEOUT
+        POLL_INTERVAL_MS, TEST_MODE_CONTINUOUS_MATCH_REQUIRED, TEST_MODE_TOTAL_TIMEOUT,
+        TEST_MODE_SIGNAL_RESEND_INTERVAL
     )
 except ImportError:
     logger.error("Failed to import constants")
@@ -43,6 +44,7 @@ except ImportError:
     POLL_INTERVAL_MS = 50
     TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0
     TEST_MODE_TOTAL_TIMEOUT = 5.0
+    TEST_MODE_SIGNAL_RESEND_INTERVAL = 1.0
 
 # Import adapter interface
 try:
@@ -181,71 +183,16 @@ class TestRunner:
         dut_test_status_signal = self.eol_hw_config.get('dut_test_status_signal')
         
         # Step 1: Send test mode value to DUT using Set DUT Test Mode Signal
+        next_resend_time = None
         if eol_cmd_msg_id and set_dut_test_mode_signal:
-            logger.info(f"Sending test mode {test_mode} to DUT using signal {set_dut_test_mode_signal} (CAN ID: 0x{eol_cmd_msg_id:X})")
-            
-            try:
-                # Check if CAN service and DBC service are available
-                if not self.can_service or not self.can_service.is_connected():
-                    logger.warning("CAN service not connected - cannot send test mode command")
-                    return False, "CAN service not connected - cannot send test mode command"
-                
-                if not self.dbc_service or not self.dbc_service.is_loaded():
-                    logger.warning("DBC service not loaded - cannot encode test mode command")
-                    return False, "DBC service not loaded - cannot encode test mode command"
-                
-                # Find the command message
-                cmd_msg = self.dbc_service.find_message_by_id(eol_cmd_msg_id)
-                if cmd_msg is None:
-                    logger.warning(f"Could not find message for CAN ID 0x{eol_cmd_msg_id:X}")
-                    return False, f"Could not find message for CAN ID 0x{eol_cmd_msg_id:X}"
-                
-                # Prepare signal values for encoding
-                signal_values = {}
-                mux_value = None
-                
-                # Check if signal is multiplexed
-                for sig in getattr(cmd_msg, 'signals', []):
-                    if sig.name == set_dut_test_mode_signal:
-                        if getattr(sig, 'multiplexer_ids', None):
-                            mux_value = sig.multiplexer_ids[0]
-                        break
-                
-                # Set MessageType if signal is multiplexed
-                if mux_value is not None:
-                    signal_values['MessageType'] = mux_value
-                
-                # Add DeviceID if message requires it (check if DeviceID signal exists)
-                for sig in getattr(cmd_msg, 'signals', []):
-                    if sig.name == 'DeviceID':
-                        signal_values['DeviceID'] = 0  # Default device ID, adjust if needed
-                        break
-                
-                # Set the test mode signal value
-                signal_values[set_dut_test_mode_signal] = test_mode
-                
-                # Encode the message
-                frame_data = self.dbc_service.encode_message(cmd_msg, signal_values)
-                
-                # Create and send frame
-                frame = AdapterFrame(
-                    can_id=eol_cmd_msg_id,
-                    data=frame_data,
-                    timestamp=None
-                )
-                
-                if not self.can_service.send_frame(frame):
-                    logger.error(f"Failed to send test mode command to DUT")
-                    return False, "Failed to send test mode command to DUT"
-                
-                logger.info(f"Successfully sent test mode {test_mode} to DUT")
-                
-                # Small delay to allow DUT to process the command
-                time.sleep(0.1)
-                
-            except Exception as e:
-                logger.error(f"Error sending test mode command: {e}", exc_info=True)
-                return False, f"Error sending test mode command: {e}"
+            send_success, send_msg = self.send_test_mode_command(test_mode)
+            if not send_success:
+                return False, send_msg
+            # Schedule next resend 1 second from now
+            next_resend_time = time.time() + TEST_MODE_SIGNAL_RESEND_INTERVAL
+            logger.debug(f"Initial test mode command sent: {test_mode}, next resend scheduled at {next_resend_time:.2f}")
+            # Small delay to allow DUT to process the command
+            time.sleep(0.1)
         else:
             logger.info("EOL Command Message or Set DUT Test Mode Signal not configured - skipping test mode command")
         
@@ -270,6 +217,21 @@ class TestRunner:
         last_value = None
         
         while time.time() - start_time < total_timeout:
+            current_time = time.time()
+            
+            # Periodically re-send test mode command until match confirmed
+            # This happens first to ensure we keep sending even if signal reading fails
+            if next_resend_time is not None and current_time >= next_resend_time:
+                resend_success, resend_msg = self.send_test_mode_command(test_mode)
+                if resend_success:
+                    # Schedule next resend exactly 1 second from now
+                    next_resend_time = current_time + TEST_MODE_SIGNAL_RESEND_INTERVAL
+                    logger.debug(f"Re-sent test mode command: {test_mode} (periodic 1Hz), next resend at {next_resend_time:.2f}")
+                else:
+                    logger.warning(f"Failed to resend test mode command: {resend_msg}")
+                    # Schedule retry after interval even if failed
+                    next_resend_time = current_time + TEST_MODE_SIGNAL_RESEND_INTERVAL
+            
             # Read signal value
             if self.signal_service:
                 ts, val = self.signal_service.get_latest_signal(

@@ -15,7 +15,7 @@
         "acquisition_time_ms": 3000
       },
       "created_at": "2025-11-17T05:10:07.275563Z",
-      "test_mode": 2
+      "test_mode": 0
     },
     {
       "name": "Charger Ouput Current Sensor Calibation",
