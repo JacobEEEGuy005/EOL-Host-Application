@@ -654,17 +654,19 @@ Specify the UI fields needed:
   - Dialog should be non-dismissible (user must click Yes or No)
 
 ### Plot Requirements
-- **Needs Plot**: `Yes` - Two plots required (one for each sweep)
+- **Needs Plot**: `Yes` - Two plots required (one for each sweep, displayed one at a time)
 - **Plot Type**: `Scatter plot (X-Y plot)` - Two separate scatter plots
 - **X-Axis**: `Oscilloscope Measurement (A)` - Reference measurement from oscilloscope
+- **X-Axis Title**: `Measured Output Current (A)`
 - **Y-Axis**: `DUT Measurement (A)` - DUT measurement from CAN feedback signal
+- **Y-Axis Title**: `DUT Output Current (A)`
 - **Update Frequency**: `After each setpoint completes (after calculating averages from CAN and oscilloscope)`
 - **Plot Features**: 
   - **First Sweep Plot**:
     - Real-time scatter plot updates during first sweep execution
     - Each point represents one current setpoint from first sweep
     - Plot title/label should indicate: "First Sweep (Trim Value: {initial_trim_value}%)"
-    - Ideal calibration line (Y = X) can be displayed for reference
+    - Ideal calibration line (Y = X) displayed before test starts
     - Regression line (from linear regression) should be displayed showing slope and intercept
     - Plot shows data points, ideal line, and regression line
   
@@ -673,11 +675,12 @@ Specify the UI fields needed:
     - Real-time scatter plot updates during second sweep execution
     - Each point represents one current setpoint from second sweep
     - Plot title/label should indicate: "Second Sweep (Trim Value: {calculated_trim_value}%)"
-    - Ideal calibration line (Y = X) can be displayed for reference
+    - Ideal calibration line (Y = X) displayed before test starts
     - Regression line (from linear regression) should be displayed showing slope and intercept
     - Plot shows data points, ideal line, and regression line
   
   - **Display Requirements**:
+    - Only one plot displayed at a time (first sweep, then cleared for second sweep)
     - Both plots must be displayed in the Test Detail window during and after test execution
     - Both plots must be included in the test report
     - Each plot must be clearly labeled with the trim value used for that sweep

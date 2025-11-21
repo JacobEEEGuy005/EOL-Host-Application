@@ -354,15 +354,24 @@ Specify the UI fields needed:
 
 ### Plot Requirements
 - **Needs Plot**: `Yes`
-- **Plot Type**: `Scatter plot or line plot (X-Y plot)`
-- **X-Axis**: `Oscilloscope Measurement (A)` - Reference measurement from oscilloscope
-- **Y-Axis**: `DUT Measurement (A)` - DUT measurement from CAN feedback signals
+- **Plot Type**: `Scatter plot (X-Y plot)` - Two subplots side by side
+- **Plot Title**: `DUT Phase Current vs Measured Phase Current` (centered between the two subplots)
+- **Subplot 1 (Phase V)**:
+  - **X-Axis**: `Oscilloscope Measurement Phase V (A)` - Reference measurement from oscilloscope
+  - **X-Axis Title**: `Measured Phase V Current (A)`
+  - **Y-Axis**: `DUT Phase V Current (A)` - DUT measurement from CAN feedback signals
+  - **Y-Axis Title**: `DUT Phase V Current (A)`
+- **Subplot 2 (Phase W)**:
+  - **X-Axis**: `Oscilloscope Measurement Phase W (A)` - Reference measurement from oscilloscope
+  - **X-Axis Title**: `Measured Phase W Current (A)`
+  - **Y-Axis**: `DUT Phase W Current (A)` - DUT measurement from CAN feedback signals
+  - **Y-Axis Title**: `DUT Phase W Current (A)`
 - **Update Frequency**: `After each test point completes (after steady-state analysis)`
 - **Plot Features**: 
   - Real-time plot updates during test execution
   - Each point represents one test point (Iq_ref value)
-  - Ideal calibration line (Y = X) can be displayed for reference
-  - Linear regression line can be displayed after test completion
+  - Ideal calibration line (Y = X) displayed before test starts
+  - Linear regression line displayed after test completion
 
 ### Real-Time Monitoring
 The Real-Time Monitoring section displays the following signals during test execution:

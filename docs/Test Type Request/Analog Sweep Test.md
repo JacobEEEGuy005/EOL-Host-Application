@@ -314,14 +314,19 @@ Specify the UI fields needed:
 
 ### Plot Requirements
 - **Needs Plot**: `Yes`
-- **Plot Type**: `Line plot (X-Y plot)`
+- **Plot Type**: `Scatter plot (X-Y plot)`
+- **Plot Title**: `DUT Calculated Voltage vs DAC Voltage Plot`
 - **X-Axis**: `DAC Voltage (mV)` - Commanded or measured DAC voltage
+- **X-Axis Title**: `DAC Voltage`
 - **Y-Axis**: `Feedback Value` - Feedback signal value from DUT
+- **Y-Axis Title**: `DUT Calculated Voltage`
 - **Update Frequency**: `During data collection period at each voltage step (real-time)`
 - **Plot Features**: 
   - Real-time plot updates during test execution
   - Each point represents one data sample (DAC voltage, feedback value)
   - Plot shows relationship between DAC voltage and feedback response
+  - Ideal calibration line (Y = X) displayed before test starts
+  - Linear regression line displayed after test completion
 
 ### Real-Time Monitoring
 The Real-Time Monitoring section displays the following signals during test execution:

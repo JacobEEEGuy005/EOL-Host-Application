@@ -2273,7 +2273,59 @@ Data Points Used: {data_points}"""
         plot_data = exec_data.get('plot_data')
         is_phase_current = test_config and test_config.get('type') == 'Phase Current Test'
         
-        if is_analog and plot_data and matplotlib_available:
+        # Check if this is Analog Sweep Test
+        is_analog_sweep = test_config and test_config.get('type') == 'Analog Sweep Test'
+        if is_analog_sweep and plot_data and matplotlib_available:
+            plot_dac_voltages = plot_data.get('dac_voltages', [])
+            plot_feedback_values = plot_data.get('feedback_values', [])
+            
+            if plot_dac_voltages and plot_feedback_values and len(plot_dac_voltages) == len(plot_feedback_values):
+                plot_label = QtWidgets.QLabel(f'<b>DUT Calculated Voltage vs DAC Voltage Plot:</b>')
+                layout.addWidget(plot_label)
+                
+                try:
+                    # Create a new figure and canvas for the dialog
+                    plot_figure = Figure(figsize=(6, 4))
+                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                    plot_axes = plot_figure.add_subplot(111)
+                    
+                    # Plot the data as scatter plot
+                    plot_axes.plot(plot_dac_voltages, plot_feedback_values, 'bo', markersize=6, label='Data Points')
+                    # Add ideal line (y=x)
+                    plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                    
+                    # Add regression line if available
+                    slope = plot_data.get('slope')
+                    intercept = plot_data.get('intercept')
+                    if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                        x_min = min(plot_dac_voltages)
+                        x_max = max(plot_dac_voltages)
+                        x_reg = [x_min, x_max]
+                        y_reg = [slope * x + intercept for x in x_reg]
+                        plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                    
+                    plot_axes.set_xlabel('DAC Voltage')
+                    plot_axes.set_ylabel('DUT Calculated Voltage')
+                    plot_axes.set_title(f'DUT Calculated Voltage vs DAC Voltage Plot{(": " + test_name) if test_name else ""}')
+                    plot_axes.grid(True, alpha=0.3)
+                    plot_axes.legend()
+                    
+                    # Auto-scale axes to fit all data
+                    plot_axes.relim()
+                    plot_axes.autoscale()
+                    
+                    # Tight layout
+                    plot_figure.tight_layout()
+                    
+                    # Add canvas to layout
+                    layout.addWidget(plot_canvas)
+                except Exception as e:
+                    logger.error(f"Error creating plot in test details dialog: {e}", exc_info=True)
+                    error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                    error_label.setStyleSheet('color: red;')
+                    layout.addWidget(error_label)
+        elif is_analog and plot_data and matplotlib_available:
+            # Other analog tests (backward compatibility)
             plot_dac_voltages = plot_data.get('dac_voltages', [])
             plot_feedback_values = plot_data.get('feedback_values', [])
             
@@ -2318,7 +2370,7 @@ Data Points Used: {data_points}"""
             plot_osc_w = plot_data.get('osc_ch2', [])
             
             if (plot_can_v or plot_osc_v or plot_can_w or plot_osc_w):
-                plot_label = QtWidgets.QLabel(f'<b>Average Phase Current: CAN vs Oscilloscope Comparison:</b>')
+                plot_label = QtWidgets.QLabel(f'<b>DUT Phase Current vs Measured Phase Current:</b>')
                 layout.addWidget(plot_label)
                 
                 try:
@@ -2348,10 +2400,20 @@ Data Points Used: {data_points}"""
                         plot_axes_v.plot(osc_v_clean, can_v_clean, 'bo', markersize=6, label='Phase V')
                         # Add diagonal reference line (y=x)
                         plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                        
+                        # Add regression line if available
+                        slope_v = plot_data.get('slope_v')
+                        intercept_v = plot_data.get('intercept_v')
+                        if slope_v is not None and intercept_v is not None and isinstance(slope_v, (int, float)) and isinstance(intercept_v, (int, float)):
+                            x_min = min(osc_v_clean)
+                            x_max = max(osc_v_clean)
+                            x_reg = [x_min, x_max]
+                            y_reg = [slope_v * x + intercept_v for x in x_reg]
+                            plot_axes_v.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope_v:.4f})')
                     
-                    plot_axes_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
-                    plot_axes_v.set_ylabel('Average Phase V Current from CAN (A)')
-                    plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
+                    plot_axes_v.set_xlabel('Measured Phase V Current (A)')
+                    plot_axes_v.set_ylabel('DUT Phase V Current (A)')
+                    plot_axes_v.set_title('')  # Remove subplot title, main title is centered
                     plot_axes_v.grid(True, alpha=0.3)
                     plot_axes_v.legend()
                     
@@ -2377,15 +2439,28 @@ Data Points Used: {data_points}"""
                         plot_axes_w.plot(osc_w_clean, can_w_clean, 'ro', markersize=6, label='Phase W')
                         # Add diagonal reference line (y=x)
                         plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                        
+                        # Add regression line if available
+                        slope_w = plot_data.get('slope_w')
+                        intercept_w = plot_data.get('intercept_w')
+                        if slope_w is not None and intercept_w is not None and isinstance(slope_w, (int, float)) and isinstance(intercept_w, (int, float)):
+                            x_min = min(osc_w_clean)
+                            x_max = max(osc_w_clean)
+                            x_reg = [x_min, x_max]
+                            y_reg = [slope_w * x + intercept_w for x in x_reg]
+                            plot_axes_w.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope_w:.4f})')
                     
-                    plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
-                    plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
-                    plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+                    plot_axes_w.set_xlabel('Measured Phase W Current (A)')
+                    plot_axes_w.set_ylabel('DUT Phase W Current (A)')
+                    plot_axes_w.set_title('')  # Remove subplot title, main title is centered
                     plot_axes_w.grid(True, alpha=0.3)
                     plot_axes_w.legend()
                     
+                    # Main title centered between subplots
+                    plot_figure.suptitle('DUT Phase Current vs Measured Phase Current', fontsize=12, y=0.98)
+                    
                     # Tight layout
-                    plot_figure.tight_layout()
+                    plot_figure.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for suptitle
                     
                     # Add canvas to layout
                     layout.addWidget(plot_canvas)
@@ -2481,8 +2556,8 @@ Data Points Used: {data_points}"""
                                     y_reg = [slope * x + intercept for x in x_reg]
                                     plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
                                 
-                                plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-                                plot_axes.set_ylabel('DUT Measurement (A)')
+                                plot_axes.set_xlabel('Measured Output Current (A)')
+                                plot_axes.set_ylabel('DUT Output Current (A)')
                                 plot_axes.set_title(plot_title)
                                 plot_axes.grid(True, alpha=0.3)
                                 plot_axes.legend()
@@ -2607,8 +2682,8 @@ Data Points Used: {data_points}"""
                                 y_reg = [slope * x + intercept for x in x_reg]
                                 plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
                             
-                            plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-                            plot_axes.set_ylabel('DUT Measurement (A)')
+                            plot_axes.set_xlabel('Measured Output Current (A)')
+                            plot_axes.set_ylabel('DUT Output Current (A)')
                             plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
                             plot_axes.grid(True, alpha=0.3)
                             plot_axes.legend()
@@ -2743,15 +2818,69 @@ Data Points Used: {data_points}"""
                 self.plot_can_values = []
             if hasattr(self, '_output_current_plot_initialized'):
                 self._output_current_plot_initialized = False
-            self.plot_line.set_data([], [])
+            if hasattr(self, '_analog_sweep_plot_initialized'):
+                self._analog_sweep_plot_initialized = False
+            if hasattr(self, '_analog_sweep_regression_line'):
+                self._analog_sweep_regression_line = None
+            # Clear plot and set to "Nil" for non-plot tests
+            self.plot_axes.clear()
+            self.plot_axes.set_xlabel('Nil')
+            self.plot_axes.set_ylabel('Nil')
+            self.plot_axes.set_title('Nil')
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+            # Create empty plot line
+            if hasattr(self, 'plot_line') and self.plot_line is not None:
+                self.plot_line.set_data([], [])
+            else:
+                self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.relim()
             self.plot_axes.autoscale()
+            self.plot_figure.tight_layout()
             self.plot_canvas.draw_idle()
         except Exception as e:
             logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
     
-    def _initialize_output_current_plot(self, test_name: Optional[str] = None) -> None:
+    def _initialize_output_current_plot(self, test_name: Optional[str] = None, sweep_title: Optional[str] = None) -> None:
         """Initialize the plot for Output Current Calibration test with proper labels and title.
+        
+        Args:
+            test_name: Optional test name to include in the plot title
+            sweep_title: Optional sweep title (e.g., "First Sweep (Trim Value: X%)" or "Second Sweep (Trim Value: Y%)")
+        """
+        if not matplotlib_available:
+            logger.debug("Matplotlib not available, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            logger.debug("Plot axes not initialized, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+            logger.debug("Plot canvas not initialized, skipping plot initialization")
+            return
+        try:
+            self.plot_axes.clear()
+            self.plot_axes.set_xlabel('Measured Output Current (A)')
+            self.plot_axes.set_ylabel('DUT Output Current (A)')
+            # Use sweep_title if provided, otherwise use default title
+            if sweep_title:
+                plot_title = sweep_title
+            else:
+                plot_title = f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}'
+            self.plot_axes.set_title(plot_title)
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+            # Add diagonal reference line (y=x) for ideal line - displayed before test starts
+            self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            # Create scatter plot for Output Current Calibration
+            self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+            self.plot_axes.legend()
+            self.plot_figure.tight_layout()
+            self.plot_canvas.draw_idle()
+            self._output_current_plot_initialized = True
+            logger.debug(f"Initialized plot for Output Current Calibration: {plot_title}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
+    
+    def _initialize_analog_sweep_plot(self, test_name: Optional[str] = None) -> None:
+        """Initialize the plot for Analog Sweep Test with proper labels and title.
         
         Args:
             test_name: Optional test name to include in the plot title
@@ -2767,21 +2896,60 @@ Data Points Used: {data_points}"""
             return
         try:
             self.plot_axes.clear()
-            self.plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-            self.plot_axes.set_ylabel('DUT Measurement (A)')
-            self.plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+            self.plot_axes.set_xlabel('DAC Voltage')
+            self.plot_axes.set_ylabel('DUT Calculated Voltage')
+            plot_title = f'DUT Calculated Voltage vs DAC Voltage Plot{(": " + test_name) if test_name else ""}'
+            self.plot_axes.set_title(plot_title)
             self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
-            # Add diagonal reference line (y=x) for ideal line
+            # Add diagonal reference line (y=x) for ideal line - displayed before test starts
             self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            # Create scatter plot for Output Current Calibration
+            # Create scatter plot for Analog Sweep Test
             self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.legend()
             self.plot_figure.tight_layout()
             self.plot_canvas.draw_idle()
-            self._output_current_plot_initialized = True
-            logger.debug(f"Initialized plot for Output Current Calibration: {test_name}")
+            self._analog_sweep_plot_initialized = True
+            self._analog_sweep_regression_line = None
+            logger.debug(f"Initialized plot for Analog Sweep Test: {test_name}")
         except Exception as e:
-            logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
+            logger.error(f"Failed to initialize Analog Sweep Test plot: {e}", exc_info=True)
+    
+    def _initialize_plot_for_test_type(self, test: Dict[str, Any]) -> None:
+        """Initialize plot based on test type.
+        
+        Args:
+            test: Test dictionary containing test configuration
+        """
+        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            return
+        
+        test_type = test.get('type', '')
+        test_name = test.get('name', '')
+        
+        if test_type == 'Analog Sweep Test':
+            self._initialize_analog_sweep_plot(test_name)
+        elif test_type == 'Output Current Calibration':
+            self._initialize_output_current_plot(test_name)
+        elif test_type == 'Phase Current Test':
+            # Phase Current Test plot is initialized in phase_current_service.py
+            # Just clear the plot here
+            self._clear_plot()
+        else:
+            # For all other test types (no plot), set to "Nil"
+            try:
+                self.plot_axes.clear()
+                self.plot_axes.set_xlabel('Nil')
+                self.plot_axes.set_ylabel('Nil')
+                self.plot_axes.set_title('Nil')
+                self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+                if hasattr(self, 'plot_line') and self.plot_line is not None:
+                    self.plot_line.set_data([], [])
+                else:
+                    self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+                self.plot_figure.tight_layout()
+                self.plot_canvas.draw_idle()
+            except Exception as e:
+                logger.debug(f"Failed to set Nil plot: {e}", exc_info=True)
 
     def _create_sparkline_widget(self):
         """Create a small sparkline widget for value history visualization."""
@@ -3518,12 +3686,15 @@ Data Points Used: {data_points}"""
             logger.debug("Plot canvas not initialized, skipping plot update")
             return
         try:
-            # Detect Output Current Calibration test by checking current test type
+            # Detect test type by checking current test type
             is_output_current_calibration = False
+            is_analog_sweep = False
             if hasattr(self, '_current_test_index') and self._current_test_index is not None:
                 if self._current_test_index < len(self._tests):
                     current_test = self._tests[self._current_test_index]
-                    is_output_current_calibration = current_test.get('type') == 'Output Current Calibration'
+                    test_type = current_test.get('type', '')
+                    is_output_current_calibration = test_type == 'Output Current Calibration'
+                    is_analog_sweep = test_type == 'Analog Sweep Test'
             
             # Add new data point
             if dac_voltage is not None and feedback_value is not None:
@@ -3531,19 +3702,7 @@ Data Points Used: {data_points}"""
                     # For Output Current Calibration: X = oscilloscope (dac_voltage param), Y = CAN (feedback_value param)
                     # Initialize plot for Output Current Calibration if not already done
                     if not hasattr(self, '_output_current_plot_initialized') or not self._output_current_plot_initialized:
-                        self.plot_axes.clear()
-                        self.plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-                        self.plot_axes.set_ylabel('DUT Measurement (A)')
-                        self.plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
-                        self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
-                        # Add diagonal reference line (y=x) for ideal line
-                        self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-                        # Create scatter plot for Output Current Calibration
-                        self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
-                        self.plot_axes.legend()
-                        self.plot_figure.tight_layout()
-                        self._output_current_plot_initialized = True
-                        logger.debug("Initialized plot for Output Current Calibration")
+                        self._initialize_output_current_plot(test_name)
                     
                     # Store data points (oscilloscope as X, CAN as Y)
                     if not hasattr(self, 'plot_osc_values'):
@@ -3561,6 +3720,32 @@ Data Points Used: {data_points}"""
                     
                     # Update plot line
                     self.plot_line.set_data(self.plot_osc_values, self.plot_can_values)
+                elif is_analog_sweep:
+                    # For Analog Sweep Test: X = DAC voltage, Y = feedback value (scatter plot)
+                    # Initialize plot for Analog Sweep Test if not already done
+                    if not hasattr(self, '_analog_sweep_plot_initialized') or not self._analog_sweep_plot_initialized:
+                        self._initialize_analog_sweep_plot(test_name)
+                    
+                    # Store data points
+                    self.plot_dac_voltages.append(float(dac_voltage))
+                    self.plot_feedback_values.append(float(feedback_value))
+                    
+                    logger.debug(
+                        f"Plot update (Analog Sweep): Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
+                        f"total points: {len(self.plot_dac_voltages)}"
+                    )
+                    
+                    # Update plot line (scatter plot)
+                    self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
+                    
+                    # Update real-time monitoring for Analog Sweep Test
+                    if 'current_signal' in self._monitor_labels:
+                        # Convert DAC voltage from mV to V for display
+                        dac_voltage_v = dac_voltage / 1000.0
+                        self._update_signal_with_status('current_signal', dac_voltage_v)
+                    
+                    if 'feedback_signal' in self._monitor_labels:
+                        self._update_signal_with_status('feedback_signal', feedback_value)
                 else:
                     # For other tests: X = DAC voltage, Y = feedback value
                     self.plot_dac_voltages.append(float(dac_voltage))
@@ -3573,25 +3758,10 @@ Data Points Used: {data_points}"""
                     
                     # Update plot line
                     self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
-                    
-                    # Update title if test name provided (for non-Output Current tests)
-                    if test_name and not self.plot_axes.get_title():
-                        self.plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
                 
                 # Auto-scale axes to fit all data
                 self.plot_axes.relim()
                 self.plot_axes.autoscale()
-                
-                # Update real-time monitoring for Analog Sweep Test
-                if not is_output_current_calibration:
-                    # For Analog Sweep Test: update current_signal (DAC voltage) and feedback_signal
-                    if 'current_signal' in self._monitor_labels:
-                        # Convert DAC voltage from mV to V for display
-                        dac_voltage_v = dac_voltage / 1000.0
-                        self._update_signal_with_status('current_signal', dac_voltage_v)
-                    
-                    if 'feedback_signal' in self._monitor_labels:
-                        self._update_signal_with_status('feedback_signal', feedback_value)
                 
                 # Force immediate redraw (draw_idle may not refresh fast enough)
                 self.plot_canvas.draw()
@@ -3600,6 +3770,38 @@ Data Points Used: {data_points}"""
                 self.plot_canvas.draw_idle()
         except Exception as e:
             logger.error(f"Error updating plot: {e}", exc_info=True)
+    
+    def _add_regression_line_to_plot(self, slope: float, intercept: float) -> None:
+        """Add regression line to the current plot after test completion.
+        
+        Args:
+            slope: Slope of the regression line
+            intercept: Intercept of the regression line
+        """
+        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            return
+        
+        try:
+            # Remove existing regression line if present
+            if hasattr(self, '_analog_sweep_regression_line') and self._analog_sweep_regression_line is not None:
+                try:
+                    self._analog_sweep_regression_line.remove()
+                except Exception:
+                    pass
+            
+            # Get current data range
+            if hasattr(self, 'plot_dac_voltages') and self.plot_dac_voltages:
+                x_min = min(self.plot_dac_voltages)
+                x_max = max(self.plot_dac_voltages)
+                x_reg = [x_min, x_max]
+                y_reg = [slope * x + intercept for x in x_reg]
+                self._analog_sweep_regression_line, = self.plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                self.plot_axes.legend()
+                self.plot_figure.tight_layout()
+                self.plot_canvas.draw_idle()
+                logger.debug(f"Added regression line: slope={slope:.4f}, intercept={intercept:.4f}")
+        except Exception as e:
+            logger.error(f"Failed to add regression line to plot: {e}", exc_info=True)
 
     def _build_test_report(self):
         """Builds the Test Report tab widget with interactive UI and export capabilities."""
@@ -3938,10 +4140,32 @@ Data Points Used: {data_points}"""
                             plot_canvas = FigureCanvasQTAgg(plot_figure)
                             plot_axes = plot_figure.add_subplot(111)
                             
-                            plot_axes.plot(dac_voltages, feedback_values, 'bo-', markersize=4, linewidth=1)
-                            plot_axes.set_xlabel('DAC Output Voltage (mV)')
-                            plot_axes.set_ylabel('Feedback Signal Value')
-                            plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
+                            # Check if this is Analog Sweep Test
+                            is_analog_sweep = test_config and test_config.get('type') == 'Analog Sweep Test'
+                            if is_analog_sweep:
+                                # Scatter plot for Analog Sweep Test
+                                plot_axes.plot(dac_voltages, feedback_values, 'bo', markersize=4, label='Data Points')
+                                # Add ideal line (y=x)
+                                plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                # Add regression line if available
+                                slope = plot_data.get('slope')
+                                intercept = plot_data.get('intercept')
+                                if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                                    x_min = min(dac_voltages)
+                                    x_max = max(dac_voltages)
+                                    x_reg = [x_min, x_max]
+                                    y_reg = [slope * x + intercept for x in x_reg]
+                                    plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                plot_axes.set_xlabel('DAC Voltage')
+                                plot_axes.set_ylabel('DUT Calculated Voltage')
+                                plot_axes.set_title(f'DUT Calculated Voltage vs DAC Voltage Plot: {test_name}')
+                                plot_axes.legend()
+                            else:
+                                # Other analog tests (backward compatibility)
+                                plot_axes.plot(dac_voltages, feedback_values, 'bo-', markersize=4, linewidth=1)
+                                plot_axes.set_xlabel('DAC Output Voltage (mV)')
+                                plot_axes.set_ylabel('Feedback Signal Value')
+                                plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
                             plot_axes.grid(True, alpha=0.3)
                             
                             plot_figure.tight_layout()
@@ -4163,8 +4387,8 @@ Data Points Used: {data_points}"""
                                             y_reg = [slope * x + intercept for x in x_reg]
                                             plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
                                         
-                                        plot_axes.set_xlabel('Oscilloscope Measurement (A)')
-                                        plot_axes.set_ylabel('DUT Measurement (A)')
+                                        plot_axes.set_xlabel('Measured Output Current (A)')
+                                        plot_axes.set_ylabel('DUT Output Current (A)')
                                         plot_axes.set_title(plot_title)
                                         plot_axes.grid(True, alpha=0.3)
                                         plot_axes.legend()
@@ -14917,6 +15141,10 @@ Data Points Used: {data_points}"""
             if test_index < len(self._tests):
                 t = self._tests[test_index]
                 self._update_test_plan_row(t, 'Running...', 'N/A', 'Test execution in progress...')
+                
+                # Initialize plot for this test type (before clearing, so we know what to initialize)
+                # Note: plot_clear_callback is called in test_runner, but we initialize here to ensure proper setup
+                self._initialize_plot_for_test_type(t)
                 
                 # Configure real-time monitoring for this test
                 self.reset_monitor_signals(t)

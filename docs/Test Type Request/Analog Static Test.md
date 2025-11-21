@@ -242,8 +242,10 @@ Specify the UI fields needed:
 ### Plot Requirements
 - **Needs Plot**: `No`
 - **Plot Type**: `N/A`
-- **X-Axis**: `N/A`
-- **Y-Axis**: `N/A`
+- **Plot Title**: `Nil`
+- **X-Axis Title**: `Nil`
+- **Y-Axis Title**: `Nil`
+- **Plot**: `Empty`
 - **Update Frequency**: `N/A`
 
 ### Real-Time Monitoring

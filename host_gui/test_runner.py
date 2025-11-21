@@ -1190,6 +1190,16 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Failed to clear plot: {e}")
                 
+                # Initialize plot for Analog Sweep Test
+                test_type = test.get('type', '')
+                if test_type == 'Analog Sweep Test':
+                    test_name = test.get('name', '')
+                    if self.gui is not None and hasattr(self.gui, '_initialize_analog_sweep_plot'):
+                        try:
+                            self.gui._initialize_analog_sweep_plot(test_name)
+                        except Exception as e:
+                            logger.debug(f"Failed to initialize Analog Sweep Test plot: {e}")
+                
                 # Clear signal cache before starting analog test to ensure fresh timestamps
                 # This prevents stale cached feedback values from previous tests from being used
                 try:
@@ -1344,9 +1354,55 @@ class TestRunner:
                     try:
                         if self.gui is not None and hasattr(self.gui, 'plot_dac_voltages') and hasattr(self.gui, 'plot_feedback_values'):
                             if self.gui.plot_dac_voltages and self.gui.plot_feedback_values:
+                                dac_voltages = list(self.gui.plot_dac_voltages)
+                                feedback_values = list(self.gui.plot_feedback_values)
+                                
+                                # Calculate linear regression: feedback = slope * dac + intercept
+                                # X-axis: DAC voltage, Y-axis: Feedback value
+                                slope = None
+                                intercept = None
+                                if len(dac_voltages) >= 2 and len(feedback_values) >= 2:
+                                    try:
+                                        # Filter out invalid data points
+                                        valid_dac = []
+                                        valid_feedback = []
+                                        min_len = min(len(dac_voltages), len(feedback_values))
+                                        for i in range(min_len):
+                                            dac_val = dac_voltages[i]
+                                            fb_val = feedback_values[i]
+                                            if (isinstance(dac_val, (int, float)) and isinstance(fb_val, (int, float)) and
+                                                not (isinstance(dac_val, float) and dac_val != dac_val) and
+                                                not (isinstance(fb_val, float) and fb_val != fb_val)):
+                                                valid_dac.append(float(dac_val))
+                                                valid_feedback.append(float(fb_val))
+                                        
+                                        if len(valid_dac) >= 2:
+                                            n = len(valid_dac)
+                                            sum_x = sum(valid_dac)
+                                            sum_y = sum(valid_feedback)
+                                            sum_xy = sum(x * y for x, y in zip(valid_dac, valid_feedback))
+                                            sum_x2 = sum(x * x for x in valid_dac)
+                                            
+                                            denominator = n * sum_x2 - sum_x * sum_x
+                                            if abs(denominator) >= 1e-10:
+                                                slope = (n * sum_xy - sum_x * sum_y) / denominator
+                                                intercept = (sum_y - slope * sum_x) / n
+                                                logger.info(f"Analog Sweep Test Linear Regression: Slope={slope:.6f}, Intercept={intercept:.6f}")
+                                                
+                                                # Add regression line to plot
+                                                if self.gui is not None and hasattr(self.gui, '_add_regression_line_to_plot'):
+                                                    try:
+                                                        self.gui._add_regression_line_to_plot(slope, intercept)
+                                                    except Exception as e:
+                                                        logger.debug(f"Failed to add regression line to plot: {e}")
+                                    except Exception as e:
+                                        logger.debug(f"Failed to calculate linear regression for Analog Sweep Test: {e}", exc_info=True)
+                                
                                 plot_data = {
-                                    'dac_voltages': list(self.gui.plot_dac_voltages),
-                                    'feedback_values': list(self.gui.plot_feedback_values)
+                                    'dac_voltages': dac_voltages,
+                                    'feedback_values': feedback_values,
+                                    'slope': slope,
+                                    'intercept': intercept
                                 }
                                 # Store plot data immediately in execution data (will be merged with other data later)
                                 # Use a temporary key structure that _on_test_finished can access

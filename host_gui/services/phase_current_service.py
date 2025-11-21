@@ -161,24 +161,29 @@ class PhaseCurrentTestStateMachine:
             self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'ro', markersize=6, label='Phase W')
             
             # Set labels and titles
-            self.gui.plot_axes_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
-            self.gui.plot_axes_v.set_ylabel('Average Phase V Current from CAN (A)')
-            self.gui.plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
-            self.gui.plot_axes_v.grid(True, alpha=0.3)
-            # Add diagonal reference line (y=x) for Phase V
-            self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            # Legend removed for Phase Current test
+            # Main title centered between subplots
+            self.gui.plot_figure.suptitle('DUT Phase Current vs Measured Phase Current', fontsize=12, y=0.98)
             
-            self.gui.plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
-            self.gui.plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
-            self.gui.plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+            # Subplot 1: Phase V
+            self.gui.plot_axes_v.set_xlabel('Measured Phase V Current (A)')
+            self.gui.plot_axes_v.set_ylabel('DUT Phase V Current (A)')
+            self.gui.plot_axes_v.set_title('')  # Remove subplot title, main title is centered
+            self.gui.plot_axes_v.grid(True, alpha=0.3)
+            # Add diagonal reference line (y=x) for Phase V - displayed before test starts
+            self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            self.gui.plot_axes_v.legend()
+            
+            # Subplot 2: Phase W
+            self.gui.plot_axes_w.set_xlabel('Measured Phase W Current (A)')
+            self.gui.plot_axes_w.set_ylabel('DUT Phase W Current (A)')
+            self.gui.plot_axes_w.set_title('')  # Remove subplot title, main title is centered
             self.gui.plot_axes_w.grid(True, alpha=0.3)
-            # Add diagonal reference line (y=x) for Phase W
+            # Add diagonal reference line (y=x) for Phase W - displayed before test starts
             self.gui.plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            # Legend removed for Phase Current test
+            self.gui.plot_axes_w.legend()
             
             # Tight layout
-            self.gui.plot_figure.tight_layout()
+            self.gui.plot_figure.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for suptitle
             
             # Update canvas
             self.gui.plot_canvas.draw()
