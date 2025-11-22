@@ -132,9 +132,20 @@ class TestRunner:
             
             if label_update_callback is None and hasattr(gui, '_update_signal_with_status'):
                 # Use the new enhanced signal update method
-                self.label_update_callback = lambda text: gui._update_signal_with_status('current_signal', text)
+                # Convert string to float if possible for proper formatting
+                def safe_update_signal(text):
+                    try:
+                        # Try to convert to float for proper unit formatting
+                        value = float(text) if isinstance(text, (str, int, float)) else text
+                        gui._update_signal_with_status('current_signal', value)
+                    except (ValueError, TypeError):
+                        # If conversion fails, use as-is
+                        gui._update_signal_with_status('current_signal', text)
+                self.label_update_callback = safe_update_signal
             elif label_update_callback is None and hasattr(gui, 'current_signal_label'):
-                # Fallback to old method for backwards compatibility
+                # Fallback to old method for backwards compatibility (deprecated)
+                # This path should not be used in new code - use update_monitor_signal() instead
+                logger.warning("Using deprecated label_update_callback fallback - consider updating to use update_monitor_signal()")
                 self.label_update_callback = lambda text: gui.current_signal_label.setText(str(text))
             else:
                 self.label_update_callback = label_update_callback
@@ -220,7 +231,7 @@ class TestRunner:
             except Exception as e:
                 logger.debug(f"Failed to update monitor signal '{key}': {e}")
 
-    def check_test_mode(self, test: Dict[str, Any]) -> Tuple[bool, str]:
+    def check_test_mode(self, test: Dict[str, Any], quick_check: bool = False) -> Tuple[bool, str]:
         """Check if DUT is in correct test mode before test execution.
         
         First sends the test mode value to DUT using Set DUT Test Mode Signal,
@@ -229,6 +240,9 @@ class TestRunner:
         
         Args:
             test: Test configuration dictionary with 'test_mode' field
+            quick_check: If True, do a quick check (single read) instead of full validation.
+                        Use this when test mode matches previous test and you just want to verify
+                        it's still correct. Returns immediately if match, otherwise returns False.
             
         Returns:
             Tuple of (success: bool, message: str)
@@ -254,6 +268,40 @@ class TestRunner:
         # Get DUT Feedback Message info for checking test status
         dut_feedback_msg_id = self.eol_hw_config.get('dut_feedback_message_id')
         dut_test_status_signal = self.eol_hw_config.get('dut_test_status_signal')
+        
+        # Quick check: If test mode matches previous test, do a single read to verify it's still correct
+        if quick_check:
+            if not dut_feedback_msg_id or not dut_test_status_signal:
+                # Can't do quick check without feedback signal, fall through to full check
+                logger.debug("Quick check requested but feedback signal not configured, doing full check")
+            else:
+                # Do a single read to check if signal already matches
+                if self.signal_service:
+                    ts, val = self.signal_service.get_latest_signal(
+                        dut_feedback_msg_id, 
+                        dut_test_status_signal
+                    )
+                elif self.gui:
+                    ts, val = self.gui.get_latest_signal(
+                        dut_feedback_msg_id,
+                        dut_test_status_signal
+                    )
+                else:
+                    logger.debug("Quick check requested but no signal service available, doing full check")
+                    val = None
+                
+                if val is not None:
+                    try:
+                        signal_value = int(float(val))
+                        if signal_value == test_mode:
+                            logger.info(f"Quick test mode check passed: DUT is already in mode {test_mode}")
+                            return True, f"DUT Test Mode already matches ({test_mode})"
+                        else:
+                            logger.debug(f"Quick check failed: signal={signal_value}, expected={test_mode}, doing full check")
+                    except (ValueError, TypeError):
+                        logger.debug("Quick check failed: invalid signal value, doing full check")
+                else:
+                    logger.debug("Quick check failed: signal not available, doing full check")
         
         # Step 1: Send test mode value to DUT using Set DUT Test Mode Signal
         next_resend_time = None
@@ -1001,12 +1049,10 @@ class TestRunner:
                     last_command_time = start_time
                     
                     # Send initial DAC command for this voltage level
-                    # Include MUX signals if configured (needed for multiplexed messages)
+                    # Note: MUX signals should NOT be included here - they require MessageType=17,
+                    # while DAC requires MessageType=18. MUX state is set separately at test start.
                     try:
                         dac_signals = {dac_cmd_sig: int(dac_voltage)}
-                        if mux_enable_sig and mux_channel_sig:
-                            dac_signals[mux_enable_sig] = current_mux_enable
-                            dac_signals[mux_channel_sig] = current_mux_channel
                         _encode_and_send(dac_signals)
                         step_change_time = time.time()  # Record when step change occurred
                         last_command_time = step_change_time
@@ -1028,13 +1074,10 @@ class TestRunner:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms during settling (to ensure reception)
-                        # Include MUX signals if configured
+                        # Note: MUX signals are NOT included - they require different MessageType
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
                                 dac_signals = {dac_cmd_sig: int(dac_voltage)}
-                                if mux_enable_sig and mux_channel_sig:
-                                    dac_signals[mux_enable_sig] = current_mux_enable
-                                    dac_signals[mux_channel_sig] = current_mux_channel
                                 _encode_and_send(dac_signals)
                                 last_command_time = current_time
                             except Exception as e:
@@ -1062,13 +1105,10 @@ class TestRunner:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms during collection (periodic resend)
-                        # Include MUX signals if configured
+                        # Note: MUX signals are NOT included - they require different MessageType
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
                                 dac_signals = {dac_cmd_sig: int(dac_voltage)}
-                                if mux_enable_sig and mux_channel_sig:
-                                    dac_signals[mux_enable_sig] = current_mux_enable
-                                    dac_signals[mux_channel_sig] = current_mux_channel
                                 _encode_and_send(dac_signals)
                                 last_command_time = current_time
                             except Exception as e:
@@ -1164,13 +1204,10 @@ class TestRunner:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms to maintain the voltage level
-                        # Include MUX signals if configured (needed for multiplexed messages)
+                        # Note: MUX signals are NOT included - they require different MessageType
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
                                 dac_signals = {dac_cmd_sig: int(dac_voltage)}
-                                if mux_enable_sig and mux_channel_sig:
-                                    dac_signals[mux_enable_sig] = current_mux_enable
-                                    dac_signals[mux_channel_sig] = current_mux_channel
                                 _encode_and_send(dac_signals)
                                 last_command_time = current_time
                             except Exception as e:
@@ -1211,37 +1248,145 @@ class TestRunner:
                     data_bytes = b''
                     # Phase 1: Use DbcService if available
                     dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
+                    target_msg = None
                     if dbc_available:
-                        if self.dbc_service is not None:
-                            target_msg = self.dbc_service.find_message_by_id(can_id)
-                        else:
+                        try:
+                            if self.dbc_service is not None:
+                                target_msg = self.dbc_service.find_message_by_id(can_id)
+                        except Exception as e:
+                            logger.error(f"Error finding message for CAN ID 0x{can_id:X}: {e}", exc_info=True)
                             target_msg = None
-                    else:
-                        target_msg = None
                     
                     if target_msg is None:
                         logger.warning(f"Could not find message for CAN ID 0x{can_id:X} - DBC may not be loaded or message missing")
                     
                     if target_msg is not None:
+                        # Defensive check: ensure target_msg has signals attribute
+                        if not hasattr(target_msg, 'signals') or target_msg.signals is None:
+                            logger.error(f"Message for CAN ID 0x{can_id:X} has no signals attribute - cannot encode")
+                            target_msg = None
+                    
+                    if target_msg is not None:
                         # Check if message requires MUX signals (multiplexed message)
                         required_mux_signals = {}
-                        for sig in target_msg.signals:
-                            # Check if signal is a multiplexor (MUX_Enable or MUX_Channel)
-                            sig_name_lower = sig.name.lower()
-                            if 'mux' in sig_name_lower:
-                                if 'enable' in sig_name_lower:
-                                    required_mux_signals[sig.name] = ('enable', current_mux_enable)
-                                elif 'channel' in sig_name_lower:
-                                    required_mux_signals[sig.name] = ('channel', current_mux_channel)
-                        
-                        # Add all signals from the signals dict
-                        for sig_name in signals:
-                            encode_data[sig_name] = signals[sig_name]
-                            # check if this signal is muxed
+                        try:
                             for sig in target_msg.signals:
-                                if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                    mux_value = sig.multiplexer_ids[0]
+                                # Defensive check: ensure signal has name attribute
+                                if not hasattr(sig, 'name'):
+                                    continue
+                                # Check if signal is a multiplexor (MUX_Enable or MUX_Channel)
+                                sig_name_lower = sig.name.lower()
+                                if 'mux' in sig_name_lower:
+                                    if 'enable' in sig_name_lower:
+                                        required_mux_signals[sig.name] = ('enable', current_mux_enable)
+                                    elif 'channel' in sig_name_lower:
+                                        required_mux_signals[sig.name] = ('channel', current_mux_channel)
+                        except Exception as e:
+                            logger.error(f"Error processing signals for CAN ID 0x{can_id:X}: {e}", exc_info=True)
+                            # Continue with empty required_mux_signals
+                        
+                        # Determine MessageType first based on signals being sent
+                        determined_mux_value = None
+                        
+                        # Check if any signal in the signals dict has multiplexer_ids
+                        try:
+                            for sig_name in signals:
+                                for sig in target_msg.signals:
+                                    if not hasattr(sig, 'name'):
+                                        continue
+                                    if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                        # Found a multiplexed signal - use its multiplexer_id
+                                        multiplexer_ids = getattr(sig, 'multiplexer_ids', None)
+                                        if multiplexer_ids and len(multiplexer_ids) > 0:
+                                            determined_mux_value = multiplexer_ids[0]
+                                            break
+                                if determined_mux_value is not None:
                                     break
+                        except Exception as e:
+                            logger.error(f"Error determining MessageType from multiplexer_ids: {e}", exc_info=True)
+                        
+                        # If no multiplexed signal found, try to infer MessageType from signal names
+                        if determined_mux_value is None:
+                            try:
+                                mtype_sig = None
+                                for s in target_msg.signals:
+                                    if getattr(s, 'name', '') == 'MessageType':
+                                        mtype_sig = s
+                                        break
+                                if mtype_sig is not None:
+                                    choices = getattr(mtype_sig, 'choices', None) or {}
+                                    # simple heuristics: match substrings from signal name to choice name
+                                    for sig_name in signals:
+                                        sname_up = str(sig_name).upper()
+                                        for val, cname in (choices.items() if hasattr(choices, 'items') else []):
+                                            if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
+                                                determined_mux_value = val
+                                                break
+                                            if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
+                                                determined_mux_value = val
+                                                break
+                                            if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
+                                                determined_mux_value = val
+                                                break
+                                        if determined_mux_value is not None:
+                                            break
+                            except Exception:
+                                pass
+                        
+                        # Set MessageType if determined
+                        if determined_mux_value is not None:
+                            encode_data['MessageType'] = determined_mux_value
+                        else:
+                            # CRITICAL FIX: For multiplexed messages, MessageType is REQUIRED
+                            # If we can't determine it, we need to check if the message is multiplexed
+                            # and use fallback heuristics or fail with clear error
+                            if target_msg is not None:
+                                # Check if message has MessageType signal (indicates multiplexed message)
+                                has_message_type_signal = any(sig.name == 'MessageType' for sig in target_msg.signals)
+                                
+                                # Check if any signal being sent is multiplexed
+                                has_multiplexed_signal = False
+                                for sig_name in signals:
+                                    for sig in target_msg.signals:
+                                        if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
+                                            has_multiplexed_signal = True
+                                            break
+                                    if has_multiplexed_signal:
+                                        break
+                                
+                                # If message is multiplexed but MessageType not determined, use fallback
+                                if has_message_type_signal or has_multiplexed_signal:
+                                    # Try fallback with explicit signal name matching
+                                    for sig_name in signals:
+                                        sig_name_upper = str(sig_name).upper()
+                                        if 'MUX' in sig_name_upper:
+                                            # Default to MUX command type
+                                            determined_mux_value = 17  # MSG_TYPE_SET_MUX
+                                            encode_data['MessageType'] = determined_mux_value
+                                            logger.debug(f"Fallback: Setting MessageType=17 for MUX signal '{sig_name}'")
+                                            break
+                                        elif 'DAC' in sig_name_upper:
+                                            # Default to DAC command type
+                                            determined_mux_value = 18  # MSG_TYPE_SET_DAC
+                                            encode_data['MessageType'] = determined_mux_value
+                                            logger.debug(f"Fallback: Setting MessageType=18 for DAC signal '{sig_name}'")
+                                            break
+                                        elif 'RELAY' in sig_name_upper:
+                                            # Default to Relay command type
+                                            determined_mux_value = 16  # MSG_TYPE_SET_RELAY
+                                            encode_data['MessageType'] = determined_mux_value
+                                            logger.debug(f"Fallback: Setting MessageType=16 for Relay signal '{sig_name}'")
+                                            break
+                                    
+                                    # If still not set, this is an error condition - fail before encoding
+                                    if 'MessageType' not in encode_data:
+                                        error_msg = (
+                                            f"Cannot determine MessageType for multiplexed message (CAN ID 0x{can_id:X}). "
+                                            f"Signals: {list(signals.keys())}. "
+                                            f"This is required for encoding multiplexed CAN messages."
+                                        )
+                                        logger.error(error_msg)
+                                        raise ValueError(error_msg)
                         
                         # Update MUX state tracking when MUX signals are sent
                         if mux_enable_sig and mux_enable_sig in signals:
@@ -1249,51 +1394,87 @@ class TestRunner:
                         if mux_channel_sig and mux_channel_sig in signals:
                             current_mux_channel = signals[mux_channel_sig]
                         
-                        # If message requires MUX signals and they're not in the signals dict, add them
-                        # This is needed for multiplexed messages where MUX signals are required for encoding
-                        for mux_sig_name, (mux_type, mux_val) in required_mux_signals.items():
-                            if mux_sig_name not in encode_data:
-                                encode_data[mux_sig_name] = mux_val
-                        if mux_value is not None:
-                            encode_data['MessageType'] = mux_value
-                        else:
-                            # If this message has a MessageType signal with defined choices,
-                            # try to infer the correct selector for non-muxed commands
-                            # (e.g. DAC commands require MessageType=18).
+                        # Only add required_mux_signals if MessageType is 17 (MUX commands)
+                        # MUX signals should NOT be added when MessageType is 18 (DAC commands) or other types
+                        if determined_mux_value == 17:  # MSG_TYPE_SET_MUX = 17
+                            for mux_sig_name, (mux_type, mux_val) in required_mux_signals.items():
+                                if mux_sig_name not in encode_data:
+                                    encode_data[mux_sig_name] = mux_val
+                        
+                        # Add signals from the signals dict, but filter out signals that aren't valid for the current MessageType
+                        for sig_name in signals:
+                            # Skip if this signal is not valid for the current MessageType
+                            should_include = True
+                            
+                            # Check if this signal is multiplexed
                             try:
-                                mtype_sig = None
-                                for s in target_msg.signals:
-                                    if getattr(s, 'name', '') == 'MessageType':
-                                        mtype_sig = s
-                                        break
-                                if mtype_sig is not None and 'MessageType' not in encode_data:
-                                    choices = getattr(mtype_sig, 'choices', None) or {}
-                                    # simple heuristics: match substrings from signal name to choice name
-                                    for sig_name in signals:
-                                        sname_up = str(sig_name).upper()
-                                        for val, cname in (choices.items() if hasattr(choices, 'items') else []):
-                                            try:
-                                                if sname_up.find('DAC') != -1 and 'DAC' in str(cname).upper():
-                                                    encode_data['MessageType'] = val
-                                                    raise StopIteration
-                                                if sname_up.find('MUX') != -1 and 'MUX' in str(cname).upper():
-                                                    encode_data['MessageType'] = val
-                                                    raise StopIteration
-                                                if sname_up.find('RELAY') != -1 and 'RELAY' in str(cname).upper():
-                                                    encode_data['MessageType'] = val
-                                                    raise StopIteration
-                                            except StopIteration:
-                                                break
-                                        if 'MessageType' in encode_data:
-                                            break
-                            except Exception:
-                                pass
+                                for sig in target_msg.signals:
+                                    if not hasattr(sig, 'name') or sig.name != sig_name:
+                                        continue
+                                    multiplexer_ids = getattr(sig, 'multiplexer_ids', None)
+                                    if multiplexer_ids:
+                                        # Signal is multiplexed - only include if MessageType matches
+                                        if determined_mux_value is not None:
+                                            # Handle both list/tuple and single value cases
+                                            if isinstance(multiplexer_ids, (list, tuple)):
+                                                should_include = (determined_mux_value in multiplexer_ids)
+                                            else:
+                                                should_include = (determined_mux_value == multiplexer_ids)
+                                        else:
+                                            # No MessageType determined yet - include it and let cantools decide
+                                            should_include = True
+                                    # If signal has no multiplexer_ids, it's always included (e.g., DeviceID)
+                                    break
+                            except Exception as e:
+                                logger.error(f"Error checking multiplexer_ids for signal '{sig_name}': {e}", exc_info=True)
+                                # Default to including the signal if we can't check
+                                should_include = True
+                            
+                            if should_include:
+                                encode_data[sig_name] = signals[sig_name]
+                        
+                        # CRITICAL: Validate MessageType is set before encoding multiplexed messages
+                        if target_msg is not None:
+                            # Check if message requires MessageType
+                            has_message_type = any(sig.name == 'MessageType' for sig in target_msg.signals)
+                            if has_message_type and 'MessageType' not in encode_data:
+                                error_msg = (
+                                    f"MessageType is required for message (CAN ID 0x{can_id:X}) but was not set. "
+                                    f"Signals being encoded: {list(encode_data.keys())}"
+                                )
+                                logger.error(error_msg)
+                                raise ValueError(error_msg)
+                        
+                        # Final safety check before encoding - validate encode_data types
+                        try:
+                            # Validate encode_data contains valid types
+                            for key, value in list(encode_data.items()):
+                                if value is None:
+                                    logger.warning(f"encode_data contains None value for '{key}', removing it")
+                                    encode_data[key] = 0  # Default to 0 for None values
+                                elif not isinstance(value, (int, float, str, bool)):
+                                    logger.warning(f"encode_data contains invalid type for '{key}': {type(value)}, converting to int")
+                                    try:
+                                        encode_data[key] = int(value)
+                                    except (ValueError, TypeError):
+                                        encode_data[key] = 0
+                        except Exception as e:
+                            logger.error(f"Error validating encode_data: {e}", exc_info=True)
+                        
                         try:
                             if self.dbc_service is not None:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
                             else:
                                 data_bytes = target_msg.encode(encode_data)
-                        except Exception:
+                        except Exception as encode_error:
+                            # Log the encode_data for debugging memory corruption issues
+                            logger.error(
+                                f"Encoding failed for CAN ID 0x{can_id:X}. "
+                                f"encode_data: {encode_data}, "
+                                f"signals: {signals}, "
+                                f"error: {encode_error}",
+                                exc_info=True
+                            )
                             # fallback to single byte
                             try:
                                 if len(signals) == 1:
@@ -1313,15 +1494,15 @@ class TestRunner:
                             data_bytes = b''
 
                     # Update real-time monitoring: when commanding the DAC, show the commanded value
-                    if self.label_update_callback:
+                    # Use proper monitoring system instead of legacy callback
+                    if dac_cmd_sig and dac_cmd_sig in signals:
                         try:
-                            if dac_cmd_sig and dac_cmd_sig in signals:
-                                self.label_update_callback(str(signals[dac_cmd_sig]))
-                            elif len(signals) == 1:
-                                # if a single signal is being sent, show its value
-                                self.label_update_callback(str(list(signals.values())[0]))
+                            dac_value_mv = signals[dac_cmd_sig]
+                            # Convert to Volts for display (monitoring system handles formatting)
+                            dac_value_v = float(dac_value_mv) / 1000.0
+                            self.update_monitor_signal('current_signal', dac_value_v)
                         except Exception as e:
-                            logger.debug(f"Failed to update label: {e}")
+                            logger.debug(f"Failed to update monitor signal: {e}")
 
                     # Phase 1: Use CanService if available
                     if self.can_service is not None and self.can_service.is_connected():
@@ -1422,10 +1603,7 @@ class TestRunner:
                     # Include MUX signals if message requires them (for multiplexed messages)
                     try:
                         dac_signals = {dac_cmd_sig: int(dac_min)}
-                        # If MUX signals are configured and message might require them, include them
-                        if mux_enable_sig and mux_channel_sig:
-                            dac_signals[mux_enable_sig] = current_mux_enable
-                            dac_signals[mux_channel_sig] = current_mux_channel
+                        # Note: MUX signals should NOT be included - they require MessageType=17, DAC requires MessageType=18
                         _encode_and_send(dac_signals)
                         _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception as e:
@@ -1562,11 +1740,8 @@ class TestRunner:
                     # Ensure we leave DAC at 0 and MUX disabled even if an exception occurred
                     try:
                         if dac_cmd_sig:
-                            # Include MUX signals if configured (needed for multiplexed messages)
                             dac_signals = {dac_cmd_sig: 0}
-                            if mux_enable_sig and mux_channel_sig:
-                                dac_signals[mux_enable_sig] = 0  # Disable MUX
-                                dac_signals[mux_channel_sig] = current_mux_channel
+                            # Note: MUX signals should NOT be included - they require MessageType=17, DAC requires MessageType=18
                             _encode_and_send(dac_signals)
                             _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception as e:
@@ -1695,11 +1870,18 @@ class TestRunner:
                                 # Use a temporary key structure that _on_test_finished can access (thread-safe)
                                 if self.gui is not None:
                                     try:
-                                        current_thread = QtCore.QThread.currentThread()
-                                        main_thread = QtCore.QCoreApplication.instance().thread()
-                                        
-                                        if current_thread != main_thread:
-                                            logger.debug(f"Storing plot data from background thread for '{test_name}'")
+                                        # Safely access QtCore - may not be available in all contexts
+                                        try:
+                                            current_thread = QtCore.QThread.currentThread()
+                                            main_thread = QtCore.QCoreApplication.instance().thread()
+                                            
+                                            if current_thread != main_thread:
+                                                logger.debug(f"Storing plot data from background thread for '{test_name}'")
+                                        except (AttributeError, NameError, RuntimeError):
+                                            # QtCore not available or not initialized - skip thread check
+                                            current_thread = None
+                                            main_thread = None
+                                            logger.debug(f"QtCore not available for thread check, storing plot data anyway")
                                         
                                         # Dictionary assignment is thread-safe in Python (GIL protects dict operations)
                                         if not hasattr(self.gui, '_test_plot_data_temp'):
@@ -2395,14 +2577,19 @@ class TestRunner:
                         except Exception as e:
                             logger.debug(f"Error reading feedback signal: {e}")
                         
-                        # Update labels for real-time monitoring
-                        if self.label_update_callback is not None:
-                            fb_display = feedback_values[-1] if feedback_values else None
-                            eol_display = eol_values[-1] if eol_values else None
-                            if fb_display is not None:
-                                self.label_update_callback(f"Feedback Signal: {fb_display:.2f} mV")
-                            if eol_display is not None:
-                                self.label_update_callback(f"Current Signal: {eol_display:.2f} mV")
+                        # Update labels for real-time monitoring using proper monitoring system
+                        fb_display = feedback_values[-1] if feedback_values else None
+                        eol_display = eol_values[-1] if eol_values else None
+                        if fb_display is not None:
+                            try:
+                                self.update_monitor_signal('dut_feedback_signal', fb_display)
+                            except Exception as e:
+                                logger.debug(f"Failed to update feedback signal: {e}")
+                        if eol_display is not None:
+                            try:
+                                self.update_monitor_signal('eol_measured_signal', eol_display)
+                            except Exception as e:
+                                logger.debug(f"Failed to update EOL signal: {e}")
                         
                         # Process events and sleep
                         try:
@@ -2593,15 +2780,42 @@ class TestRunner:
                         logger.warning(f"Could not find message for CAN ID 0x{msg_id:X} - DBC may not be loaded or message missing")
                     
                     if target_msg is not None:
+                        # Determine MessageType first based on signals being sent
+                        determined_mux_value = None
                         for sig_name in signals:
-                            encode_data[sig_name] = signals[sig_name]
-                            # check if this signal is muxed
                             for sig in target_msg.signals:
                                 if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                    mux_value = sig.multiplexer_ids[0]
+                                    determined_mux_value = sig.multiplexer_ids[0]
                                     break
-                        if mux_value is not None:
-                            encode_data['MessageType'] = mux_value
+                            if determined_mux_value is not None:
+                                break
+                        
+                        # Set MessageType if determined
+                        if determined_mux_value is not None:
+                            encode_data['MessageType'] = determined_mux_value
+                        
+                        # Add signals from the signals dict, but filter out signals that aren't valid for the current MessageType
+                        for sig_name in signals:
+                            should_include = True
+                            
+                            # Check if this signal is multiplexed
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name:
+                                    multiplexer_ids = getattr(sig, 'multiplexer_ids', None)
+                                    if multiplexer_ids:
+                                        # Signal is multiplexed - only include if MessageType matches
+                                        if determined_mux_value is not None:
+                                            if isinstance(multiplexer_ids, (list, tuple)):
+                                                should_include = (determined_mux_value in multiplexer_ids)
+                                            else:
+                                                should_include = (determined_mux_value == multiplexer_ids)
+                                        else:
+                                            should_include = True
+                                    break
+                            
+                            if should_include:
+                                encode_data[sig_name] = signals[sig_name]
+                        
                         try:
                             if self.dbc_service is not None:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
@@ -3256,7 +3470,7 @@ class TestRunner:
                 def _encode_and_send_charged_hv_bus(signals: dict, msg_id: int) -> bytes:
                     """Encode signals to CAN message bytes."""
                     encode_data = {'DeviceID': 0}
-                    mux_value = None
+                    determined_mux_value = None
                     data_bytes = b''
                     
                     dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
@@ -3269,14 +3483,41 @@ class TestRunner:
                         logger.warning(f"Could not find message for CAN ID 0x{msg_id:X}")
                     
                     if target_msg is not None:
+                        # Determine MessageType first based on signals being sent
                         for sig_name in signals:
-                            encode_data[sig_name] = signals[sig_name]
                             for sig in target_msg.signals:
                                 if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                    mux_value = sig.multiplexer_ids[0]
+                                    determined_mux_value = sig.multiplexer_ids[0]
                                     break
-                        if mux_value is not None:
-                            encode_data['MessageType'] = mux_value
+                            if determined_mux_value is not None:
+                                break
+                        
+                        # Set MessageType if determined
+                        if determined_mux_value is not None:
+                            encode_data['MessageType'] = determined_mux_value
+                        
+                        # Add signals from the signals dict, but filter out signals that aren't valid for the current MessageType
+                        for sig_name in signals:
+                            should_include = True
+                            
+                            # Check if this signal is multiplexed
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name:
+                                    multiplexer_ids = getattr(sig, 'multiplexer_ids', None)
+                                    if multiplexer_ids:
+                                        # Signal is multiplexed - only include if MessageType matches
+                                        if determined_mux_value is not None:
+                                            if isinstance(multiplexer_ids, (list, tuple)):
+                                                should_include = (determined_mux_value in multiplexer_ids)
+                                            else:
+                                                should_include = (determined_mux_value == multiplexer_ids)
+                                        else:
+                                            should_include = True
+                                    break
+                            
+                            if should_include:
+                                encode_data[sig_name] = signals[sig_name]
+                        
                         try:
                             if self.dbc_service is not None:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
@@ -3985,7 +4226,7 @@ class TestRunner:
                 def _encode_and_send_charger_functional(signals: dict, msg_id: int) -> bytes:
                     """Encode signals to CAN message bytes."""
                     encode_data = {'DeviceID': 0}
-                    mux_value = None
+                    determined_mux_value = None
                     data_bytes = b''
                     
                     dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
@@ -3998,14 +4239,41 @@ class TestRunner:
                         logger.warning(f"Could not find message for CAN ID 0x{msg_id:X}")
                     
                     if target_msg is not None:
+                        # Determine MessageType first based on signals being sent
                         for sig_name in signals:
-                            encode_data[sig_name] = signals[sig_name]
                             for sig in target_msg.signals:
                                 if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
-                                    mux_value = sig.multiplexer_ids[0]
+                                    determined_mux_value = sig.multiplexer_ids[0]
                                     break
-                        if mux_value is not None:
-                            encode_data['MessageType'] = mux_value
+                            if determined_mux_value is not None:
+                                break
+                        
+                        # Set MessageType if determined
+                        if determined_mux_value is not None:
+                            encode_data['MessageType'] = determined_mux_value
+                        
+                        # Add signals from the signals dict, but filter out signals that aren't valid for the current MessageType
+                        for sig_name in signals:
+                            should_include = True
+                            
+                            # Check if this signal is multiplexed
+                            for sig in target_msg.signals:
+                                if sig.name == sig_name:
+                                    multiplexer_ids = getattr(sig, 'multiplexer_ids', None)
+                                    if multiplexer_ids:
+                                        # Signal is multiplexed - only include if MessageType matches
+                                        if determined_mux_value is not None:
+                                            if isinstance(multiplexer_ids, (list, tuple)):
+                                                should_include = (determined_mux_value in multiplexer_ids)
+                                            else:
+                                                should_include = (determined_mux_value == multiplexer_ids)
+                                        else:
+                                            should_include = True
+                                    break
+                            
+                            if should_include:
+                                encode_data[sig_name] = signals[sig_name]
+                        
                         try:
                             if self.dbc_service is not None:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)

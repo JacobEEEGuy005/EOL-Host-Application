@@ -15,7 +15,7 @@
         "acquisition_time_ms": 3000
       },
       "created_at": "2025-11-17T05:10:07.275563Z",
-      "test_mode": 0
+      "test_mode": 2
     },
     {
       "name": "Charger Ouput Current Sensor Calibation",
@@ -33,7 +33,7 @@
         "oscilloscope_channel": "Output Current",
         "oscilloscope_timebase": "10MS",
         "minimum_test_current": 10.0,
-        "maximum_test_current": 25.0,
+        "maximum_test_current": 35.0,
         "step_current": 5.0,
         "pre_acquisition_time_ms": 3000,
         "acquisition_time_ms": 3500,

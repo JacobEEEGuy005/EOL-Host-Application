@@ -34,7 +34,7 @@ except ImportError:
     DWELL_TIME_DEFAULT = 100
     DWELL_TIME_MIN = 10
     SLEEP_INTERVAL_SHORT = 0.01
-    MSG_TYPE_SET_RELAY = 1
+    MSG_TYPE_SET_RELAY = 16  # Correct value from DBC: CMD_SetRelay = 16
 
 # Import adapter interface
 try:

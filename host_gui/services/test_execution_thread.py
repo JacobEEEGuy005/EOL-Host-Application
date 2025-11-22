@@ -168,10 +168,12 @@ class TestExecutionThread(QtCore.QThread):
                 logger.info(f"Executing test {i+1}/{total_tests}: {test_name} (test_mode={current_test_mode})")
                 
                 # Handle test mode checks for every test
+                use_quick_check = False
                 if previous_test_mode is None:
                     logger.info("First test in sequence - performing full test mode check")
                 elif current_test_mode == previous_test_mode:
-                    logger.info(f"Test mode matches previous test ({current_test_mode}) - refreshing command and verifying again")
+                    logger.info(f"Test mode matches previous test ({current_test_mode}) - doing quick check first")
+                    use_quick_check = True
                 else:
                     # Test modes don't match - send Idle (0) first, then set new test mode
                     logger.info(f"Test mode changed from {previous_test_mode} to {current_test_mode} - sending Idle (0) command first")
@@ -189,7 +191,10 @@ class TestExecutionThread(QtCore.QThread):
                         break
                     
                     # Perform test mode check (sends set_dut_test_mode_signal periodically)
-                    check_passed, check_msg = self.test_runner.check_test_mode(test)
+                    # Use quick check if test mode matches previous test
+                    check_passed, check_msg = self.test_runner.check_test_mode(test, quick_check=use_quick_check)
+                    # After first check attempt, always use full check
+                    use_quick_check = False
                     
                     if check_passed:
                         test_mode_check_passed = True

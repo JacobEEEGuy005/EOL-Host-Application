@@ -3011,6 +3011,9 @@ Data Points Used: {data_points}"""
         if 'voltage' in name_lower or 'dac' in name_lower or 'dc bus' in name_lower:
             return 'voltage'
         elif 'current' in name_lower:
+            # Special case: "current_signal" in Analog Sweep Test is actually voltage (DAC)
+            if name_lower == 'current_signal':
+                return 'voltage'  # It's a DAC voltage, not a current
             return 'current'
         elif 'temp' in name_lower or 'temperature' in name_lower:
             return 'temperature'
