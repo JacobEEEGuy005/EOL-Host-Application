@@ -2847,7 +2847,8 @@ Data Points Used: {data_points}"""
             self.plot_axes.relim()
             self.plot_axes.autoscale()
             self.plot_figure.tight_layout()
-            self.plot_canvas.draw_idle()
+            # Use draw() for immediate update during initialization
+            self.plot_canvas.draw()
         except Exception as e:
             logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
     
@@ -2893,7 +2894,8 @@ Data Points Used: {data_points}"""
             self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.legend()
             self.plot_figure.tight_layout()
-            self.plot_canvas.draw_idle()
+            # Use draw() for immediate update during initialization
+            self.plot_canvas.draw()
             self._output_current_plot_initialized = True
             logger.debug(f"Initialized plot for Output Current Calibration: {plot_title}")
         except Exception as e:
@@ -2939,7 +2941,8 @@ Data Points Used: {data_points}"""
             self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.legend()
             self.plot_figure.tight_layout()
-            self.plot_canvas.draw_idle()
+            # Use draw() for immediate update during initialization
+            self.plot_canvas.draw()
             self._analog_sweep_plot_initialized = True
             self._analog_sweep_regression_line = None
             logger.debug(f"Initialized plot for Analog Sweep Test: {test_name}")
@@ -2979,7 +2982,8 @@ Data Points Used: {data_points}"""
                 else:
                     self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
                 self.plot_figure.tight_layout()
-                self.plot_canvas.draw_idle()
+                # Use draw() for immediate update during initialization
+                self.plot_canvas.draw()
             except Exception as e:
                 logger.debug(f"Failed to set Nil plot: {e}", exc_info=True)
 
@@ -3607,8 +3611,8 @@ Data Points Used: {data_points}"""
                         'stop',
                         QtCore.Qt.ConnectionType.QueuedConnection
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error stopping monitor update timer: {e}")
         
         # Create new timer to update signals every 100ms (must be done in main thread)
         # Note: This method should only be called from main thread, but we check anyway
@@ -3947,7 +3951,8 @@ Data Points Used: {data_points}"""
                 self._analog_sweep_regression_line, = self.plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
                 self.plot_axes.legend()
                 self.plot_figure.tight_layout()
-                self.plot_canvas.draw_idle()
+                # Use draw() for immediate update after regression line is added
+                self.plot_canvas.draw()
                 logger.debug(f"Added regression line: slope={slope:.4f}, intercept={intercept:.4f}")
         except Exception as e:
             logger.error(f"Failed to add regression line to plot: {e}", exc_info=True)

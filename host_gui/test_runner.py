@@ -145,8 +145,9 @@ class TestRunner:
                                     QtCore.Q_ARG(float, fb),
                                     QtCore.Q_ARG(str, name or '')
                                 )
-                            except Exception:
+                            except Exception as e:
                                 # If BlockingQueuedConnection fails (e.g., deadlock risk), fall back to QueuedConnection
+                                logger.debug(f"BlockingQueuedConnection failed, falling back to QueuedConnection: {e}")
                                 QtCore.QMetaObject.invokeMethod(
                                     gui,
                                     '_update_plot',
