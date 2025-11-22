@@ -52,11 +52,21 @@ try:
             raise ImportError("Matplotlib Qt backend not available")
     from matplotlib.figure import Figure
     matplotlib_available = True
+    # Import and configure seaborn for enhanced plot styling
+    try:
+        import seaborn as sns
+        # Set seaborn style for all matplotlib plots
+        sns.set_style("whitegrid")
+        sns.set_palette("husl")
+        seaborn_available = True
+    except ImportError:
+        seaborn_available = False
 except Exception:
     matplotlib = None
     FigureCanvasQTAgg = None
     Figure = None
     matplotlib_available = False
+    seaborn_available = False
 try:
     import cantools
 except Exception:

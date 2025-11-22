@@ -22,8 +22,17 @@ except ImportError:
 try:
     import matplotlib
     matplotlib_available = True
+    # Import seaborn for enhanced plot styling
+    try:
+        import seaborn as sns
+        sns.set_style("whitegrid")
+        sns.set_palette("husl")
+        seaborn_available = True
+    except ImportError:
+        seaborn_available = False
 except ImportError:
     matplotlib_available = False
+    seaborn_available = False
 
 # Import utility functions
 try:

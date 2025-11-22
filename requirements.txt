@@ -9,6 +9,7 @@ numpy
 scipy
 PySide6
 matplotlib
+seaborn
 PyVISA
 PyVISA-py
 python-usbtmc
