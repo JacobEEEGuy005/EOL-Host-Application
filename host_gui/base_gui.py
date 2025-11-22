@@ -2018,22 +2018,22 @@ class BaseGUI(QtWidgets.QMainWindow):
             elif test_type == 'Phase Current Test':
                 # Store plot data for phase current calibration tests
                 if plot_data and isinstance(plot_data, dict):
-                    exec_data['plot_data'] = {
-                        'iq_refs': list(plot_data.get('iq_refs', [])),
+                exec_data['plot_data'] = {
+                    'iq_refs': list(plot_data.get('iq_refs', [])),
                         'id_refs': list(plot_data.get('id_refs', [])),
-                        'osc_ch1': list(plot_data.get('osc_ch1', [])),
-                        'osc_ch2': list(plot_data.get('osc_ch2', [])),
-                        'can_v': list(plot_data.get('can_v', [])),
-                        'can_w': list(plot_data.get('can_w', [])),
-                        'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
-                        'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
-                        'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
-                        'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
-                        'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
-                        'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
-                        'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
-                        'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
-                    }
+                    'osc_ch1': list(plot_data.get('osc_ch1', [])),
+                    'osc_ch2': list(plot_data.get('osc_ch2', [])),
+                    'can_v': list(plot_data.get('can_v', [])),
+                    'can_w': list(plot_data.get('can_w', [])),
+                    'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
+                    'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
+                    'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
+                    'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
+                    'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
+                    'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
+                    'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
+                    'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
+                }
                 else:
                     # If plot_data is None or not a dict, store empty structure
                     logger.warning(f"plot_data is None or not a dict for Phase Current Test: {type(plot_data)}")
@@ -5791,6 +5791,8 @@ Data Points Used: {data_points}"""
                 doc = SimpleDocTemplate(fname, pagesize=letter)
                 story = []
                 styles = getSampleStyleSheet()
+                # Track temporary files for cleanup after PDF is built
+                temp_files = []
                 
                 # Extract DUT UID from execution data using helper method
                 dut_uid = self._get_dut_uid_from_execution_data()
@@ -5984,11 +5986,8 @@ Data Points Used: {data_points}"""
                                     img = Image(tmp_path, width=5*inch, height=3*inch)
                                     story.append(img)
                                     
-                                    # Clean up temp file
-                                    try:
-                                        os.unlink(tmp_path)
-                                    except Exception:
-                                        pass
+                                    # Track temp file for cleanup after PDF is built
+                                    temp_files.append(tmp_path)
                     
                     # Phase current calibration test results
                     elif test_type == 'Phase Current Test' or (test_config and test_config.get('type') == 'Phase Current Test'):
@@ -6081,20 +6080,20 @@ Data Points Used: {data_points}"""
                                         table_data.append([iq_str, id_str, can_v_str, osc_v_str, can_w_str, osc_w_str])
                                     
                                     data_table = Table(table_data)
-                                data_table.setStyle(TableStyle([
-                                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
-                                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                                    ('FONTSIZE', (0, 0), (-1, 0), 8),
-                                    ('FONTSIZE', (0, 1), (-1, -1), 7),
-                                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-                                    ('GRID', (0, 0), (-1, -1), 1, colors.grey),
-                                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                                ]))
-                                
-                                story.append(data_table)
+                                    data_table.setStyle(TableStyle([
+                                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                        ('FONTSIZE', (0, 0), (-1, 0), 8),
+                                        ('FONTSIZE', (0, 1), (-1, -1), 7),
+                                        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                                    ]))
+                                    
+                                    story.append(data_table)
                             except Exception as e:
                                 logger.error(f"Error creating data table in PDF export: {e}", exc_info=True)
                                 story.append(Paragraph(f'<i>Error creating data table: {str(e)}</i>', styles['Normal']))
@@ -6120,16 +6119,191 @@ Data Points Used: {data_points}"""
                                     img = Image(tmp_path, width=6*inch, height=2.5*inch)
                                     story.append(img)
                                     
-                                    # Clean up temp file
-                                    try:
-                                        os.unlink(tmp_path)
-                                    except Exception:
-                                        pass
+                                    # Track temp file for cleanup after PDF is built
+                                    temp_files.append(tmp_path)
+                    
+                    # Output Current Calibration test results
+                    elif test_type == 'Output Current Calibration' or (test_config and test_config.get('type') == 'Output Current Calibration'):
+                        plot_data = exec_data.get('plot_data')
+                        if plot_data:
+                            # Check if we have dual sweep data (new format) or single plot data (old format)
+                            first_sweep_data = plot_data.get('first_sweep')
+                            second_sweep_data = plot_data.get('second_sweep')
+                            
+                            if first_sweep_data and second_sweep_data:
+                                # New format: Dual sweep data
+                                story.append(Spacer(1, 0.1*inch))
+                                story.append(Paragraph('<b>Output Current Calibration: Dual Sweep Results</b>', styles['Heading3']))
+                                
+                                # First sweep plot
+                                first_osc_averages = first_sweep_data.get('osc_averages', [])
+                                first_can_averages = first_sweep_data.get('can_averages', [])
+                                first_slope = first_sweep_data.get('slope')
+                                first_intercept = first_sweep_data.get('intercept')
+                                
+                                if first_osc_averages and first_can_averages:
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
+                                    
+                                    plot_bytes = self._generate_output_current_calibration_plot_image(
+                                        f"{test_name} - First Sweep", first_osc_averages, first_can_averages,
+                                        first_slope, first_intercept, 'png'
+                                    )
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        story.append(Paragraph(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>', styles['Heading4']))
+                                        img = Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        story.append(img)
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                
+                                # Second sweep plot
+                                second_osc_averages = second_sweep_data.get('osc_averages', [])
+                                second_can_averages = second_sweep_data.get('can_averages', [])
+                                second_slope = second_sweep_data.get('slope')
+                                second_intercept = second_sweep_data.get('intercept')
+                                
+                                if second_osc_averages and second_can_averages:
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
+                                    
+                                    plot_bytes = self._generate_output_current_calibration_plot_image(
+                                        f"{test_name} - Second Sweep", second_osc_averages, second_can_averages,
+                                        second_slope, second_intercept, 'png'
+                                    )
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        story.append(Spacer(1, 0.1*inch))
+                                        story.append(Paragraph(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>', styles['Heading4']))
+                                        img = Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        story.append(img)
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                
+                                # Calibration results
+                                story.append(Spacer(1, 0.1*inch))
+                                story.append(Paragraph('<b>Calibration Results</b>', styles['Heading3']))
+                                
+                                calib_results = []
+                                
+                                # First sweep results
+                                first_trim = first_sweep_data.get('trim_value')
+                                first_gain_error = first_sweep_data.get('gain_error')
+                                first_adjustment = first_sweep_data.get('adjustment_factor')
+                                
+                                if first_slope is not None and first_intercept is not None:
+                                    trim_str = f"{first_trim}%" if first_trim is not None else "N/A"
+                                    calib_results.append(f"First Sweep (Trim: {trim_str}):")
+                                    calib_results.append(f"  Linear Regression: Slope={first_slope:.6f}, Intercept={first_intercept:.6f}A")
+                                if first_gain_error is not None:
+                                    calib_results.append(f"  Gain Error: {first_gain_error:+.4f}%")
+                                if first_adjustment is not None:
+                                    calib_results.append(f"  Adjustment Factor: {first_adjustment:.6f}")
+                                
+                                # Second sweep results
+                                second_trim = second_sweep_data.get('trim_value')
+                                second_gain_error = second_sweep_data.get('gain_error')
+                                second_adjustment = second_sweep_data.get('adjustment_factor')
+                                
+                                if second_slope is not None and second_intercept is not None:
+                                    trim_str = f"{second_trim}%" if second_trim is not None else "N/A"
+                                    calib_results.append(f"Second Sweep (Trim: {trim_str}):")
+                                    calib_results.append(f"  Linear Regression: Slope={second_slope:.6f}, Intercept={second_intercept:.6f}A")
+                                if second_gain_error is not None:
+                                    calib_results.append(f"  Gain Error: {second_gain_error:+.4f}%")
+                                if second_adjustment is not None:
+                                    calib_results.append(f"  Adjustment Factor: {second_adjustment:.6f}")
+                                
+                                # Calculated trim value
+                                calculated_trim = plot_data.get('calculated_trim_value')
+                                tolerance_percent = plot_data.get('tolerance_percent')
+                                
+                                if calculated_trim is not None:
+                                    calib_results.append(f"Calculated Trim Value: {calculated_trim:.2f}%")
+                                if tolerance_percent is not None:
+                                    calib_results.append(f"Tolerance: ±{tolerance_percent:.2f}%")
+                                
+                                # Add results as paragraphs
+                                for result in calib_results:
+                                    story.append(Paragraph(result, styles['Normal']))
+                            
+                            else:
+                                # Old format: Single plot data
+                                osc_averages = plot_data.get('osc_averages', [])
+                                can_averages = plot_data.get('can_averages', [])
+                                slope = plot_data.get('slope')
+                                intercept = plot_data.get('intercept')
+                                
+                                if osc_averages and can_averages:
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
+                                    
+                                    plot_bytes = self._generate_output_current_calibration_plot_image(
+                                        test_name, osc_averages, can_averages, slope, intercept, 'png'
+                                    )
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        story.append(Spacer(1, 0.1*inch))
+                                        story.append(Paragraph('<b>Plot: Output Current Calibration (DUT vs Oscilloscope)</b>', styles['Heading3']))
+                                        img = Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        story.append(img)
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                    
+                                    # Calibration parameters if available
+                                    if slope is not None and intercept is not None:
+                                        story.append(Spacer(1, 0.1*inch))
+                                        story.append(Paragraph('<b>Calibration Parameters</b>', styles['Heading3']))
+                                        
+                                        calib_data = [['Parameter', 'Value']]
+                                        calib_data.append(['Slope', f'{slope:.6f}'])
+                                        calib_data.append(['Intercept', f'{intercept:.6f} A'])
+                                        
+                                        gain_error = plot_data.get('gain_error')
+                                        adjustment_factor = plot_data.get('adjustment_factor')
+                                        if gain_error is not None:
+                                            calib_data.append(['Gain Error', f'{gain_error:+.4f}%'])
+                                        if adjustment_factor is not None:
+                                            calib_data.append(['Adjustment Factor', f'{adjustment_factor:.6f}'])
+                                        
+                                        calib_table = Table(calib_data)
+                                        calib_table.setStyle(TableStyle([
+                                            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                            ('FONTSIZE', (0, 0), (-1, 0), 10),
+                                            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                                        ]))
+                                        
+                                        story.append(calib_table)
                     
                     story.append(PageBreak())
                 
                 # Build PDF
                 doc.build(story)
+                
+                # Clean up temporary files after PDF is successfully built
+                for tmp_path in temp_files:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temporary file {tmp_path}: {e}")
                 
             else:
                 # Fallback: Use matplotlib backend for simple PDF
@@ -6204,6 +6378,14 @@ Data Points Used: {data_points}"""
                 f'Test report exported to:\n{os.path.basename(fname)}')
         except Exception as e:
             logger.error(f"Failed to export PDF report: {e}", exc_info=True)
+            # Clean up temporary files even if PDF generation failed
+            if 'temp_files' in locals():
+                for tmp_path in temp_files:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to delete temporary file {tmp_path} during error cleanup: {cleanup_error}")
             QtWidgets.QMessageBox.critical(self, 'Export Error', 
                 f'Failed to export PDF report:\n{e}')
     

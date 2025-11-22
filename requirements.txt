@@ -10,6 +10,7 @@ scipy
 PySide6
 matplotlib
 seaborn
+reportlab
 PyVISA
 PyVISA-py
 python-usbtmc
