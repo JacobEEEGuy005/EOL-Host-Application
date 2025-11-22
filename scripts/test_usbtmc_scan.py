@@ -74,7 +74,7 @@ def main():
             try:
                 serial = usb.util.get_string(usb_device, usb_device.iSerialNumber)
                 print(f"  Serial: {serial}")
-            except:
+            except Exception:
                 serial = None
                 print("  Serial: (not available)")
     except ImportError:

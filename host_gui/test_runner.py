@@ -166,6 +166,17 @@ class TestRunner:
             self.oscilloscope_init_callback = oscilloscope_init_callback
             self.monitor_signal_update_callback = monitor_signal_update_callback
             self.monitor_signal_reset_callback = monitor_signal_reset_callback
+        
+        # Reference to TestExecutionThread for thread-safe signal-based updates
+        self._execution_thread = None
+    
+    def set_execution_thread(self, thread):
+        """Set reference to TestExecutionThread for signal-based updates.
+        
+        Args:
+            thread: TestExecutionThread instance
+        """
+        self._execution_thread = thread
     
     def reset_monitor_signals(self) -> None:
         """Reset real-time monitor labels (if callback available)."""
@@ -176,7 +187,33 @@ class TestRunner:
                 logger.debug(f"Failed to reset monitor signals: {e}")
 
     def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
-        """Update real-time monitor label for the specified key."""
+        """Update real-time monitor label for the specified key.
+        
+        This method is thread-safe: if called from a background thread (TestExecutionThread),
+        it uses Qt signals to safely update the GUI. If called from the main thread,
+        it calls the callback directly.
+        """
+        # Check if we're in a background thread and have a thread reference
+        if hasattr(self, '_execution_thread') and self._execution_thread is not None:
+            # Check if we're in the main thread
+            try:
+                from PySide6 import QtCore
+                current_thread = QtCore.QThread.currentThread()
+                main_thread = QtCore.QCoreApplication.instance().thread()
+                
+                if current_thread != main_thread:
+                    # We're in a background thread - use signal for thread-safe GUI update
+                    try:
+                        # Convert None to 0.0 for signal emission (signals don't support Optional)
+                        signal_value = value if value is not None else 0.0
+                        self._execution_thread.monitor_signal_update.emit(key, signal_value)
+                        return
+                    except Exception as e:
+                        logger.debug(f"Failed to emit monitor signal update '{key}': {e}")
+            except Exception as e:
+                logger.debug(f"Failed to check thread context: {e}")
+        
+        # Fallback: call callback directly (main thread or no thread reference)
         if getattr(self, 'monitor_signal_update_callback', None):
             try:
                 self.monitor_signal_update_callback(key, value)
@@ -440,14 +477,20 @@ class TestRunner:
         
         # Initialize oscilloscope before phase current tests
         if act.get('type') == 'Phase Current Test':
-            if self.oscilloscope_service and self.oscilloscope_init_callback:
+            # Phase Current Test requires oscilloscope - validate it's available
+            if self.oscilloscope_service is None or not self.oscilloscope_service.is_connected():
+                return False, "Oscilloscope not connected. Phase Current Test requires oscilloscope connection."
+            
+            if self.oscilloscope_init_callback:
                 osc_init_success = self.oscilloscope_init_callback(test)
                 if not osc_init_success:
-                    logger.warning("Oscilloscope initialization failed, continuing test anyway")
+                    logger.warning("Oscilloscope initialization failed, but continuing test")
+                    # Note: We continue anyway as the state machine may handle initialization internally
             
             # Execute phase current test using state machine
             # Note: PhaseCurrentTestStateMachine still needs GUI reference for plot updates
             # This is a limitation that should be addressed in future refactoring
+            state_machine = None
             try:
                 # Use GUI if available, otherwise create a proxy
                 gui_for_state_machine = self.gui
@@ -464,14 +507,33 @@ class TestRunner:
                 
                 try:
                     success, info = state_machine.run()
+                    # Validate state machine completed successfully
+                    if success is None:
+                        logger.warning("Phase Current Test state machine returned None for success, treating as failure")
+                        return False, info or "Phase Current Test state machine did not return success status"
                     return success, info
+                except Exception as e:
+                    logger.error(f"Phase Current Test state machine execution failed: {e}", exc_info=True)
+                    return False, f"Phase current test state machine error: {e}"
                 finally:
                     # Clean up state machine reference
                     if self.gui is not None and hasattr(self.gui, '_phase_current_state_machine'):
-                        delattr(self.gui, '_phase_current_state_machine')
+                        try:
+                            delattr(self.gui, '_phase_current_state_machine')
+                        except Exception as e:
+                            logger.debug(f"Failed to clean up state machine reference: {e}")
             except Exception as e:
                 logger.error(f"Phase current test execution failed: {e}", exc_info=True)
                 return False, f"Phase current test error: {e}"
+            finally:
+                # Additional cleanup: ensure state machine is properly cleaned up
+                if state_machine is not None and self.gui is not None:
+                    try:
+                        if hasattr(self.gui, '_phase_current_state_machine'):
+                            if self.gui._phase_current_state_machine == state_machine:
+                                delattr(self.gui, '_phase_current_state_machine')
+                    except Exception as e:
+                        logger.debug(f"Additional cleanup failed: {e}")
         
         try:
             if act.get('type') == 'Digital Logic Test' and act.get('can_id') is not None:
@@ -551,6 +613,7 @@ class TestRunner:
                         return b''
 
                 def _send_bytes(data_bytes):
+                    """Send CAN frame with improved error handling."""
                     if AdapterFrame is not None:
                         f = AdapterFrame(can_id=can_id, data=data_bytes)
                     else:
@@ -558,9 +621,13 @@ class TestRunner:
                         f = F(); f.can_id = can_id; f.data = data_bytes; f.timestamp = time.time()
                     try:
                         if self.can_service is not None and self.can_service.is_connected():
-                            self.can_service.send_frame(f)
+                            success = self.can_service.send_frame(f)
+                            if not success:
+                                logger.warning(f"send_frame returned False for CAN ID 0x{can_id:X}, signal: {sig}")
+                        else:
+                            logger.warning(f"CAN service not connected, cannot send frame for CAN ID 0x{can_id:X}")
                     except Exception as e:
-                        logger.debug(f"Failed to send frame: {e}")
+                        logger.error(f"Failed to send frame for CAN ID 0x{can_id:X}, signal: {sig}: {e}", exc_info=True)
                     # Loopback handled by adapter if supported
                     if self.can_service is not None and self.can_service.is_connected() and hasattr(self.can_service.adapter, 'loopback'):
                         try:
@@ -596,12 +663,21 @@ class TestRunner:
                     # Require the observed value to remain equal to `expected` for the
                     # remainder of the dwell window once it is first observed. This
                     # avoids passing on a single transient sample.
-                    end = time.time() + (float(duration_ms) / 1000.0)
                     fb = test.get('feedback_signal')
                     fb_mid = test.get('feedback_message_id')
+                    
+                    # Validate feedback signal configuration
+                    if not fb:
+                        return False, "Feedback signal not configured in test"
+                    
+                    end = time.time() + (float(duration_ms) / 1000.0)
                     matched_start = None
                     poll = SLEEP_INTERVAL_SHORT
-                    while time.time() < end:
+                    max_iterations = int((duration_ms / 1000.0) / poll) + 100  # Safety limit
+                    iteration_count = 0
+                    
+                    while time.time() < end and iteration_count < max_iterations:
+                        iteration_count += 1
                         LocalQtCore.QCoreApplication.processEvents()
                         try:
                             if fb:
@@ -677,26 +753,45 @@ class TestRunner:
                 high_ok = False
                 low_ok = False
                 state = 'ENSURE_LOW'
+                max_state_transitions = 10  # Safety limit to prevent infinite loops
+                state_transition_count = 0
+                
+                def _track_sent_command_value_thread_safe(key: str, value):
+                    """Thread-safe wrapper for track_sent_command_value."""
+                    if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
+                        try:
+                            current_thread = LocalQtCore.QThread.currentThread()
+                            main_thread = LocalQtCore.QCoreApplication.instance().thread()
+                            
+                            if current_thread == main_thread:
+                                # Main thread - call directly
+                                self.gui.track_sent_command_value(key, value)
+                            else:
+                                # Background thread - use QueuedConnection
+                                LocalQtCore.QMetaObject.invokeMethod(
+                                    self.gui,
+                                    'track_sent_command_value',
+                                    LocalQtCore.Qt.ConnectionType.QueuedConnection,
+                                    LocalQtCore.Q_ARG(str, key),
+                                    LocalQtCore.Q_ARG(float, value)
+                                )
+                        except Exception as e:
+                            logger.debug(f"Failed to track sent command value '{key}': {e}")
+                
                 try:
-                    while True:
+                    while state_transition_count < max_state_transitions:
+                        state_transition_count += 1
+                        
                         if state == 'ENSURE_LOW':
                             _send_bytes(low_bytes)
-                            # Track sent command value for monitoring
-                            if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
-                                try:
-                                    self.gui.track_sent_command_value('applied_input', _parse_expected(low_val))
-                                except Exception:
-                                    pass
+                            # Track sent command value for monitoring (thread-safe)
+                            _track_sent_command_value_thread_safe('applied_input', _parse_expected(low_val))
                             _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                             state = 'ACTUATE_HIGH'
                         elif state == 'ACTUATE_HIGH':
                             _send_bytes(high_bytes)
-                            # Track sent command value for monitoring
-                            if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
-                                try:
-                                    self.gui.track_sent_command_value('applied_input', _parse_expected(high_val))
-                                except Exception:
-                                    pass
+                            # Track sent command value for monitoring (thread-safe)
+                            _track_sent_command_value_thread_safe('applied_input', _parse_expected(high_val))
                             # wait for HIGH dwell (may return early on observation)
                             high_ok, high_info = _wait_for_value(expected_high, int(dwell_ms))
                             logger.debug(f'HIGH dwell: {high_info}')
@@ -708,12 +803,8 @@ class TestRunner:
                             state = 'ENSURE_LOW_AFTER_HIGH'
                         elif state == 'ENSURE_LOW_AFTER_HIGH':
                             _send_bytes(low_bytes)
-                            # Track sent command value for monitoring
-                            if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
-                                try:
-                                    self.gui.track_sent_command_value('applied_input', _parse_expected(low_val))
-                                except Exception:
-                                    pass
+                            # Track sent command value for monitoring (thread-safe)
+                            _track_sent_command_value_thread_safe('applied_input', _parse_expected(low_val))
                             _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                             state = 'WAIT_LOW_DWELL'
                         elif state == 'WAIT_LOW_DWELL':
@@ -727,7 +818,13 @@ class TestRunner:
                             break
                         else:
                             # unknown state -> abort
+                            logger.error(f"Unknown state in Digital Logic Test state machine: {state}")
+                            info_parts.append(f"ERROR: Unknown state {state}")
                             break
+                    
+                    if state_transition_count >= max_state_transitions:
+                        logger.error(f"Digital Logic Test exceeded maximum state transitions ({max_state_transitions})")
+                        info_parts.append(f"ERROR: State machine exceeded maximum transitions")
                 finally:
                     try:
                         _send_bytes(low_bytes)
@@ -762,13 +859,26 @@ class TestRunner:
                 
                 mux_enable_sig = act.get('mux_enable_signal') or act.get('mux_enable')
                 mux_channel_sig = act.get('mux_channel_signal') or act.get('mux_channel')
-                mux_channel_value = act.get('mux_channel_value', act.get('mux_channel_value'))
+                mux_channel_value = act.get('mux_channel_value')
                 dac_cmd_sig = act.get('dac_command_signal') or act.get('dac_command')
                 
                 # Validate required parameters
                 if not dac_cmd_sig:
                     logger.error("Analog test requires dac_command_signal but none provided")
                     return False, "Analog test failed: dac_command_signal is required but missing"
+                
+                # Validate MUX channel value if MUX is configured
+                if mux_channel_sig and mux_channel_value is not None:
+                    try:
+                        mux_channel_int = int(mux_channel_value)
+                        if mux_channel_int < 0:
+                            logger.warning(f"MUX channel value ({mux_channel_int}) is negative, may cause issues")
+                        # Typical MUX channels are 0-15, but we don't enforce strict limit
+                        if mux_channel_int > 31:
+                            logger.warning(f"MUX channel value ({mux_channel_int}) is unusually large (>31), may indicate configuration error")
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid MUX channel value ({mux_channel_value}): {e}")
+                        mux_channel_value = 0  # Default to 0 if invalid
                 
                 # Log configuration for debugging
                 logger.info(f"Analog test config: dac_can_id=0x{can_id:X}, dac_command_signal='{dac_cmd_sig}', "
@@ -809,6 +919,14 @@ class TestRunner:
                         raise ValueError(f"Dwell time must be non-negative, got {dwell_ms}")
                     if dwell_ms == 0:
                         dwell_ms = DWELL_TIME_MIN
+                    
+                    # Validate dwell time is sufficient for data collection
+                    # Data collection period is typically DATA_COLLECTION_PERIOD_MS
+                    if dwell_ms < DATA_COLLECTION_PERIOD_MS:
+                        logger.warning(
+                            f"Dwell time ({dwell_ms}ms) is less than data collection period ({DATA_COLLECTION_PERIOD_MS}ms). "
+                            f"May not collect sufficient data."
+                        )
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Invalid dwell time, using {DWELL_TIME_DEFAULT}ms: {e}")
                     dwell_ms = DWELL_TIME_DEFAULT
@@ -883,8 +1001,13 @@ class TestRunner:
                     last_command_time = start_time
                     
                     # Send initial DAC command for this voltage level
+                    # Include MUX signals if configured (needed for multiplexed messages)
                     try:
-                        _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                        dac_signals = {dac_cmd_sig: int(dac_voltage)}
+                        if mux_enable_sig and mux_channel_sig:
+                            dac_signals[mux_enable_sig] = current_mux_enable
+                            dac_signals[mux_channel_sig] = current_mux_channel
+                        _encode_and_send(dac_signals)
                         step_change_time = time.time()  # Record when step change occurred
                         last_command_time = step_change_time
                         # Store DAC command timestamp for timestamp validation
@@ -905,9 +1028,14 @@ class TestRunner:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms during settling (to ensure reception)
+                        # Include MUX signals if configured
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
-                                _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                                dac_signals = {dac_cmd_sig: int(dac_voltage)}
+                                if mux_enable_sig and mux_channel_sig:
+                                    dac_signals[mux_enable_sig] = current_mux_enable
+                                    dac_signals[mux_channel_sig] = current_mux_channel
+                                _encode_and_send(dac_signals)
                                 last_command_time = current_time
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during settling: {e}")
@@ -934,9 +1062,14 @@ class TestRunner:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms during collection (periodic resend)
+                        # Include MUX signals if configured
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
-                                _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                                dac_signals = {dac_cmd_sig: int(dac_voltage)}
+                                if mux_enable_sig and mux_channel_sig:
+                                    dac_signals[mux_enable_sig] = current_mux_enable
+                                    dac_signals[mux_channel_sig] = current_mux_channel
+                                _encode_and_send(dac_signals)
                                 last_command_time = current_time
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during collection: {e}")
@@ -1031,9 +1164,14 @@ class TestRunner:
                         current_time = time.time()
                         
                         # Send DAC command every 50ms to maintain the voltage level
+                        # Include MUX signals if configured (needed for multiplexed messages)
                         if (current_time - last_command_time) >= command_interval_sec:
                             try:
-                                _encode_and_send({dac_cmd_sig: int(dac_voltage)})
+                                dac_signals = {dac_cmd_sig: int(dac_voltage)}
+                                if mux_enable_sig and mux_channel_sig:
+                                    dac_signals[mux_enable_sig] = current_mux_enable
+                                    dac_signals[mux_channel_sig] = current_mux_channel
+                                _encode_and_send(dac_signals)
                                 last_command_time = current_time
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during hold period: {e}")
@@ -1046,13 +1184,24 @@ class TestRunner:
                         
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
-                    logger.debug(
-                        f"Collected {data_points_collected} data points during {actual_collection_period_ms}ms collection period "
-                        f"(after {DAC_SETTLING_TIME_MS}ms settling), held DAC at {dac_voltage}mV for full {dwell_ms}ms dwell"
-                    )
-
+                    # Validate that we collected some data points
+                    if data_points_collected == 0:
+                        logger.warning(
+                            f"No feedback data points collected during {actual_collection_period_ms}ms collection period "
+                            f"at DAC voltage {dac_voltage}mV. This may indicate a problem with feedback signal reception."
+                        )
+                    else:
+                        logger.debug(
+                            f"Collected {data_points_collected} data points during {actual_collection_period_ms}ms collection period "
+                            f"(after {DAC_SETTLING_TIME_MS}ms settling), held DAC at {dac_voltage}mV for full {dwell_ms}ms dwell"
+                        )
+                    
+                    return data_points_collected
+                
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
+                    nonlocal current_mux_enable, current_mux_channel
+                    
                     if not signals:
                         logger.warning("_encode_and_send called with empty signals dict")
                         return
@@ -1074,6 +1223,18 @@ class TestRunner:
                         logger.warning(f"Could not find message for CAN ID 0x{can_id:X} - DBC may not be loaded or message missing")
                     
                     if target_msg is not None:
+                        # Check if message requires MUX signals (multiplexed message)
+                        required_mux_signals = {}
+                        for sig in target_msg.signals:
+                            # Check if signal is a multiplexor (MUX_Enable or MUX_Channel)
+                            sig_name_lower = sig.name.lower()
+                            if 'mux' in sig_name_lower:
+                                if 'enable' in sig_name_lower:
+                                    required_mux_signals[sig.name] = ('enable', current_mux_enable)
+                                elif 'channel' in sig_name_lower:
+                                    required_mux_signals[sig.name] = ('channel', current_mux_channel)
+                        
+                        # Add all signals from the signals dict
                         for sig_name in signals:
                             encode_data[sig_name] = signals[sig_name]
                             # check if this signal is muxed
@@ -1081,6 +1242,18 @@ class TestRunner:
                                 if sig.name == sig_name and getattr(sig, 'multiplexer_ids', None):
                                     mux_value = sig.multiplexer_ids[0]
                                     break
+                        
+                        # Update MUX state tracking when MUX signals are sent
+                        if mux_enable_sig and mux_enable_sig in signals:
+                            current_mux_enable = signals[mux_enable_sig]
+                        if mux_channel_sig and mux_channel_sig in signals:
+                            current_mux_channel = signals[mux_channel_sig]
+                        
+                        # If message requires MUX signals and they're not in the signals dict, add them
+                        # This is needed for multiplexed messages where MUX signals are required for encoding
+                        for mux_sig_name, (mux_type, mux_val) in required_mux_signals.items():
+                            if mux_sig_name not in encode_data:
+                                encode_data[mux_sig_name] = mux_val
                         if mux_value is not None:
                             encode_data['MessageType'] = mux_value
                         else:
@@ -1183,6 +1356,14 @@ class TestRunner:
                 fb_msg_id = test.get('feedback_message_id')
                 test_name = test.get('name', 'Analog Test')
                 
+                # Track current MUX state for encoding (needed for multiplexed messages)
+                # Initialize with default values
+                current_mux_enable = 0
+                current_mux_channel = mux_channel_value if mux_channel_value is not None else 0
+                
+                # Track total data points collected across all voltage steps
+                total_data_points_collected = 0
+                
                 # Clear plot before starting new analog test
                 if self.plot_clear_callback:
                     try:
@@ -1214,21 +1395,38 @@ class TestRunner:
                     if mux_enable_sig:
                         try:
                             _encode_and_send({mux_enable_sig: 0})
+                            current_mux_enable = 0  # Update state only after successful send
                             _nb_sleep(SLEEP_INTERVAL_SHORT)
                         except Exception as e:
                             logger.warning(f"Failed to disable MUX: {e}", exc_info=True)
                             # Continue anyway - MUX may already be disabled
+                            # State may be inconsistent, but we'll try to set it correctly later
                     # 2) Set MUX channel
                     if mux_channel_sig and mux_channel_value is not None:
                         try:
-                            _encode_and_send({mux_channel_sig: int(mux_channel_value)})
-                            _nb_sleep(SLEEP_INTERVAL_SHORT)
+                            mux_channel_int = int(mux_channel_value)
+                            # Validate MUX channel value is non-negative
+                            if mux_channel_int < 0:
+                                logger.warning(f"Invalid MUX channel value: {mux_channel_int}, must be >= 0. Skipping MUX channel set.")
+                            else:
+                                current_mux_channel = mux_channel_int
+                                _encode_and_send({mux_channel_sig: current_mux_channel})
+                                _nb_sleep(SLEEP_INTERVAL_SHORT)
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Invalid MUX channel value '{mux_channel_value}': {e}. Skipping MUX channel set.")
+                            # Continue - may be optional depending on hardware
                         except Exception as e:
                             logger.warning(f"Failed to set MUX channel: {e}", exc_info=True)
                             # Continue - may be optional depending on hardware
                     # 3) Set DAC to min (CRITICAL - must succeed)
+                    # Include MUX signals if message requires them (for multiplexed messages)
                     try:
-                        _encode_and_send({dac_cmd_sig: int(dac_min)})
+                        dac_signals = {dac_cmd_sig: int(dac_min)}
+                        # If MUX signals are configured and message might require them, include them
+                        if mux_enable_sig and mux_channel_sig:
+                            dac_signals[mux_enable_sig] = current_mux_enable
+                            dac_signals[mux_channel_sig] = current_mux_channel
+                        _encode_and_send(dac_signals)
                         _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception as e:
                         logger.error(f"Failed to set DAC to minimum: {e}", exc_info=True)
@@ -1237,16 +1435,32 @@ class TestRunner:
                     if mux_enable_sig:
                         try:
                             if mux_channel_sig and mux_channel_value is not None:
-                                _encode_and_send({mux_enable_sig: 1, mux_channel_sig: int(mux_channel_value)})
+                                try:
+                                    mux_channel_int = int(mux_channel_value)
+                                    if mux_channel_int >= 0:
+                                        _encode_and_send({mux_enable_sig: 1, mux_channel_sig: mux_channel_int})
+                                        current_mux_enable = 1  # Update state only after successful send
+                                        current_mux_channel = mux_channel_int
+                                    else:
+                                        logger.warning(f"Invalid MUX channel value: {mux_channel_int}, using enable only")
+                                        _encode_and_send({mux_enable_sig: 1})
+                                        current_mux_enable = 1
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Invalid MUX channel value, using enable only")
+                                    _encode_and_send({mux_enable_sig: 1})
+                                    current_mux_enable = 1
                             else:
                                 _encode_and_send({mux_enable_sig: 1})
+                                current_mux_enable = 1  # Update state only after successful send
                         except Exception as e:
                             logger.warning(f"Failed to enable MUX: {e}", exc_info=True)
                             # Continue - test may work without explicit MUX enable
+                            # State may be inconsistent, but test can continue
                     # 5) Hold initial dwell and collect multiple feedback data points
                     # Continuously send DAC command (50ms period) and collect data during dwell
                     if dac_cmd_sig:
-                        _collect_data_points_during_dwell(dac_min, dwell_ms, dac_cmd_sig, fb_signal, fb_msg_id)
+                        points_collected = _collect_data_points_during_dwell(dac_min, dwell_ms, dac_cmd_sig, fb_signal, fb_msg_id)
+                        total_data_points_collected += points_collected if points_collected else 0
                     else:
                         # Fallback if no DAC command signal (shouldn't happen in normal operation)
                         _nb_sleep(float(dwell_ms) / 1000.0)
@@ -1289,7 +1503,8 @@ class TestRunner:
                         cur = min(cur + int(dac_step), int(dac_max))
                         # Collect multiple data points during dwell, with periodic DAC command resends
                         if dac_cmd_sig:
-                            _collect_data_points_during_dwell(cur, dwell_ms, dac_cmd_sig, fb_signal, fb_msg_id)
+                            points_collected = _collect_data_points_during_dwell(cur, dwell_ms, dac_cmd_sig, fb_signal, fb_msg_id)
+                            total_data_points_collected += points_collected if points_collected else 0
                         else:
                             # Fallback if no DAC command signal (shouldn't happen in normal operation)
                             _nb_sleep(float(dwell_ms) / 1000.0)
@@ -1324,8 +1539,22 @@ class TestRunner:
                                             self.plot_update_callback(measured_dac, fb_val, test_name)
                                 except Exception as e:
                                     logger.debug(f"Error updating plot during analog test ramp: {e}", exc_info=True)
-                    success = True
-                    info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV"
+                    # Validate that we collected feedback data (if feedback signal is configured)
+                    if fb_signal and fb_msg_id:
+                        if total_data_points_collected == 0:
+                            logger.warning(
+                                f"Analog Sweep Test: No feedback data points collected during entire test. "
+                                f"This may indicate a problem with feedback signal reception or configuration."
+                            )
+                            success = False
+                            info = f"Analog actuation failed: No feedback data collected (held {dac_min}-{dac_max} step {dac_step} mV)"
+                        else:
+                            success = True
+                            info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV, collected {total_data_points_collected} data points"
+                    else:
+                        # No feedback signal configured - test passes if commands were sent successfully
+                        success = True
+                        info = f"Analog actuation: held {dac_min}-{dac_max} step {dac_step} mV (no feedback signal configured)"
                 except Exception as e:
                     success = False
                     info = f"Analog actuation failed: {e}"
@@ -1333,20 +1562,41 @@ class TestRunner:
                     # Ensure we leave DAC at 0 and MUX disabled even if an exception occurred
                     try:
                         if dac_cmd_sig:
-                            _encode_and_send({dac_cmd_sig: 0})
+                            # Include MUX signals if configured (needed for multiplexed messages)
+                            dac_signals = {dac_cmd_sig: 0}
+                            if mux_enable_sig and mux_channel_sig:
+                                dac_signals[mux_enable_sig] = 0  # Disable MUX
+                                dac_signals[mux_channel_sig] = current_mux_channel
+                            _encode_and_send(dac_signals)
                             _nb_sleep(SLEEP_INTERVAL_SHORT)
                     except Exception as e:
                         logger.debug(f"Failed to clear signal cache: {e}")
                     try:
                         if mux_enable_sig:
                             # send disable; include channel if available to be explicit
-                            if mux_channel_sig and mux_channel_value is not None:
-                                _encode_and_send({mux_enable_sig: 0, mux_channel_sig: int(mux_channel_value)})
-                            else:
-                                _encode_and_send({mux_enable_sig: 0})
-                            _nb_sleep(SLEEP_INTERVAL_SHORT)
+                            try:
+                                if mux_channel_sig and mux_channel_value is not None:
+                                    try:
+                                        mux_channel_int = int(mux_channel_value)
+                                        if mux_channel_int >= 0:
+                                            _encode_and_send({mux_enable_sig: 0, mux_channel_sig: mux_channel_int})
+                                            current_mux_enable = 0  # Update state only after successful send
+                                            current_mux_channel = mux_channel_int
+                                        else:
+                                            _encode_and_send({mux_enable_sig: 0})
+                                            current_mux_enable = 0
+                                    except (ValueError, TypeError):
+                                        _encode_and_send({mux_enable_sig: 0})
+                                        current_mux_enable = 0
+                                else:
+                                    _encode_and_send({mux_enable_sig: 0})
+                                    current_mux_enable = 0  # Update state only after successful send
+                                _nb_sleep(SLEEP_INTERVAL_SHORT)
+                            except Exception as e:
+                                logger.warning(f"Failed to disable MUX in cleanup: {e}. Hardware may be left in enabled state.")
+                                # Try to log this as a warning since cleanup failures are important
                     except Exception as e:
-                        logger.debug(f"Failed to disable multiplexor signal: {e}")
+                        logger.warning(f"Failed to disable multiplexor signal in cleanup: {e}")
                 # Capture and store plot data immediately for analog tests before returning
                 # This prevents plot data from being lost when the next test clears the plot arrays
                 if test.get('type') == 'Analog Sweep Test':
@@ -1376,25 +1626,62 @@ class TestRunner:
                                                 valid_dac.append(float(dac_val))
                                                 valid_feedback.append(float(fb_val))
                                         
-                                        if len(valid_dac) >= 2:
+                                        if len(valid_dac) < 2:
+                                            logger.warning(
+                                                f"Analog Sweep Test: Insufficient valid data points for linear regression. "
+                                                f"Need at least 2 valid points, got {len(valid_dac)}. Regression line will not be displayed."
+                                            )
+                                            slope = None
+                                            intercept = None
+                                        else:
                                             n = len(valid_dac)
                                             sum_x = sum(valid_dac)
                                             sum_y = sum(valid_feedback)
                                             sum_xy = sum(x * y for x, y in zip(valid_dac, valid_feedback))
                                             sum_x2 = sum(x * x for x in valid_dac)
                                             
-                                            denominator = n * sum_x2 - sum_x * sum_x
-                                            if abs(denominator) >= 1e-10:
-                                                slope = (n * sum_xy - sum_x * sum_y) / denominator
-                                                intercept = (sum_y - slope * sum_x) / n
-                                                logger.info(f"Analog Sweep Test Linear Regression: Slope={slope:.6f}, Intercept={intercept:.6f}")
-                                                
-                                                # Add regression line to plot
-                                                if self.gui is not None and hasattr(self.gui, '_add_regression_line_to_plot'):
-                                                    try:
-                                                        self.gui._add_regression_line_to_plot(slope, intercept)
-                                                    except Exception as e:
-                                                        logger.debug(f"Failed to add regression line to plot: {e}")
+                                            # Check for variance in DAC values (required for valid regression)
+                                            dac_mean = sum_x / n
+                                            dac_variance = sum((x - dac_mean) ** 2 for x in valid_dac) / n
+                                            
+                                            if dac_variance < 1e-10:
+                                                logger.warning(
+                                                    f"Analog Sweep Test: DAC values have no variance (all values are approximately {dac_mean:.2f}mV). "
+                                                    f"Cannot calculate valid linear regression. Regression line will not be displayed."
+                                                )
+                                                slope = None
+                                                intercept = None
+                                            else:
+                                                denominator = n * sum_x2 - sum_x * sum_x
+                                                if abs(denominator) >= 1e-10:
+                                                    slope = (n * sum_xy - sum_x * sum_y) / denominator
+                                                    intercept = (sum_y - slope * sum_x) / n
+                                                    
+                                                    # Validate regression results (check for NaN or Inf)
+                                                    if (isinstance(slope, float) and (slope != slope or abs(slope) == float('inf')) or
+                                                        isinstance(intercept, float) and (intercept != intercept or abs(intercept) == float('inf'))):
+                                                        logger.warning(
+                                                            f"Analog Sweep Test: Invalid regression results (slope={slope}, intercept={intercept}). "
+                                                            f"Regression line will not be displayed."
+                                                        )
+                                                        slope = None
+                                                        intercept = None
+                                                    else:
+                                                        logger.info(f"Analog Sweep Test Linear Regression: Slope={slope:.6f}, Intercept={intercept:.6f}")
+                                                        
+                                                        # Add regression line to plot
+                                                        if self.gui is not None and hasattr(self.gui, '_add_regression_line_to_plot'):
+                                                            try:
+                                                                self.gui._add_regression_line_to_plot(slope, intercept)
+                                                            except Exception as e:
+                                                                logger.debug(f"Failed to add regression line to plot: {e}")
+                                                else:
+                                                    logger.warning(
+                                                        f"Analog Sweep Test: Regression denominator too small ({denominator:.2e}). "
+                                                        f"Cannot calculate valid linear regression."
+                                                    )
+                                                    slope = None
+                                                    intercept = None
                                     except Exception as e:
                                         logger.debug(f"Failed to calculate linear regression for Analog Sweep Test: {e}", exc_info=True)
                                 
@@ -1405,11 +1692,22 @@ class TestRunner:
                                     'intercept': intercept
                                 }
                                 # Store plot data immediately in execution data (will be merged with other data later)
-                                # Use a temporary key structure that _on_test_finished can access
-                                if not hasattr(self.gui, '_test_plot_data_temp'):
-                                    self.gui._test_plot_data_temp = {}
-                                self.gui._test_plot_data_temp[test_name] = plot_data
-                                logger.debug(f"Captured and stored plot data for {test_name}: {len(plot_data['dac_voltages'])} points")
+                                # Use a temporary key structure that _on_test_finished can access (thread-safe)
+                                if self.gui is not None:
+                                    try:
+                                        current_thread = QtCore.QThread.currentThread()
+                                        main_thread = QtCore.QCoreApplication.instance().thread()
+                                        
+                                        if current_thread != main_thread:
+                                            logger.debug(f"Storing plot data from background thread for '{test_name}'")
+                                        
+                                        # Dictionary assignment is thread-safe in Python (GIL protects dict operations)
+                                        if not hasattr(self.gui, '_test_plot_data_temp'):
+                                            self.gui._test_plot_data_temp = {}
+                                        self.gui._test_plot_data_temp[test_name] = plot_data
+                                        logger.debug(f"Captured and stored plot data for {test_name}: {len(plot_data['dac_voltages'])} points")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to store plot data for '{test_name}': {e}")
                     except Exception as e:
                         logger.debug(f"Failed to capture plot data for {test_name}: {e}", exc_info=True)
                 
@@ -1440,8 +1738,14 @@ class TestRunner:
                 if pre_dwell_ms < 0:
                     return False, "Pre-dwell time must be non-negative"
                 
+                if pre_dwell_ms > 60000:  # 60 seconds max
+                    logger.warning(f"Pre-dwell time ({pre_dwell_ms}ms) is very large, may indicate configuration error")
+                
                 if dwell_ms <= 0:
                     return False, "Dwell time must be positive"
+                
+                if dwell_ms < 100:
+                    logger.warning(f"Dwell time ({dwell_ms}ms) is very short, may not collect sufficient data")
                 
                 def _nb_sleep(sec: float) -> None:
                     """Non-blocking sleep that processes Qt events.
@@ -1514,9 +1818,37 @@ class TestRunner:
                         pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
-                # Step 3: Calculate averages
+                # Step 3: Calculate averages and validate data quality
                 if not feedback_values or not eol_values:
                     return False, f"No data collected during dwell time (Feedback samples: {len(feedback_values)}, EOL samples: {len(eol_values)})"
+                
+                # Validate minimum sample count
+                min_samples = max(5, int(dwell_ms / 200))  # At least 5 samples or 1 per 200ms
+                if len(feedback_values) < min_samples:
+                    logger.warning(f"Feedback signal collected only {len(feedback_values)} samples, expected at least {min_samples}")
+                if len(eol_values) < min_samples:
+                    logger.warning(f"EOL signal collected only {len(eol_values)} samples, expected at least {min_samples}")
+                
+                # Check for data quality issues (all zeros, all same value, etc.)
+                feedback_unique = len(set(feedback_values))
+                eol_unique = len(set(eol_values))
+                
+                if feedback_unique == 1:
+                    logger.warning(f"Feedback signal has no variation (all values = {feedback_values[0]})")
+                if eol_unique == 1:
+                    logger.warning(f"EOL signal has no variation (all values = {eol_values[0]})")
+                
+                # Check for outliers (values more than 3 standard deviations from mean)
+                if len(feedback_values) > 2:
+                    import statistics
+                    try:
+                        fb_mean = statistics.mean(feedback_values)
+                        fb_std = statistics.stdev(feedback_values) if len(feedback_values) > 1 else 0
+                        outliers = [v for v in feedback_values if abs(v - fb_mean) > 3 * fb_std]
+                        if outliers:
+                            logger.warning(f"Found {len(outliers)} outlier(s) in feedback signal: {outliers[:5]}")
+                    except Exception:
+                        pass
                 
                 feedback_avg = sum(feedback_values) / len(feedback_values)
                 eol_avg = sum(eol_values) / len(eol_values)
@@ -1548,11 +1880,24 @@ class TestRunner:
                     'eol_values': eol_values
                 }
                 
-                # Store in temporary storage for retrieval by _on_test_finished
+                # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
+                # Note: Dictionary assignment is atomic in Python due to GIL, but we check thread for safety
                 if self.gui is not None:
-                    if not hasattr(self.gui, '_test_result_data_temp'):
-                        self.gui._test_result_data_temp = {}
-                    self.gui._test_result_data_temp[test_name] = result_data
+                    try:
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread != main_thread:
+                            logger.debug(f"Storing test result data from background thread for '{test_name}'")
+                        
+                        # Dictionary assignment is thread-safe in Python (GIL protects dict operations)
+                        # But we ensure the attribute exists first
+                        if not hasattr(self.gui, '_test_result_data_temp'):
+                            # This assignment is safe even from background thread
+                            self.gui._test_result_data_temp = {}
+                        self.gui._test_result_data_temp[test_name] = result_data
+                    except Exception as e:
+                        logger.warning(f"Failed to store test result data for '{test_name}': {e}")
                 
                 logger.info(f"Analog Static Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
@@ -1576,8 +1921,15 @@ class TestRunner:
                 if tolerance_c < 0:
                     return False, "Tolerance must be non-negative"
                 
+                # Validate reference temperature range (reasonable range: -40°C to 150°C)
+                if not (-40.0 <= reference_temp_c <= 150.0):
+                    logger.warning(f"Reference temperature ({reference_temp_c}°C) is outside typical range (-40°C to 150°C)")
+                
                 if dwell_ms <= 0:
                     return False, "Dwell time must be positive"
+                
+                if dwell_ms < 100:
+                    logger.warning(f"Dwell time ({dwell_ms}ms) is very short, may not collect sufficient data")
                 
                 def _nb_sleep(sec: float) -> None:
                     """Non-blocking sleep that processes Qt events.
@@ -1618,31 +1970,8 @@ class TestRunner:
                                 temp_float = float(temp_val)
                                 temperature_values.append(temp_float)
                                 
-                                # Update real-time display with latest value (feedback signal, not current signal)
-                                if self.gui is not None and hasattr(self.gui, '_update_signal_with_status'):
-                                    try:
-                                        # Update temperature monitoring
-                                        if self.gui is not None:
-                                            try:
-                                                if hasattr(self.gui, 'update_monitor_signal_by_name'):
-                                                    self.gui.update_monitor_signal_by_name('dut_temperature', temp_float)
-                                                elif hasattr(self.gui, '_update_signal_with_status'):
-                                                    self.gui._update_signal_with_status('dut_temperature', temp_float)
-                                            except Exception:
-                                                pass
-                                    except Exception as e:
-                                        logger.debug(f"Failed to update feedback signal label: {e}")
-                                elif self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
-                                    try:
-                                        self.gui.feedback_signal_label.setText(f"{temp_float:.2f} °C")
-                                    except Exception as e:
-                                        logger.debug(f"Failed to update feedback signal label: {e}")
-                                elif self.label_update_callback:
-                                    # Fallback: use callback if GUI not available (should update feedback label)
-                                    try:
-                                        self.label_update_callback(f"{temp_float:.2f} °C")
-                                    except Exception as e:
-                                        logger.debug(f"Failed to update label: {e}")
+                                # Update real-time display with latest value (thread-safe)
+                                self.update_monitor_signal('dut_temperature', temp_float)
                             except (ValueError, TypeError):
                                 pass
                     except Exception as e:
@@ -1658,6 +1987,21 @@ class TestRunner:
                 # Step 2: Check if any data was collected
                 if not temperature_values:
                     return False, f"No temperature data received during dwell time ({dwell_ms}ms). Check CAN connection and signal configuration."
+                
+                # Validate minimum sample count
+                min_samples = max(5, int(dwell_ms / 200))  # At least 5 samples or 1 per 200ms
+                if len(temperature_values) < min_samples:
+                    logger.warning(f"Temperature signal collected only {len(temperature_values)} samples, expected at least {min_samples}")
+                
+                # Check for data quality issues
+                temp_unique = len(set(temperature_values))
+                if temp_unique == 1:
+                    logger.warning(f"Temperature signal has no variation (all values = {temperature_values[0]}°C)")
+                
+                # Validate temperature values are in reasonable range
+                invalid_temps = [t for t in temperature_values if not (-40.0 <= t <= 200.0)]
+                if invalid_temps:
+                    logger.warning(f"Found {len(invalid_temps)} temperature value(s) outside reasonable range (-40°C to 200°C): {invalid_temps[:5]}")
                 
                 # Step 3: Calculate average
                 temperature_avg = sum(temperature_values) / len(temperature_values)
@@ -1687,11 +2031,20 @@ class TestRunner:
                     'temperature_values': temperature_values
                 }
                 
-                # Store in temporary storage for retrieval by _on_test_finished
+                # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
                 if self.gui is not None:
-                    if not hasattr(self.gui, '_test_result_data_temp'):
-                        self.gui._test_result_data_temp = {}
-                    self.gui._test_result_data_temp[test_name] = result_data
+                    try:
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread != main_thread:
+                            logger.debug(f"Storing test result data from background thread for '{test_name}'")
+                        
+                        if not hasattr(self.gui, '_test_result_data_temp'):
+                            self.gui._test_result_data_temp = {}
+                        self.gui._test_result_data_temp[test_name] = result_data
+                    except Exception as e:
+                        logger.warning(f"Failed to store test result data for '{test_name}': {e}")
                 
                 logger.info(f"Temperature Validation Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
@@ -1722,8 +2075,19 @@ class TestRunner:
                 if duty_tolerance < 0:
                     return False, "Duty tolerance must be non-negative"
                 
+                # Validate reference PWM frequency range (0-100kHz)
+                if not (0.0 <= reference_pwm_frequency <= 100000.0):
+                    logger.warning(f"Reference PWM frequency ({reference_pwm_frequency} Hz) is outside typical range (0-100kHz)")
+                
+                # Validate reference duty cycle range (0-100%)
+                if not (0.0 <= reference_duty <= 100.0):
+                    return False, f"Reference duty cycle must be in range 0-100%, got {reference_duty}"
+                
                 if acquisition_ms <= 0:
                     return False, "Acquisition time must be positive"
+                
+                if acquisition_ms < 100:
+                    logger.warning(f"Acquisition time ({acquisition_ms}ms) is very short, may not collect sufficient data")
                 
                 def _nb_sleep(sec: float) -> None:
                     """Non-blocking sleep that processes Qt events.
@@ -1783,27 +2147,13 @@ class TestRunner:
                                 duty_float = float(duty_val)
                                 duty_values.append(duty_float)
                                 
-                                # Update real-time display with both values (use latest frequency if available)
-                                latest_freq = pwm_frequency_values[-1] if pwm_frequency_values else None
-                                if latest_freq is not None:
-                                    display_text = f"Freq: {latest_freq:.2f} Hz, Duty: {duty_float:.2f} %"
-                                    # For PWM signals, we show both frequency and duty in the feedback signal
-                                    # Store as a formatted string since it's a composite value
-                                    if self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
-                                        try:
-                                            # Use the new method but with formatted text for composite values
-                                            if hasattr(self.gui, '_update_signal_with_status'):
-                                                # For composite values, we'll just set the text directly
-                                                self.gui.feedback_signal_label.setText(display_text)
-                                            else:
-                                                self.gui.feedback_signal_label.setText(display_text)
-                                        except Exception as e:
-                                            logger.debug(f"Failed to update feedback signal label: {e}")
-                                    elif self.label_update_callback:
-                                        try:
-                                            self.label_update_callback(display_text)
-                                        except Exception as e:
-                                            logger.debug(f"Failed to update label: {e}")
+                                # Validate duty cycle range
+                                if not (0.0 <= duty_float <= 100.0):
+                                    logger.warning(f"Duty cycle value {duty_float}% is outside expected range (0-100%)")
+                                
+                                # Update real-time display with both values (thread-safe via monitor signal)
+                                # Note: PWM test doesn't have a dedicated monitor signal, so we skip real-time updates
+                                # The final results will be displayed after test completion
                             except (ValueError, TypeError):
                                 pass
                     except Exception as e:
@@ -1823,9 +2173,26 @@ class TestRunner:
                 if not duty_values:
                     return False, f"No duty cycle data received during acquisition time ({acquisition_ms}ms). Check CAN connection and signal configuration."
                 
+                # Validate minimum sample count
+                min_samples = max(5, int(acquisition_ms / 200))  # At least 5 samples or 1 per 200ms
+                if len(pwm_frequency_values) < min_samples:
+                    logger.warning(f"PWM frequency signal collected only {len(pwm_frequency_values)} samples, expected at least {min_samples}")
+                if len(duty_values) < min_samples:
+                    logger.warning(f"Duty cycle signal collected only {len(duty_values)} samples, expected at least {min_samples}")
+                
+                # Validate that both signals are from same message (check message IDs match)
+                # Note: Both signals use feedback_msg_id, so they should be from same message
+                # This is implicit in the current implementation
+                
                 # Step 3: Calculate averages
                 pwm_frequency_avg = sum(pwm_frequency_values) / len(pwm_frequency_values)
                 duty_avg = sum(duty_values) / len(duty_values)
+                
+                # Validate calculated averages are in reasonable range
+                if not (0.0 <= pwm_frequency_avg <= 100000.0):
+                    logger.warning(f"Calculated PWM frequency average ({pwm_frequency_avg} Hz) is outside typical range (0-100kHz)")
+                if not (0.0 <= duty_avg <= 100.0):
+                    logger.warning(f"Calculated duty cycle average ({duty_avg}%) is outside expected range (0-100%)")
                 
                 # Step 4: Compare with reference values and determine pass/fail
                 frequency_difference = abs(pwm_frequency_avg - reference_pwm_frequency)
@@ -1903,6 +2270,8 @@ class TestRunner:
                     """Send trigger signal with specified value (0=disable, 1=enable)."""
                     try:
                         dbc_available = (self.dbc_service is not None and self.dbc_service.is_loaded())
+                        frame_data = None
+                        
                         if dbc_available:
                             msg = self.dbc_service.find_message_by_id(trigger_msg_id)
                             if msg is not None:
@@ -1922,13 +2291,24 @@ class TestRunner:
                                 if mux_value is not None:
                                     signal_values['MessageType'] = mux_value
                                 
-                                frame_data = self.dbc_service.encode_message(msg, signal_values)
+                                try:
+                                    frame_data = self.dbc_service.encode_message(msg, signal_values)
+                                    if not frame_data:
+                                        logger.error(f"Failed to encode trigger signal {trigger_signal}={value} for CAN ID 0x{trigger_msg_id:X}")
+                                        return False
+                                except Exception as e:
+                                    logger.error(f"Exception encoding trigger signal {trigger_signal}={value}: {e}", exc_info=True)
+                                    return False
                             else:
                                 logger.warning(f"Could not find message for CAN ID 0x{trigger_msg_id:X}")
                                 return False
                         else:
                             # Fallback: raw encoding
                             frame_data = bytes([value & 0xFF])
+                        
+                        if frame_data is None:
+                            logger.error(f"Failed to generate frame data for trigger signal {trigger_signal}={value}")
+                            return False
                         
                         if AdapterFrame is not None:
                             frame = AdapterFrame(can_id=trigger_msg_id, data=frame_data)
@@ -1940,12 +2320,17 @@ class TestRunner:
                             frame.timestamp = time.time()
                         
                         if self.can_service is not None and self.can_service.is_connected():
-                            self.can_service.send_frame(frame)
+                            success = self.can_service.send_frame(frame)
+                            if not success:
+                                logger.warning(f"send_frame returned False for trigger signal {trigger_signal}={value}")
+                                return False
                             logger.info(f"External 5V Test: Sent trigger signal {trigger_signal}={value}")
                             return True
-                        return False
+                        else:
+                            logger.error(f"CAN service not connected, cannot send trigger signal {trigger_signal}={value}")
+                            return False
                     except Exception as e:
-                        logger.error(f"Failed to send trigger: {e}")
+                        logger.error(f"Failed to send trigger: {e}", exc_info=True)
                         return False
                 
                 def _collect_data_phase(phase_name: str, clear_plot: bool = False) -> tuple[list, list]:
@@ -2030,27 +2415,35 @@ class TestRunner:
                 
                 # Phase 1: Disabled state
                 logger.info("External 5V Test: Phase 1 - Disabling External 5V...")
-                if not _send_trigger(0):
-                    return False, "Failed to send disable trigger"
-                
-                logger.info(f"External 5V Test: Waiting {pre_dwell_ms}ms for system stabilization (disabled)...")
-                _nb_sleep(pre_dwell_ms / 1000.0)
-                
-                eol_values_disabled, feedback_values_disabled = _collect_data_phase("Disabled", clear_plot=False)
-                
-                # Phase 2: Enabled state
-                logger.info("External 5V Test: Phase 2 - Enabling External 5V...")
-                if not _send_trigger(1):
-                    return False, "Failed to send enable trigger"
-                
-                logger.info(f"External 5V Test: Waiting {pre_dwell_ms}ms for system stabilization (enabled)...")
-                _nb_sleep(pre_dwell_ms / 1000.0)
-                
-                eol_values_enabled, feedback_values_enabled = _collect_data_phase("Enabled", clear_plot=True)
-                
-                # Disable again
-                logger.info("External 5V Test: Disabling External 5V...")
-                _send_trigger(0)
+                try:
+                    if not _send_trigger(0):
+                        return False, "Failed to send disable trigger"
+                    
+                    logger.info(f"External 5V Test: Waiting {pre_dwell_ms}ms for system stabilization (disabled)...")
+                    _nb_sleep(pre_dwell_ms / 1000.0)
+                    
+                    eol_values_disabled, feedback_values_disabled = _collect_data_phase("Disabled", clear_plot=False)
+                    
+                    # Validate Phase 1 data was collected
+                    if not eol_values_disabled or not feedback_values_disabled:
+                        logger.warning("External 5V Test: Phase 1 data collection incomplete, but continuing to Phase 2")
+                    
+                    # Phase 2: Enabled state
+                    logger.info("External 5V Test: Phase 2 - Enabling External 5V...")
+                    if not _send_trigger(1):
+                        return False, "Failed to send enable trigger"
+                    
+                    logger.info(f"External 5V Test: Waiting {pre_dwell_ms}ms for system stabilization (enabled)...")
+                    _nb_sleep(pre_dwell_ms / 1000.0)
+                    
+                    eol_values_enabled, feedback_values_enabled = _collect_data_phase("Enabled", clear_plot=True)
+                finally:
+                    # Always disable External 5V in cleanup, even if test fails
+                    logger.info("External 5V Test: Cleanup - Disabling External 5V...")
+                    try:
+                        _send_trigger(0)
+                    except Exception as e:
+                        logger.warning(f"Failed to disable External 5V during cleanup: {e}")
                 
                 # Calculate averages for both phases
                 if not eol_values_disabled or not feedback_values_disabled:
@@ -2235,48 +2628,65 @@ class TestRunner:
                     
                     return data_bytes
                 
-                # Step 1: Send Fan Test Trigger Signal = 1 to enable fan
-                logger.info(f"Fan Control Test: Sending trigger signal to enable fan...")
-                try:
-                    signals = {trigger_signal: 1}
-                    data_bytes = _encode_and_send_fan(signals, trigger_msg_id)
-                    
-                    if not data_bytes:
-                        return False, "Failed to encode fan trigger message"
-                    
-                    # Use CanService.send_frame() with Frame object (same pattern as other tests)
-                    if self.can_service is not None and self.can_service.is_connected():
-                        f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
-                        logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
-                        try:
-                            success = self.can_service.send_frame(f)
-                            if not success:
-                                logger.warning(f"send_frame returned False for can_id=0x{trigger_msg_id:X}")
-                            else:
-                                logger.info(f"Sent fan trigger signal (1) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
-                        except Exception as e:
-                            logger.error(f"Failed to send frame via service: {e}", exc_info=True)
-                            return False, f"Failed to send fan trigger signal: {e}"
-                    elif self.gui is not None:
-                        # Fallback: use GUI's CAN service
-                        if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                # Helper function to send fan trigger
+                def _send_fan_trigger(value: int) -> bool:
+                    """Send fan trigger signal with specified value (0=disable, 1=enable)."""
+                    try:
+                        signals = {trigger_signal: value}
+                        data_bytes = _encode_and_send_fan(signals, trigger_msg_id)
+                        
+                        if not data_bytes:
+                            logger.error(f"Failed to encode fan trigger message (value={value})")
+                            return False
+                        
+                        # Use CanService.send_frame() with Frame object
+                        if self.can_service is not None and self.can_service.is_connected():
                             f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
                             logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
                             try:
-                                success = self.gui.can_service.send_frame(f)
+                                success = self.can_service.send_frame(f)
                                 if not success:
                                     logger.warning(f"send_frame returned False for can_id=0x{trigger_msg_id:X}")
+                                    return False
                                 else:
-                                    logger.info(f"Sent fan trigger signal (1) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                                    logger.info(f"Sent fan trigger signal ({value}) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                                    return True
                             except Exception as e:
-                                logger.error(f"Failed to send frame via GUI service: {e}", exc_info=True)
-                                return False, f"Failed to send fan trigger signal: {e}"
+                                logger.error(f"Failed to send frame via service: {e}", exc_info=True)
+                                return False
+                        elif self.gui is not None:
+                            # Fallback: use GUI's CAN service
+                            if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
+                                logger.debug(f"Sending fan trigger frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
+                                try:
+                                    success = self.gui.can_service.send_frame(f)
+                                    if not success:
+                                        logger.warning(f"send_frame returned False for can_id=0x{trigger_msg_id:X}")
+                                        return False
+                                    else:
+                                        logger.info(f"Sent fan trigger signal ({value}) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
+                                        return True
+                                except Exception as e:
+                                    logger.error(f"Failed to send frame via GUI service: {e}", exc_info=True)
+                                    return False
+                            else:
+                                logger.error("CAN service not available. Cannot send fan trigger signal.")
+                                return False
                         else:
-                            return False, "CAN service not available. Cannot send fan trigger signal."
-                    else:
-                        return False, "CAN service not available. Cannot send fan trigger signal."
+                            logger.error("CAN service not available. Cannot send fan trigger signal.")
+                            return False
+                    except Exception as e:
+                        logger.error(f"Failed to send fan trigger signal: {e}", exc_info=True)
+                        return False
+                
+                # Step 1: Send Fan Test Trigger Signal = 1 to enable fan
+                logger.info(f"Fan Control Test: Sending trigger signal to enable fan...")
+                try:
+                    if not _send_fan_trigger(1):
+                        return False, "Failed to send fan enable trigger"
                 except Exception as e:
-                    logger.error(f"Failed to send fan trigger signal: {e}")
+                    logger.error(f"Failed to send fan trigger signal: {e}", exc_info=True)
                     return False, f"Failed to send fan trigger signal: {e}"
                 
                 # Step 2: Wait up to Test Timeout for Fan Enabled Signal to become 1
@@ -2284,6 +2694,8 @@ class TestRunner:
                 fan_enabled_verified = False
                 timeout_start = time.time()
                 timeout_end = timeout_start + (timeout_ms / 1000.0)
+                last_enabled_value = None
+                enabled_stable_count = 0
                 
                 while time.time() < timeout_end:
                     try:
@@ -2298,9 +2710,16 @@ class TestRunner:
                         if enabled_val is not None:
                             try:
                                 enabled_int = int(float(enabled_val))
-                                if enabled_int == 1:
+                                # Check if value is stable (same value for multiple readings)
+                                if enabled_int == last_enabled_value:
+                                    enabled_stable_count += 1
+                                else:
+                                    enabled_stable_count = 0
+                                    last_enabled_value = enabled_int
+                                
+                                if enabled_int == 1 and enabled_stable_count >= 2:
                                     fan_enabled_verified = True
-                                    logger.info("Fan enabled signal verified (value = 1)")
+                                    logger.info("Fan enabled signal verified (value = 1, stable)")
                                     break
                             except (ValueError, TypeError):
                                 pass
@@ -2316,6 +2735,11 @@ class TestRunner:
                 
                 # Step 3: Check if fan enabled was verified
                 if not fan_enabled_verified:
+                    # Cleanup: disable fan before returning
+                    try:
+                        _send_fan_trigger(0)
+                    except Exception:
+                        pass
                     return False, f"Fan enabled signal did not reach 1 within timeout ({timeout_ms}ms). Check fan control configuration."
                 
                 # Step 4: After verification, start dwell time and collect data
@@ -2325,108 +2749,64 @@ class TestRunner:
                 start_time = time.time()
                 end_time = start_time + (dwell_ms / 1000.0)
                 
-                while time.time() < end_time:
-                    # Read Fan Tach Feedback Signal
-                    try:
-                        if self.signal_service is not None:
-                            ts_tach, tach_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_tach_signal)
-                        elif self.gui is not None:
-                            ts_tach, tach_val = self.gui.get_latest_signal(feedback_msg_id, fan_tach_signal)
-                        else:
-                            ts_tach, tach_val = (None, None)
-                        
-                        if tach_val is not None:
-                            try:
-                                tach_float = float(tach_val)
-                                fan_tach_values.append(tach_float)
-                                
-                                # Update real-time display with latest value (feedback signal, not current signal)
-                                if self.gui is not None and hasattr(self.gui, '_update_signal_with_status'):
-                                    try:
-                                        # Update fan tach monitoring
-                                        if self.gui is not None:
-                                            try:
-                                                if hasattr(self.gui, 'update_monitor_signal_by_name'):
-                                                    self.gui.update_monitor_signal_by_name('fan_tach_signal', tach_float)
-                                                elif hasattr(self.gui, '_update_signal_with_status'):
-                                                    self.gui._update_signal_with_status('fan_tach_signal', tach_float)
-                                            except Exception:
-                                                pass
-                                    except Exception as e:
-                                        logger.debug(f"Failed to update feedback signal label: {e}")
-                                elif self.gui is not None and hasattr(self.gui, 'feedback_signal_label'):
-                                    try:
-                                        self.gui.feedback_signal_label.setText(f"{tach_float:.2f}")
-                                    except Exception as e:
-                                        logger.debug(f"Failed to update feedback signal label: {e}")
-                            except (ValueError, TypeError):
-                                pass
-                    except Exception as e:
-                        logger.debug(f"Error reading fan tach signal: {e}")
-                    
-                    # Read Fan Fault Feedback Signal
-                    try:
-                        if self.signal_service is not None:
-                            ts_fault, fault_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_fault_signal)
-                        elif self.gui is not None:
-                            ts_fault, fault_val = self.gui.get_latest_signal(feedback_msg_id, fan_fault_signal)
-                        else:
-                            ts_fault, fault_val = (None, None)
-                        
-                        if fault_val is not None:
-                            try:
-                                fault_float = float(fault_val)
-                                fan_fault_values.append(fault_float)
-                            except (ValueError, TypeError):
-                                pass
-                    except Exception as e:
-                        logger.debug(f"Error reading fan fault signal: {e}")
-                    
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
-                    time.sleep(SLEEP_INTERVAL_SHORT)
-                
-                # Step 5: Disable fan by sending trigger signal = 0
-                logger.info(f"Fan Control Test: Disabling fan (sending trigger signal = 0)...")
                 try:
-                    signals = {trigger_signal: 0}
-                    data_bytes = _encode_and_send_fan(signals, trigger_msg_id)
-                    
-                    if not data_bytes:
-                        logger.warning("Failed to encode fan disable message, but continuing with test evaluation")
-                    else:
-                        # Use CanService.send_frame() with Frame object
-                        if self.can_service is not None and self.can_service.is_connected():
-                            f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
-                            logger.debug(f"Sending fan disable frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
-                            try:
-                                success = self.can_service.send_frame(f)
-                                if not success:
-                                    logger.warning(f"send_frame returned False for fan disable (can_id=0x{trigger_msg_id:X})")
-                                else:
-                                    logger.info(f"Sent fan disable signal (0) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
-                            except Exception as e:
-                                logger.warning(f"Failed to send fan disable frame via service: {e}")
-                        elif self.gui is not None:
-                            # Fallback: use GUI's CAN service
-                            if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
-                                f = AdapterFrame(can_id=trigger_msg_id, data=data_bytes, timestamp=time.time())
-                                logger.debug(f"Sending fan disable frame: can_id=0x{trigger_msg_id:X} data={data_bytes.hex()}")
+                    while time.time() < end_time:
+                        # Read Fan Tach Feedback Signal
+                        try:
+                            if self.signal_service is not None:
+                                ts_tach, tach_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_tach_signal)
+                            elif self.gui is not None:
+                                ts_tach, tach_val = self.gui.get_latest_signal(feedback_msg_id, fan_tach_signal)
+                            else:
+                                ts_tach, tach_val = (None, None)
+                            
+                            if tach_val is not None:
                                 try:
-                                    success = self.gui.can_service.send_frame(f)
-                                    if not success:
-                                        logger.warning(f"send_frame returned False for fan disable (can_id=0x{trigger_msg_id:X})")
-                                    else:
-                                        logger.info(f"Sent fan disable signal (0) on message 0x{trigger_msg_id:X}, signal: {trigger_signal}")
-                                except Exception as e:
-                                    logger.warning(f"Failed to send fan disable frame via GUI service: {e}")
-                        else:
-                            logger.warning("CAN service not available. Cannot send fan disable signal.")
-                except Exception as e:
-                    logger.warning(f"Failed to send fan disable signal: {e} (continuing with test evaluation)")
+                                    tach_float = float(tach_val)
+                                    fan_tach_values.append(tach_float)
+                                    
+                                    # Validate fan tach signal range (expected 0 or 1)
+                                    if not (0.0 <= tach_float <= 1.0):
+                                        logger.warning(f"Fan tach signal value {tach_float} is outside expected range (0-1)")
+                                    
+                                    # Update real-time display with latest value (thread-safe)
+                                    self.update_monitor_signal('fan_tach_signal', tach_float)
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading fan tach signal: {e}")
+                        
+                        # Read Fan Fault Feedback Signal
+                        try:
+                            if self.signal_service is not None:
+                                ts_fault, fault_val = self.signal_service.get_latest_signal(feedback_msg_id, fan_fault_signal)
+                            elif self.gui is not None:
+                                ts_fault, fault_val = self.gui.get_latest_signal(feedback_msg_id, fan_fault_signal)
+                            else:
+                                ts_fault, fault_val = (None, None)
+                            
+                            if fault_val is not None:
+                                try:
+                                    fault_float = float(fault_val)
+                                    fan_fault_values.append(fault_float)
+                                except (ValueError, TypeError):
+                                    pass
+                        except Exception as e:
+                            logger.debug(f"Error reading fan fault signal: {e}")
+                        
+                        # Process events and sleep
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                finally:
+                    # Step 5: Always disable fan in cleanup, even if test fails
+                    logger.info("Fan Control Test: Cleanup - Disabling fan...")
+                    try:
+                        _send_fan_trigger(0)
+                    except Exception as e:
+                        logger.warning(f"Failed to disable fan during cleanup: {e}")
                 
                 # Step 6: Check if any data was collected
                 if not fan_tach_values:
@@ -2470,11 +2850,20 @@ class TestRunner:
                     'passed': passed
                 }
                 
-                # Store in temporary storage for retrieval by _on_test_finished
+                # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
                 if self.gui is not None:
-                    if not hasattr(self.gui, '_test_result_data_temp'):
-                        self.gui._test_result_data_temp = {}
-                    self.gui._test_result_data_temp[test_name] = result_data
+                    try:
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread != main_thread:
+                            logger.debug(f"Storing test result data from background thread for '{test_name}'")
+                        
+                        if not hasattr(self.gui, '_test_result_data_temp'):
+                            self.gui._test_result_data_temp = {}
+                        self.gui._test_result_data_temp[test_name] = result_data
+                    except Exception as e:
+                        logger.warning(f"Failed to store test result data for '{test_name}': {e}")
                 
                 logger.info(f"Fan Control Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
@@ -2566,6 +2955,18 @@ class TestRunner:
                         logger.info(f"Channel {channel_num} enabled successfully")
                     else:
                         logger.info(f"Channel {channel_num} is already ON")
+                    
+                    # Verify channel is actually measuring (check if we can query it)
+                    # This helps catch cases where channel is enabled but probe is disconnected
+                    try:
+                        # Try to query channel scale as a verification that channel is active
+                        scale_response = self.oscilloscope_service.send_command(f"C{channel_num}:VDIV?")
+                        if scale_response is None:
+                            logger.warning(f"DC Bus Sensing: Could not query channel {channel_num} scale - channel may not be properly configured")
+                        else:
+                            logger.debug(f"DC Bus Sensing: Channel {channel_num} scale: {scale_response}")
+                    except Exception as e:
+                        logger.debug(f"DC Bus Sensing: Could not verify channel {channel_num} configuration: {e}")
                 except Exception as e:
                     return False, f"Error checking/enabling channel {channel_num}: {e}"
                 
@@ -2597,11 +2998,16 @@ class TestRunner:
                         
                         if fb_val is not None:
                             try:
-                                # Convert to volts if needed (assuming CAN signal might be in mV)
                                 fb_float = float(fb_val)
-                                # If value seems to be in mV (large values > 1000), convert to V
+                                # Unit conversion: Check if signal is likely in mV (values > 1000) and convert to V
+                                # Note: This is a heuristic - ideally signal units should be configured explicitly
+                                # Typical DC bus voltages are 12V-800V, so values > 1000 are likely in mV
                                 if abs(fb_float) > 1000:
+                                    logger.debug(f"DC Bus Sensing: Converting CAN signal from {fb_float} mV to {fb_float/1000.0:.4f} V")
                                     fb_float = fb_float / 1000.0
+                                # Validate value is in reasonable range for DC bus (0-1000V)
+                                if not (0.0 <= abs(fb_float) <= 1000.0):
+                                    logger.warning(f"DC Bus Sensing: CAN signal value {fb_float} V is outside typical DC bus range (0-1000V)")
                                 can_feedback_values.append(fb_float)
                             except (ValueError, TypeError):
                                 pass
@@ -2634,11 +3040,29 @@ class TestRunner:
                 if osc_avg is None:
                     return False, f"Failed to obtain average value from oscilloscope channel {channel_num}"
                 
+                # Validate oscilloscope response is numeric and in reasonable range
+                try:
+                    osc_avg_float = float(osc_avg)
+                    if not (0.0 <= abs(osc_avg_float) <= 1000.0):
+                        logger.warning(f"DC Bus Sensing: Oscilloscope average {osc_avg_float} V is outside typical DC bus range (0-1000V)")
+                    osc_avg = osc_avg_float
+                except (ValueError, TypeError) as e:
+                    return False, f"Oscilloscope returned invalid average value: {osc_avg} (expected numeric value)"
+                
                 # Step 6: Calculate average from CAN feedback signal
                 if not can_feedback_values:
                     return False, f"No CAN feedback data collected during dwell time ({dwell_ms}ms). Check CAN connection and signal configuration."
                 
+                # Validate minimum sample count
+                min_samples = max(5, int(dwell_ms / 200))  # At least 5 samples or 1 per 200ms
+                if len(can_feedback_values) < min_samples:
+                    logger.warning(f"DC Bus Sensing: CAN signal collected only {len(can_feedback_values)} samples, expected at least {min_samples}")
+                
                 can_avg = sum(can_feedback_values) / len(can_feedback_values)
+                
+                # Validate calculated average is in reasonable range
+                if not (0.0 <= abs(can_avg) <= 1000.0):
+                    logger.warning(f"DC Bus Sensing: Calculated CAN average {can_avg} V is outside typical DC bus range (0-1000V)")
                 
                 # Step 7: Compare and determine pass/fail
                 difference = abs(osc_avg - can_avg)
@@ -2667,11 +3091,20 @@ class TestRunner:
                     'channel_number': channel_num
                 }
                 
-                # Store in temporary storage for retrieval by _on_test_finished
+                # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
                 if self.gui is not None:
-                    if not hasattr(self.gui, '_test_result_data_temp'):
-                        self.gui._test_result_data_temp = {}
-                    self.gui._test_result_data_temp[test_name] = result_data
+                    try:
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread != main_thread:
+                            logger.debug(f"Storing test result data from background thread for '{test_name}'")
+                        
+                        if not hasattr(self.gui, '_test_result_data_temp'):
+                            self.gui._test_result_data_temp = {}
+                        self.gui._test_result_data_temp[test_name] = result_data
+                    except Exception as e:
+                        logger.warning(f"Failed to store test result data for '{test_name}': {e}")
                 
                 logger.info(f"DC Bus Sensing Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
@@ -3023,6 +3456,17 @@ class TestRunner:
                 if trim_value == fallback_trim:
                     logger.info(f"Charged HV Bus Test: No Output Current Calibration test found or test did not pass. Using fallback trim value: {trim_value:.2f}%")
                 
+                # Validate trim value range (0-200%)
+                if not (0.0 <= trim_value <= 200.0):
+                    logger.warning(f"Charged HV Bus Test: Trim value {trim_value:.2f}% is outside expected range (0-200%). Proceeding anyway.")
+                    # Clamp to valid range
+                    if trim_value < 0.0:
+                        trim_value = 0.0
+                        logger.warning(f"Charged HV Bus Test: Trim value clamped to 0%")
+                    elif trim_value > 200.0:
+                        trim_value = 200.0
+                        logger.warning(f"Charged HV Bus Test: Trim value clamped to 200%")
+                
                 # Log summary of trim value determination
                 logger.info(f"Charged HV Bus Test: Trim value determination complete. Final trim_value = {trim_value:.2f}% (source: {trim_value_source})")
                 
@@ -3176,87 +3620,95 @@ class TestRunner:
                 end_time = trigger_timestamp + (test_time_ms / 1000.0)
                 fault_detected = False
                 
-                while time.time() < end_time:
-                    current_time = time.time()
-                    
-                    # Read all feedback signals
-                    signals_to_read = [
-                        (dut_state_signal, 'dut_test_state'),
-                        (enable_relay_signal, 'enable_relay'),
-                        (enable_pfc_signal, 'enable_pfc'),
-                        (pfc_power_good_signal, 'pfc_power_good'),
-                        (pcmc_signal, 'pcmc'),
-                        (psfb_fault_signal, 'psfb_fault')
-                    ]
-                    
-                    for signal_name, log_key in signals_to_read:
-                        try:
-                            if self.signal_service is not None:
-                                ts, val = self.signal_service.get_latest_signal(feedback_msg_id, signal_name)
-                            elif self.gui is not None:
-                                ts, val = self.gui.get_latest_signal(feedback_msg_id, signal_name)
-                            else:
-                                ts, val = (None, None)
-                            
-                            if val is not None:
-                                try:
-                                    val_float = float(val)
-                                    monitor_key = monitor_signal_map.get(signal_name)
-                                    if monitor_key:
-                                        self.update_monitor_signal(monitor_key, val_float)
-                                    logged_data.append({
-                                        'timestamp': current_time,
-                                        'signal_name': log_key,
-                                        'value': val_float
-                                    })
-                                    
-                                    # Check for fault condition (DUT Test State = 7)
-                                    if signal_name == dut_state_signal:
-                                        if int(val_float) == 7:
-                                            fault_detected = True
-                                            logger.warning(f"Charged HV Bus Test: DUT fault detected (Test State = 7) at {current_time - trigger_timestamp:.2f}s")
-                                except (ValueError, TypeError):
-                                    pass
-                        except Exception as e:
-                            logger.debug(f"Error reading signal {signal_name}: {e}")
-                    
-                    # If fault detected, stop immediately
-                    if fault_detected:
-                        break
-                    
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
-                    time.sleep(SLEEP_INTERVAL_SHORT)
-                
-                # Step 7: Stop Test and Logging
-                logger.info("Charged HV Bus Test: Stopping test and logging...")
                 try:
-                    signals = {trigger_signal: 0}
-                    data_bytes = _encode_and_send_charged_hv_bus(signals, cmd_msg_id)
-                    
-                    if data_bytes:
-                        if self.can_service is not None and self.can_service.is_connected():
-                            f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                    while time.time() < end_time:
+                        current_time = time.time()
+                        
+                        # Read all feedback signals
+                        signals_to_read = [
+                            (dut_state_signal, 'dut_test_state'),
+                            (enable_relay_signal, 'enable_relay'),
+                            (enable_pfc_signal, 'enable_pfc'),
+                            (pfc_power_good_signal, 'pfc_power_good'),
+                            (pcmc_signal, 'pcmc'),
+                            (psfb_fault_signal, 'psfb_fault')
+                        ]
+                        
+                        for signal_name, log_key in signals_to_read:
                             try:
-                                self.can_service.send_frame(f)
-                                logger.info(f"Sent test stop signal (value: 0) on message 0x{cmd_msg_id:X}, signal: {trigger_signal}")
-                            except Exception:
-                                pass
-                        elif self.gui is not None:
-                            if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                if self.signal_service is not None:
+                                    ts, val = self.signal_service.get_latest_signal(feedback_msg_id, signal_name)
+                                elif self.gui is not None:
+                                    ts, val = self.gui.get_latest_signal(feedback_msg_id, signal_name)
+                                else:
+                                    ts, val = (None, None)
+                                
+                                if val is not None:
+                                    try:
+                                        val_float = float(val)
+                                        monitor_key = monitor_signal_map.get(signal_name)
+                                        if monitor_key:
+                                            self.update_monitor_signal(monitor_key, val_float)
+                                        logged_data.append({
+                                            'timestamp': current_time,
+                                            'signal_name': log_key,
+                                            'value': val_float
+                                        })
+                                        
+                                        # Check for fault condition (DUT Test State = 7)
+                                        if signal_name == dut_state_signal:
+                                            if int(val_float) == 7:
+                                                fault_detected = True
+                                                logger.warning(f"Charged HV Bus Test: DUT fault detected (Test State = 7) at {current_time - trigger_timestamp:.2f}s")
+                                    except (ValueError, TypeError):
+                                        pass
+                            except Exception as e:
+                                logger.debug(f"Error reading signal {signal_name}: {e}")
+                        
+                        # If fault detected, stop immediately
+                        if fault_detected:
+                            logger.warning("Charged HV Bus Test: Fault detected, stopping test execution early")
+                            break
+                        
+                        # Process events and sleep
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                finally:
+                    # Step 7: Always stop test and logging, even if fault detected or exception occurred
+                    logger.info("Charged HV Bus Test: Stopping test and logging...")
+                    try:
+                        signals = {trigger_signal: 0}
+                        data_bytes = _encode_and_send_charged_hv_bus(signals, cmd_msg_id)
+                        
+                        if data_bytes:
+                            if self.can_service is not None and self.can_service.is_connected():
                                 f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
                                 try:
-                                    self.gui.can_service.send_frame(f)
-                                    logger.info(f"Sent test stop signal (value: 0) on message 0x{cmd_msg_id:X}, signal: {trigger_signal}")
-                                except Exception:
-                                    pass
-                except Exception as e:
-                    logger.warning(f"Failed to send test stop signal: {e}")
-                
-                _nb_sleep(SLEEP_INTERVAL_MEDIUM)
+                                    success = self.can_service.send_frame(f)
+                                    if success:
+                                        logger.info(f"Sent test stop signal (value: 0) on message 0x{cmd_msg_id:X}, signal: {trigger_signal}")
+                                    else:
+                                        logger.warning(f"Failed to send test stop signal: send_frame returned False")
+                                except Exception as e:
+                                    logger.warning(f"Failed to send test stop signal: {e}")
+                            elif self.gui is not None:
+                                if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                    f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                                    try:
+                                        success = self.gui.can_service.send_frame(f)
+                                        if success:
+                                            logger.info(f"Sent test stop signal (value: 0) on message 0x{cmd_msg_id:X}, signal: {trigger_signal}")
+                                        else:
+                                            logger.warning(f"Failed to send test stop signal: send_frame returned False")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to send test stop signal: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to send test stop signal during cleanup: {e}")
+                    
+                    _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                 
                 # Step 8: Analyze Logged CAN Data - PFC Regulation
                 logger.info("Charged HV Bus Test: Analyzing logged data for PFC Regulation...")
@@ -3492,6 +3944,14 @@ class TestRunner:
                 if output_current_tolerance is None or output_current_tolerance < 0:
                     return False, "Output current tolerance must be >= 0"
                 
+                # Validate tolerance is reasonable (not too large compared to setpoint)
+                if output_current > 0 and output_current_tolerance > output_current * 0.5:
+                    logger.warning(f"Charger Functional Test: Output current tolerance ({output_current_tolerance}A) is > 50% of setpoint ({output_current}A), may be too lenient")
+                
+                # Validate test duration is sufficient for current regulation analysis
+                if test_time_ms < 2000:
+                    logger.warning(f"Charger Functional Test: Test duration ({test_time_ms}ms) is less than 2 seconds, may not provide sufficient data for current regulation analysis")
+                
                 monitor_signal_map = {}
                 if enable_relay_signal:
                     monitor_signal_map[enable_relay_signal] = 'enable_relay'
@@ -3607,6 +4067,17 @@ class TestRunner:
                 
                 if trim_value == fallback_trim:
                     logger.info(f"Charger Functional Test: No Output Current Calibration test found or test did not pass. Using fallback trim value: {trim_value:.2f}%")
+                
+                # Validate trim value range (0-200%)
+                if not (0.0 <= trim_value <= 200.0):
+                    logger.warning(f"Charger Functional Test: Trim value {trim_value:.2f}% is outside expected range (0-200%). Proceeding anyway.")
+                    # Clamp to valid range
+                    if trim_value < 0.0:
+                        trim_value = 0.0
+                        logger.warning(f"Charger Functional Test: Trim value clamped to 0%")
+                    elif trim_value > 200.0:
+                        trim_value = 200.0
+                        logger.warning(f"Charger Functional Test: Trim value clamped to 200%")
                 
                 # Step 2: Send Output Current Trim Value
                 logger.info(f"Charger Functional Test: Step 2 - Sending output current trim value to DUT...")
@@ -3740,88 +4211,96 @@ class TestRunner:
                 end_time = trigger_timestamp + (test_time_ms / 1000.0)
                 fault_detected = False
                 
-                while time.time() < end_time:
-                    current_time = time.time()
-                    
-                    # Read all feedback signals (including output_current_signal)
-                    signals_to_read = [
-                        (dut_state_signal, 'dut_test_state'),
-                        (enable_relay_signal, 'enable_relay'),
-                        (enable_pfc_signal, 'enable_pfc'),
-                        (pfc_power_good_signal, 'pfc_power_good'),
-                        (pcmc_signal, 'pcmc'),
-                        (output_current_signal, 'output_current'),
-                        (psfb_fault_signal, 'psfb_fault')
-                    ]
-                    
-                    for signal_name, log_key in signals_to_read:
-                        try:
-                            if self.signal_service is not None:
-                                ts, val = self.signal_service.get_latest_signal(feedback_msg_id, signal_name)
-                            elif self.gui is not None:
-                                ts, val = self.gui.get_latest_signal(feedback_msg_id, signal_name)
-                            else:
-                                ts, val = (None, None)
-                            
-                            if val is not None:
-                                try:
-                                    val_float = float(val)
-                                    monitor_key = monitor_signal_map.get(signal_name)
-                                    if monitor_key:
-                                        self.update_monitor_signal(monitor_key, val_float)
-                                    logged_data.append({
-                                        'timestamp': current_time,
-                                        'signal_name': log_key,
-                                        'value': val_float
-                                    })
-                                    
-                                    # Check for fault condition (DUT Test State = 7)
-                                    if signal_name == dut_state_signal:
-                                        if int(val_float) == 7:
-                                            fault_detected = True
-                                            logger.warning(f"Charger Functional Test: DUT fault detected (Test State = 7) at {current_time - trigger_timestamp:.2f}s")
-                                except (ValueError, TypeError):
-                                    pass
-                        except Exception as e:
-                            logger.debug(f"Error reading signal {signal_name}: {e}")
-                    
-                    # If fault detected, stop immediately
-                    if fault_detected:
-                        break
-                    
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
-                    time.sleep(SLEEP_INTERVAL_SHORT)
-                
-                # Step 6: Stop Test and Logging
-                logger.info("Charger Functional Test: Stopping test and logging...")
                 try:
-                    signals = {trigger_signal: 0}
-                    data_bytes = _encode_and_send_charger_functional(signals, cmd_msg_id)
-                    
-                    if data_bytes:
-                        if self.can_service is not None and self.can_service.is_connected():
-                            f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                    while time.time() < end_time:
+                        current_time = time.time()
+                        
+                        # Read all feedback signals (including output_current_signal)
+                        signals_to_read = [
+                            (dut_state_signal, 'dut_test_state'),
+                            (enable_relay_signal, 'enable_relay'),
+                            (enable_pfc_signal, 'enable_pfc'),
+                            (pfc_power_good_signal, 'pfc_power_good'),
+                            (pcmc_signal, 'pcmc'),
+                            (output_current_signal, 'output_current'),
+                            (psfb_fault_signal, 'psfb_fault')
+                        ]
+                        
+                        for signal_name, log_key in signals_to_read:
                             try:
-                                self.can_service.send_frame(f)
-                                logger.info(f"Sent test stop signal (value: 0)")
-                            except Exception:
-                                pass
-                        elif self.gui is not None:
-                            if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                if self.signal_service is not None:
+                                    ts, val = self.signal_service.get_latest_signal(feedback_msg_id, signal_name)
+                                elif self.gui is not None:
+                                    ts, val = self.gui.get_latest_signal(feedback_msg_id, signal_name)
+                                else:
+                                    ts, val = (None, None)
+                                
+                                if val is not None:
+                                    try:
+                                        val_float = float(val)
+                                        monitor_key = monitor_signal_map.get(signal_name)
+                                        if monitor_key:
+                                            self.update_monitor_signal(monitor_key, val_float)
+                                        logged_data.append({
+                                            'timestamp': current_time,
+                                            'signal_name': log_key,
+                                            'value': val_float
+                                        })
+                                        
+                                        # Check for fault condition (DUT Test State = 7)
+                                        if signal_name == dut_state_signal:
+                                            if int(val_float) == 7:
+                                                fault_detected = True
+                                                logger.warning(f"Charger Functional Test: DUT fault detected (Test State = 7) at {current_time - trigger_timestamp:.2f}s")
+                                    except (ValueError, TypeError):
+                                        pass
+                            except Exception as e:
+                                logger.debug(f"Error reading signal {signal_name}: {e}")
+                        
+                        # If fault detected, stop immediately
+                        if fault_detected:
+                            logger.warning("Charger Functional Test: Fault detected, stopping test execution early")
+                            break
+                        
+                        # Process events and sleep
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        time.sleep(SLEEP_INTERVAL_SHORT)
+                finally:
+                    # Step 6: Always stop test and logging, even if fault detected or exception occurred
+                    logger.info("Charger Functional Test: Stopping test and logging...")
+                    try:
+                        signals = {trigger_signal: 0}
+                        data_bytes = _encode_and_send_charger_functional(signals, cmd_msg_id)
+                        
+                        if data_bytes:
+                            if self.can_service is not None and self.can_service.is_connected():
                                 f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
                                 try:
-                                    self.gui.can_service.send_frame(f)
-                                    logger.info(f"Sent test stop signal (value: 0)")
-                                except Exception:
-                                    pass
-                except Exception as e:
-                    logger.warning(f"Failed to send test stop signal: {e}")
-                
-                _nb_sleep(SLEEP_INTERVAL_MEDIUM)
+                                    success = self.can_service.send_frame(f)
+                                    if success:
+                                        logger.info(f"Sent test stop signal (value: 0)")
+                                    else:
+                                        logger.warning(f"Failed to send test stop signal: send_frame returned False")
+                                except Exception as e:
+                                    logger.warning(f"Failed to send test stop signal: {e}")
+                            elif self.gui is not None:
+                                if hasattr(self.gui, 'can_service') and self.gui.can_service and self.gui.can_service.is_connected():
+                                    f = AdapterFrame(can_id=cmd_msg_id, data=data_bytes, timestamp=time.time())
+                                    try:
+                                        success = self.gui.can_service.send_frame(f)
+                                        if success:
+                                            logger.info(f"Sent test stop signal (value: 0)")
+                                        else:
+                                            logger.warning(f"Failed to send test stop signal: send_frame returned False")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to send test stop signal: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to send test stop signal during cleanup: {e}")
+                    
+                    _nb_sleep(SLEEP_INTERVAL_MEDIUM)
                 
                 # Step 7: Analyze Logged CAN Data - PFC Regulation
                 logger.info("Charger Functional Test: Analyzing logged data for PFC Regulation...")
@@ -3883,6 +4362,11 @@ class TestRunner:
                 test_end_time = trigger_timestamp + (test_time_ms / 1000.0)
                 one_second_before_end = test_end_time - 1.0
                 
+                # Validate test duration is sufficient
+                if test_time_ms < 1000:
+                    logger.warning(f"Charger Functional Test: Test duration ({test_time_ms}ms) is less than 1 second, cannot use last 1 second for regulation analysis")
+                    one_second_before_end = trigger_timestamp  # Use all data if test is too short
+                
                 output_current_values = []
                 for entry in logged_data:
                     if entry['signal_name'] == 'output_current' and entry['timestamp'] >= one_second_before_end:
@@ -3892,6 +4376,12 @@ class TestRunner:
                     # If no data in last 1 second, use all available data and log warning
                     logger.warning("Charger Functional Test: Less than 1 second of output current data available, using all available data")
                     output_current_values = [entry['value'] for entry in logged_data if entry['signal_name'] == 'output_current']
+                
+                # Validate minimum sample count for regulation analysis
+                if output_current_values:
+                    min_samples = max(5, int(len(output_current_values) * 0.5))  # At least 5 samples or 50% of available
+                    if len(output_current_values) < min_samples:
+                        logger.warning(f"Charger Functional Test: Only {len(output_current_values)} output current samples available for regulation analysis, expected at least {min_samples}")
                 
                 if output_current_values:
                     # Calculate average
@@ -4263,17 +4753,40 @@ class TestRunner:
                 if not current_setpoints:
                     return False, "No current setpoints generated. Check minimum, maximum, and step current values."
                 
-                logger.info(f"Generated {len(current_setpoints)} setpoints: {current_setpoints}")
+                # Validate setpoint array
+                if len(current_setpoints) > 100:
+                    logger.warning(f"Output Current Calibration: Generated {len(current_setpoints)} setpoints, which is very large. Test may take a long time.")
+                if len(current_setpoints) < 2:
+                    return False, f"Output Current Calibration: Need at least 2 setpoints for calibration, got {len(current_setpoints)}. Check minimum, maximum, and step current values."
+                
+                # Validate setpoint range
+                if min(current_setpoints) < 0 or max(current_setpoints) > 50:
+                    logger.warning(f"Output Current Calibration: Setpoint range ({min(current_setpoints)}A to {max(current_setpoints)}A) is outside typical range (0-50A)")
+                
+                logger.info(f"Generated {len(current_setpoints)} setpoints: {current_setpoints[:10]}{'...' if len(current_setpoints) > 10 else ''}")
                 
                 # Initialize plot
                 if self.plot_clear_callback is not None:
                     self.plot_clear_callback()
                 
-                # Initialize plot labels and title for Output Current Calibration
+                # Initialize plot labels and title for Output Current Calibration (thread-safe)
                 test_name = test.get('name', '')
                 if self.gui is not None and hasattr(self.gui, '_initialize_output_current_plot'):
                     try:
-                        self.gui._initialize_output_current_plot(test_name)
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread == main_thread:
+                            # Main thread - call directly
+                            self.gui._initialize_output_current_plot(test_name)
+                        else:
+                            # Background thread - use QueuedConnection
+                            QtCore.QMetaObject.invokeMethod(
+                                self.gui,
+                                '_initialize_output_current_plot',
+                                QtCore.Qt.ConnectionType.QueuedConnection,
+                                QtCore.Q_ARG(str, test_name)
+                            )
                     except Exception as e:
                         logger.debug(f"Failed to initialize Output Current Calibration plot: {e}")
                 
@@ -4344,6 +4857,27 @@ class TestRunner:
                 except Exception as e:
                     return False, f"Failed to initialize trim value: {e}"
                 
+                # Helper function to disable test mode (used in cleanup)
+                def _disable_test_mode():
+                    """Disable test mode at DUT."""
+                    try:
+                        signal_values = _build_signal_values_dict({test_trigger_signal: 0})  # Disable test mode
+                        frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
+                        if AdapterFrame is not None:
+                            frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
+                        else:
+                            class Frame:
+                                def __init__(self, can_id, data):
+                                    self.can_id = can_id
+                                    self.data = data
+                            frame = Frame(can_id=test_trigger_source, data=frame_data)
+                        if self.can_service.send_frame(frame):
+                            logger.info("Test mode disabled successfully")
+                        else:
+                            logger.warning("Failed to disable test mode: send_frame returned False")
+                    except Exception as e:
+                        logger.warning(f"Failed to disable test mode during cleanup: {e}")
+                
                 # Step 4: Send initial current setpoint (first from array)
                 first_setpoint = current_setpoints[0]
                 logger.info(f"Sending initial current setpoint: {first_setpoint}A...")
@@ -4362,10 +4896,22 @@ class TestRunner:
                     if not self.can_service.send_frame(frame):
                         return False, "Failed to send initial current setpoint message to DUT"
                     
-                    # Track sent command value for monitoring
+                    # Track sent command value for monitoring (thread-safe)
                     if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
                         try:
-                            self.gui.track_sent_command_value('output_current_reference', first_setpoint)
+                            current_thread = QtCore.QThread.currentThread()
+                            main_thread = QtCore.QCoreApplication.instance().thread()
+                            
+                            if current_thread == main_thread:
+                                self.gui.track_sent_command_value('output_current_reference', first_setpoint)
+                            else:
+                                QtCore.QMetaObject.invokeMethod(
+                                    self.gui,
+                                    'track_sent_command_value',
+                                    QtCore.Qt.ConnectionType.QueuedConnection,
+                                    QtCore.Q_ARG(str, 'output_current_reference'),
+                                    QtCore.Q_ARG(float, first_setpoint)
+                                )
                         except Exception:
                             pass
                     
@@ -4466,10 +5012,26 @@ class TestRunner:
                     if osc_avg is None:
                         logger.warning(f"Failed to obtain oscilloscope average at first setpoint {first_setpoint}A, skipping...")
                     else:
-                        # Store data
-                        can_averages.append(can_avg)
-                        osc_averages.append(osc_avg)
-                        setpoint_values.append(first_setpoint)
+                        # Validate oscilloscope data quality
+                        try:
+                            osc_avg_float = float(osc_avg)
+                            # Validate value is in reasonable range for output current (0-50A typical)
+                            if not (0.0 <= abs(osc_avg_float) <= 60.0):
+                                logger.warning(f"Output Current Calibration: Oscilloscope average {osc_avg_float}A at setpoint {first_setpoint}A is outside typical range (0-60A)")
+                            osc_avg = osc_avg_float
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Output Current Calibration: Oscilloscope returned invalid average value: {osc_avg} (expected numeric value)")
+                            osc_avg = None
+                        
+                        if osc_avg is not None:
+                            # Validate CAN average is in reasonable range
+                            if not (0.0 <= abs(can_avg) <= 60.0):
+                                logger.warning(f"Output Current Calibration: CAN average {can_avg}A at setpoint {first_setpoint}A is outside typical range (0-60A)")
+                            
+                            # Store data
+                            can_averages.append(can_avg)
+                            osc_averages.append(osc_avg)
+                            setpoint_values.append(first_setpoint)
                         
                         logger.info(f"First setpoint {first_setpoint}A: CAN avg={can_avg:.4f}A, Osc avg={osc_avg:.4f}A")
                         
@@ -4502,10 +5064,22 @@ class TestRunner:
                             logger.warning(f"Failed to send current setpoint {setpoint}A, continuing...")
                             continue
                         
-                        # Track sent command value for monitoring
+                        # Track sent command value for monitoring (thread-safe)
                         if self.gui is not None and hasattr(self.gui, 'track_sent_command_value'):
                             try:
-                                self.gui.track_sent_command_value('output_current_reference', setpoint)
+                                current_thread = QtCore.QThread.currentThread()
+                                main_thread = QtCore.QCoreApplication.instance().thread()
+                                
+                                if current_thread == main_thread:
+                                    self.gui.track_sent_command_value('output_current_reference', setpoint)
+                                else:
+                                    QtCore.QMetaObject.invokeMethod(
+                                        self.gui,
+                                        'track_sent_command_value',
+                                        QtCore.Qt.ConnectionType.QueuedConnection,
+                                        QtCore.Q_ARG(str, 'output_current_reference'),
+                                        QtCore.Q_ARG(float, setpoint)
+                                    )
                             except Exception:
                                 pass
                         
@@ -4582,6 +5156,21 @@ class TestRunner:
                         logger.warning(f"Failed to obtain oscilloscope average at setpoint {setpoint}A, skipping...")
                         continue
                     
+                    # Validate oscilloscope data quality
+                    try:
+                        osc_avg_float = float(osc_avg)
+                        # Validate value is in reasonable range for output current (0-50A typical)
+                        if not (0.0 <= abs(osc_avg_float) <= 60.0):
+                            logger.warning(f"Output Current Calibration: Oscilloscope average {osc_avg_float}A at setpoint {setpoint}A is outside typical range (0-60A)")
+                        osc_avg = osc_avg_float
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Output Current Calibration: Oscilloscope returned invalid average value at setpoint {setpoint}A: {osc_avg} (expected numeric value)")
+                        continue
+                    
+                    # Validate CAN average is in reasonable range
+                    if not (0.0 <= abs(can_avg) <= 60.0):
+                        logger.warning(f"Output Current Calibration: CAN average {can_avg}A at setpoint {setpoint}A is outside typical range (0-60A)")
+                    
                     # Store data
                     can_averages.append(can_avg)
                     osc_averages.append(osc_avg)
@@ -4599,21 +5188,9 @@ class TestRunner:
                 # Step 8: Disable test mode (end of first sweep)
                 logger.info("Disabling test mode at DUT (end of first sweep)...")
                 try:
-                    signal_values = _build_signal_values_dict({test_trigger_signal: 0})  # Disable test mode
-                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
-                    if AdapterFrame is not None:
-                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
-                    else:
-                        # Fallback if AdapterFrame not available
-                        class Frame:
-                            def __init__(self, can_id, data):
-                                self.can_id = can_id
-                                self.data = data
-                        frame = Frame(can_id=test_trigger_source, data=frame_data)
-                    self.can_service.send_frame(frame)
-                    logger.info("Test mode disabled")
+                    _disable_test_mode()
                 except Exception as e:
-                    logger.warning(f"Failed to disable test mode: {e}")
+                    logger.warning(f"Failed to disable test mode at end of first sweep: {e}")
                 
                 # Step 9: First Sweep Post-Analysis - Perform linear regression and calculate gain error and adjustment factor
                 if len(can_averages) < 2:
@@ -4662,6 +5239,10 @@ class TestRunner:
                         return False, "Failed to calculate adjustment factor: slope is too close to zero. Check first sweep data quality."
                     
                     first_sweep_gain_adjustment_factor = 1.0 / first_sweep_slope
+                    
+                    # Validate adjustment factor is reasonable (typically 0.5 to 2.0, which corresponds to 50% to 200% trim)
+                    if not (0.5 <= abs(first_sweep_gain_adjustment_factor) <= 2.0):
+                        logger.warning(f"Output Current Calibration: Adjustment factor {first_sweep_gain_adjustment_factor:.6f} is outside typical range (0.5-2.0), may indicate data quality issues")
                     
                     # Calculate trim value for second sweep: calculated_trim_value = 100 * gain_adjustment_factor
                     calculated_trim_value = 100.0 * first_sweep_gain_adjustment_factor
@@ -4961,6 +5542,20 @@ class TestRunner:
                         logger.warning(f"Second Sweep: Failed to obtain oscilloscope average at setpoint {setpoint}A, skipping...")
                         continue
                     
+                    # Validate oscilloscope data quality (same as first sweep)
+                    try:
+                        osc_avg_float = float(osc_avg)
+                        if not (0.0 <= abs(osc_avg_float) <= 60.0):
+                            logger.warning(f"Output Current Calibration: Second sweep oscilloscope average {osc_avg_float}A at setpoint {setpoint}A is outside typical range (0-60A)")
+                        osc_avg = osc_avg_float
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Output Current Calibration: Second sweep oscilloscope returned invalid average value at setpoint {setpoint}A: {osc_avg} (expected numeric value)")
+                        continue
+                    
+                    # Validate CAN average is in reasonable range
+                    if not (0.0 <= abs(can_avg) <= 60.0):
+                        logger.warning(f"Output Current Calibration: Second sweep CAN average {can_avg}A at setpoint {setpoint}A is outside typical range (0-60A)")
+                    
                     # Store data
                     second_can_averages.append(can_avg)
                     second_osc_averages.append(osc_avg)
@@ -4978,21 +5573,9 @@ class TestRunner:
                 # Step 15: Disable test mode (end of second sweep)
                 logger.info("Disabling test mode at DUT (end of second sweep)...")
                 try:
-                    signal_values = _build_signal_values_dict({test_trigger_signal: 0})  # Disable test mode
-                    frame_data = self.dbc_service.encode_message(trigger_msg, signal_values)
-                    if AdapterFrame is not None:
-                        frame = AdapterFrame(can_id=test_trigger_source, data=frame_data)
-                    else:
-                        # Fallback if AdapterFrame not available
-                        class Frame:
-                            def __init__(self, can_id, data):
-                                self.can_id = can_id
-                                self.data = data
-                        frame = Frame(can_id=test_trigger_source, data=frame_data)
-                    self.can_service.send_frame(frame)
-                    logger.info("Test mode disabled")
+                    _disable_test_mode()
                 except Exception as e:
-                    logger.warning(f"Failed to disable test mode: {e}")
+                    logger.warning(f"Failed to disable test mode at end of second sweep: {e}")
                 
                 # Step 16: Second Sweep Post-Test Analysis - Perform linear regression and calculate gain error (pass/fail based on this)
                 if len(second_can_averages) < 2:
@@ -5171,6 +5754,13 @@ class TestRunner:
                     logger.info(f"Output Current Calibration: Immediately stored statistics in _test_execution_data for '{test_name}' (adjustment_factor={result_data.get('adjustment_factor')}, passed={passed_status})")
                 
                 logger.info(f"Output Current Calibration Test completed: {'PASS' if passed else 'FAIL'}")
+                
+                # Final cleanup: Ensure test mode is disabled (safety net in case earlier disable failed)
+                try:
+                    _disable_test_mode()
+                except Exception as e:
+                    logger.debug(f"Output Current Calibration Test: Final cleanup attempt (may have already been disabled): {e}")
+                
                 return passed, info
             else:
                 pass

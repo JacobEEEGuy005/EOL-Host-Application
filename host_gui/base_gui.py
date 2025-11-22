@@ -3298,11 +3298,24 @@ Data Points Used: {data_points}"""
         if hasattr(self, 'update_rate_label'):
             self.update_rate_label.setText('Update Rate: -- Hz')
         
-        # Stop update timer if no test is provided
+        # Stop update timer if no test is provided (thread-safe)
         if test is None:
             if hasattr(self, '_monitor_update_timer'):
                 try:
-                    self._monitor_update_timer.stop()
+                    # Check if we're in the main thread
+                    current_thread = QtCore.QThread.currentThread()
+                    main_thread = QtCore.QCoreApplication.instance().thread()
+                    
+                    if current_thread == main_thread:
+                        # We're in the main thread, stop directly
+                        self._monitor_update_timer.stop()
+                    else:
+                        # We're in a background thread, use QueuedConnection for thread safety
+                        QtCore.QMetaObject.invokeMethod(
+                            self._monitor_update_timer,
+                            'stop',
+                            QtCore.Qt.ConnectionType.QueuedConnection
+                        )
                 except Exception:
                     pass
         
@@ -3509,16 +3522,50 @@ Data Points Used: {data_points}"""
             self._start_monitor_update_timer()
     
     def _start_monitor_update_timer(self) -> None:
-        """Start a timer to periodically update monitored signals from CAN."""
-        # Stop existing timer if any
+        """Start a timer to periodically update monitored signals from CAN (thread-safe)."""
+        # Stop existing timer if any (thread-safe)
         if hasattr(self, '_monitor_update_timer'):
             try:
-                self._monitor_update_timer.stop()
+                # Check if we're in the main thread
+                current_thread = QtCore.QThread.currentThread()
+                main_thread = QtCore.QCoreApplication.instance().thread()
+                
+                if current_thread == main_thread:
+                    # We're in the main thread, stop directly
+                    self._monitor_update_timer.stop()
+                else:
+                    # We're in a background thread, use QueuedConnection for thread safety
+                    QtCore.QMetaObject.invokeMethod(
+                        self._monitor_update_timer,
+                        'stop',
+                        QtCore.Qt.ConnectionType.QueuedConnection
+                    )
             except Exception:
                 pass
         
-        # Create new timer to update signals every 100ms
-        self._monitor_update_timer = QtCore.QTimer(self)
+        # Create new timer to update signals every 100ms (must be done in main thread)
+        # Note: This method should only be called from main thread, but we check anyway
+        current_thread = QtCore.QThread.currentThread()
+        main_thread = QtCore.QCoreApplication.instance().thread()
+        
+        if current_thread == main_thread:
+            # We're in the main thread, create timer directly
+            self._monitor_update_timer = QtCore.QTimer(self)
+            self._monitor_update_timer.timeout.connect(self._update_monitored_signals_from_can)
+            self._monitor_update_timer.start(100)  # Update every 100ms
+        else:
+            # We're in a background thread - schedule timer creation in main thread
+            # Use a lambda to capture self and create timer when invoked
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                '_create_monitor_timer',
+                QtCore.Qt.ConnectionType.QueuedConnection
+            )
+    
+    def _create_monitor_timer(self) -> None:
+        """Create and start monitor update timer (called from main thread via invokeMethod)."""
+        if not hasattr(self, '_monitor_update_timer') or self._monitor_update_timer is None:
+            self._monitor_update_timer = QtCore.QTimer(self)
         self._monitor_update_timer.timeout.connect(self._update_monitored_signals_from_can)
         self._monitor_update_timer.start(100)  # Update every 100ms
     
@@ -3527,8 +3574,16 @@ Data Points Used: {data_points}"""
         if not self._monitor_labels:
             return
         
+        # Create a copy of items to avoid "dictionary changed size during iteration" error
+        # This can happen if reset_monitor_signals() is called from another thread during iteration
+        try:
+            monitor_items = list(self._monitor_labels.items())
+        except RuntimeError:
+            # Dictionary was modified during copy - skip this update cycle
+            return
+        
         # Update signals based on stored signal names and message IDs
-        for signal_key, label in self._monitor_labels.items():
+        for signal_key, label in monitor_items:
             try:
                 # Get signal name and message ID from stored values
                 signal_name_key = f'{signal_key}_signal_name'
@@ -15061,6 +15116,10 @@ Data Points Used: {data_points}"""
         self.test_execution_thread.sequence_paused.connect(self._on_sequence_paused)
         self.test_execution_thread.sequence_resumed.connect(self._on_sequence_resumed)
         self.test_execution_thread.test_mode_mismatch.connect(self._on_test_mode_mismatch)
+        self.test_execution_thread.monitor_signal_update.connect(self.update_monitor_signal)
+        
+        # Set thread reference in TestRunner for thread-safe signal-based updates
+        runner.set_execution_thread(self.test_execution_thread)
         
         # Initialize UI
         self.progress_bar.setVisible(True)

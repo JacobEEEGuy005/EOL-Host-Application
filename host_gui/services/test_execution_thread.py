@@ -53,6 +53,7 @@ class TestExecutionThread(QtCore.QThread):
     sequence_paused = QtCore.Signal()  # Emitted when sequence is paused
     sequence_resumed = QtCore.Signal()  # Emitted when sequence is resumed
     test_mode_mismatch = QtCore.Signal(str, str)  # test_name, message
+    monitor_signal_update = QtCore.Signal(str, float)  # key, value - for thread-safe GUI updates
     
     def __init__(self, 
                  tests: List[Dict[str, Any]],

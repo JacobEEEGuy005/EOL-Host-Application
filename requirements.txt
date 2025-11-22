@@ -6,6 +6,7 @@ cantools
 pyserial
 pytest
 numpy
+scipy
 PySide6
 matplotlib
 PyVISA
