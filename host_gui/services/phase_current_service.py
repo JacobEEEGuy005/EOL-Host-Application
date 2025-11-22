@@ -40,10 +40,17 @@ except ImportError:
 
 # Pre-compile regex patterns for oscilloscope command parsing
 import re
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
 
 try:
     from PySide6 import QtCore

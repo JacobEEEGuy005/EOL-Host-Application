@@ -161,8 +161,8 @@ except ImportError:
         LEFT_PANEL_MIN_WIDTH = 300
         LOGO_WIDTH = 280
         LOGO_HEIGHT = 80
-        SLEEP_INTERVAL_SHORT = 0.02
-        SLEEP_INTERVAL_MEDIUM = 0.05
+        SLEEP_INTERVAL_SHORT = 0.005  # Match constants.py
+        SLEEP_INTERVAL_MEDIUM = 0.01  # Match constants.py
         MUX_CHANNEL_MAX = 65535
         DWELL_TIME_MAX_MS = 60000
         PLOT_GRID_ALPHA = 0.3
@@ -235,13 +235,21 @@ except ImportError:
 # Import from services if needed:
 # from host_gui.services.can_service import AdapterWorker
 # Pre-compile regex patterns for oscilloscope command parsing
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
-REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
-REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST,
+        REGEX_NUMBER, REGEX_NUMBER_SIMPLE, REGEX_TRA
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+    REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+    REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
 
 # Import numpy for optimized array operations (optional)
 try:

@@ -203,6 +203,14 @@ class SignalService:
                 result[signal_name] = (ts, val)
         return result
     
+    def get_all_signals(self) -> Dict[str, Tuple[float, Any]]:
+        """Get all cached signals.
+        
+        Returns:
+            Dictionary mapping "message_id:signal_name" -> (timestamp, value)
+        """
+        return self._signal_values.copy()
+    
     def clear_cache(self):
         """Clear all cached signal values."""
         self._signal_values.clear()

@@ -129,8 +129,8 @@ except ImportError:
         LEFT_PANEL_MIN_WIDTH = 300
         LOGO_WIDTH = 280
         LOGO_HEIGHT = 80
-        SLEEP_INTERVAL_SHORT = 0.02
-        SLEEP_INTERVAL_MEDIUM = 0.05
+        SLEEP_INTERVAL_SHORT = 0.005  # Match constants.py
+        SLEEP_INTERVAL_MEDIUM = 0.01  # Match constants.py
         MUX_CHANNEL_MAX = 65535
         DWELL_TIME_MAX_MS = 60000
         PLOT_GRID_ALPHA = 0.3
@@ -205,14 +205,21 @@ except ImportError:
     signal = None
     scipy_available = False
 
-# Pre-compile regex patterns for oscilloscope command parsing
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
-REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
-REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST,
+        REGEX_NUMBER, REGEX_NUMBER_SIMPLE, REGEX_TRA
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+    REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+    REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
 
 # Import TestRunner
 from host_gui.test_runner import TestRunner
@@ -2804,8 +2811,12 @@ Data Points Used: {data_points}"""
             self.plot_axes = None
             self.plot_figure = None
 
+    @QtCore.Slot()
     def _clear_plot(self):
-        """Clear the plot data and reset axes."""
+        """Clear the plot data and reset axes.
+        
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
+        """
         if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
             return
         try:
@@ -2840,11 +2851,14 @@ Data Points Used: {data_points}"""
         except Exception as e:
             logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
     
-    def _initialize_output_current_plot(self, test_name: Optional[str] = None, sweep_title: Optional[str] = None) -> None:
+    @QtCore.Slot(str)
+    def _initialize_output_current_plot(self, test_name: str = '', sweep_title: str = '') -> None:
         """Initialize the plot for Output Current Calibration test with proper labels and title.
         
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
+        
         Args:
-            test_name: Optional test name to include in the plot title
+            test_name: Optional test name to include in the plot title (empty string converted to None internally)
             sweep_title: Optional sweep title (e.g., "First Sweep (Trim Value: X%)" or "Second Sweep (Trim Value: Y%)")
         """
         if not matplotlib_available:
@@ -2857,6 +2871,12 @@ Data Points Used: {data_points}"""
             logger.debug("Plot canvas not initialized, skipping plot initialization")
             return
         try:
+            # Convert empty strings to None for internal use
+            if test_name == '':
+                test_name = None
+            if sweep_title == '':
+                sweep_title = None
+            
             self.plot_axes.clear()
             self.plot_axes.set_xlabel('Measured Output Current (A)')
             self.plot_axes.set_ylabel('DUT Output Current (A)')
@@ -2879,11 +2899,14 @@ Data Points Used: {data_points}"""
         except Exception as e:
             logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
     
-    def _initialize_analog_sweep_plot(self, test_name: Optional[str] = None) -> None:
+    @QtCore.Slot(str)
+    def _initialize_analog_sweep_plot(self, test_name: str = '') -> None:
         """Initialize the plot for Analog Sweep Test with proper labels and title.
         
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
+        
         Args:
-            test_name: Optional test name to include in the plot title
+            test_name: Optional test name to include in the plot title (empty string converted to None internally)
         """
         if not matplotlib_available:
             logger.debug("Matplotlib not available, skipping plot initialization")
@@ -2895,6 +2918,10 @@ Data Points Used: {data_points}"""
             logger.debug("Plot canvas not initialized, skipping plot initialization")
             return
         try:
+            # Convert empty string to None for internal use
+            if test_name == '':
+                test_name = None
+            
             self.plot_axes.clear()
             self.plot_axes.set_xlabel('DAC Voltage')
             self.plot_axes.set_ylabel('DUT Calculated Voltage')
@@ -2903,7 +2930,12 @@ Data Points Used: {data_points}"""
             self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
             # Add diagonal reference line (y=x) for ideal line - displayed before test starts
             self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            # Create scatter plot for Analog Sweep Test
+            
+            # Initialize data arrays to empty (important for multiple tests in sequence)
+            self.plot_dac_voltages = []
+            self.plot_feedback_values = []
+            
+            # Create scatter plot for Analog Sweep Test with empty data
             self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.legend()
             self.plot_figure.tight_layout()
@@ -2979,7 +3011,7 @@ Data Points Used: {data_points}"""
         
         Args:
             value: The signal value to format
-            signal_type: Type of signal ('voltage', 'current', 'temperature', 'frequency', 'duty', 'digital', 'generic')
+            signal_type: Type of signal ('voltage', 'voltage_mv', 'current', 'temperature', 'frequency', 'duty', 'digital', 'generic')
         
         Returns:
             Formatted string with value and unit
@@ -2994,6 +3026,7 @@ Data Points Used: {data_points}"""
         
         formatters = {
             'voltage': lambda v: f"{v:.2f} V",
+            'voltage_mv': lambda v: f"{v:.2f} mV",
             'current': lambda v: f"{v:.2f} A",
             'temperature': lambda v: f"{v:.2f} °C",
             'frequency': lambda v: f"{v:.2f} Hz",
@@ -3006,26 +3039,57 @@ Data Points Used: {data_points}"""
         return formatter(float_val)
     
     def _get_signal_type(self, signal_name: str) -> str:
-        """Determine signal type from signal name."""
+        """Determine signal type from signal name.
+        
+        Returns signal type for formatting:
+        - 'voltage_mv': For signals that should be displayed in millivolts (mV)
+        - 'voltage': For signals that should be displayed in volts (V)
+        - 'current': For current signals in Amperes (A)
+        - 'temperature': For temperature in Celsius (°C)
+        - 'frequency': For frequency in Hertz (Hz)
+        - 'duty': For duty cycle in percent (%)
+        - 'digital': For digital signals (0 or 1)
+        - 'generic': For generic numeric values
+        """
         name_lower = signal_name.lower()
-        if 'voltage' in name_lower or 'dac' in name_lower or 'dc bus' in name_lower:
+        
+        # Signals that should be displayed in millivolts (mV)
+        if name_lower in ['current_signal', 'feedback_signal', 'eol_measurement', 'dut_measurement']:
+            # Analog Sweep Test: current_signal (DAC voltage) and feedback_signal in mV
+            # External 5V Test: eol_measurement and dut_measurement in mV
+            return 'voltage_mv'
+        
+        # Voltage signals in Volts (V) - DC Bus, etc.
+        if 'voltage' in name_lower or 'dc bus' in name_lower:
             return 'voltage'
-        elif 'current' in name_lower:
-            # Special case: "current_signal" in Analog Sweep Test is actually voltage (DAC)
-            if name_lower == 'current_signal':
-                return 'voltage'  # It's a DAC voltage, not a current
+        
+        # Current signals
+        if 'current' in name_lower:
             return 'current'
-        elif 'temp' in name_lower or 'temperature' in name_lower:
+        # Special case: set_id and set_iq are current values (Amperes)
+        if name_lower in ['set_id', 'set_iq']:
+            return 'current'
+        
+        # Temperature signals
+        if 'temp' in name_lower or 'temperature' in name_lower:
             return 'temperature'
-        elif 'freq' in name_lower or 'frequency' in name_lower or 'pwm' in name_lower:
+        
+        # Frequency signals
+        if 'freq' in name_lower or 'frequency' in name_lower or 'pwm' in name_lower:
             return 'frequency'
-        elif 'duty' in name_lower:
+        
+        # Duty cycle signals
+        if 'duty' in name_lower:
             return 'duty'
-        elif 'relay' in name_lower or 'pfc' in name_lower or 'enable' in name_lower or 'power' in name_lower or 'fault' in name_lower or 'applied' in name_lower or 'digital' in name_lower:
+        
+        # Digital signals
+        if 'relay' in name_lower or 'pfc' in name_lower or 'enable' in name_lower or 'power' in name_lower or 'fault' in name_lower or 'applied' in name_lower or 'digital' in name_lower or 'fan_enabled' in name_lower or 'fan_fault' in name_lower:
             return 'digital'
-        else:
-            return 'generic'
+        
+        # Generic numeric values
+        return 'generic'
     
+    @QtCore.Slot(str, float)
     def track_sent_command_value(self, signal_key: str, value: Any) -> None:
         """Track a sent command value for display in monitoring.
         
@@ -3724,10 +3788,13 @@ Data Points Used: {data_points}"""
             except Exception as e:
                 logger.debug(f"Error updating monitored signal {signal_key}: {e}")
 
-    def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
+    @QtCore.Slot(float, float, str)
+    def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: str = '') -> None:
         """Update the plot with a new data point (DAC voltage, feedback value).
         
         Also updates real-time monitoring for Analog Sweep Test.
+        
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
         
         Args:
             dac_voltage: DAC output voltage in millivolts (or oscilloscope value for Output Current Calibration)
@@ -3744,6 +3811,10 @@ Data Points Used: {data_points}"""
             logger.debug("Plot canvas not initialized, skipping plot update")
             return
         try:
+            # Convert empty string to None for test_name (Qt slot requires str, but we want Optional[str] internally)
+            if test_name == '':
+                test_name = None
+            
             # Detect test type by checking current test type
             is_output_current_calibration = False
             is_analog_sweep = False
@@ -3784,9 +3855,21 @@ Data Points Used: {data_points}"""
                     if not hasattr(self, '_analog_sweep_plot_initialized') or not self._analog_sweep_plot_initialized:
                         self._initialize_analog_sweep_plot(test_name)
                     
-                    # Store data points
-                    self.plot_dac_voltages.append(float(dac_voltage))
-                    self.plot_feedback_values.append(float(feedback_value))
+                    # Ensure data arrays exist (safety check)
+                    if not hasattr(self, 'plot_dac_voltages'):
+                        self.plot_dac_voltages = []
+                    if not hasattr(self, 'plot_feedback_values'):
+                        self.plot_feedback_values = []
+                    
+                    # Store data points atomically to prevent length mismatch on errors
+                    try:
+                        dac_val = float(dac_voltage)
+                        fb_val = float(feedback_value)
+                        self.plot_dac_voltages.append(dac_val)
+                        self.plot_feedback_values.append(fb_val)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid plot data point: dac={dac_voltage}, fb={feedback_value}, error={e}")
+                        return  # Skip this point if conversion fails
                     
                     logger.debug(
                         f"Plot update (Analog Sweep): Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
@@ -3794,20 +3877,28 @@ Data Points Used: {data_points}"""
                     )
                     
                     # Update plot line (scatter plot)
+                    # Note: In batched mode, this will be updated once after all points are added
                     self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
                     
-                    # Update real-time monitoring for Analog Sweep Test
+                    # Update real-time monitoring for Analog Sweep Test (always update, not batched)
                     if 'current_signal' in self._monitor_labels:
-                        # Convert DAC voltage from mV to V for display
-                        dac_voltage_v = dac_voltage / 1000.0
-                        self._update_signal_with_status('current_signal', dac_voltage_v)
+                        # Display DAC voltage in mV (no scale factor)
+                        self._update_signal_with_status('current_signal', dac_voltage)
                     
                     if 'feedback_signal' in self._monitor_labels:
+                        # Display feedback signal in mV (no scale factor)
                         self._update_signal_with_status('feedback_signal', feedback_value)
                 else:
                     # For other tests: X = DAC voltage, Y = feedback value
-                    self.plot_dac_voltages.append(float(dac_voltage))
-                    self.plot_feedback_values.append(float(feedback_value))
+                    # Store data points atomically to prevent length mismatch on errors
+                    try:
+                        dac_val = float(dac_voltage)
+                        fb_val = float(feedback_value)
+                        self.plot_dac_voltages.append(dac_val)
+                        self.plot_feedback_values.append(fb_val)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid plot data point: dac={dac_voltage}, fb={feedback_value}, error={e}")
+                        return  # Skip this point if conversion fails
                     
                     logger.debug(
                         f"Plot update: Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
@@ -3815,17 +3906,17 @@ Data Points Used: {data_points}"""
                     )
                     
                     # Update plot line
+                    # Note: In batched mode, this will be updated once after all points are added
                     self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
                 
-                # Auto-scale axes to fit all data
+                # Auto-scale axes and redraw only if not in batch mode
+                # Batch mode will handle this once after all points are added
+                # Auto-scale axes and redraw
+                # Use draw() instead of draw_idle() to force immediate update during test execution
+                # This ensures plots update in real-time, not just after test completion
                 self.plot_axes.relim()
                 self.plot_axes.autoscale()
-                
-                # Force immediate redraw (draw_idle may not refresh fast enough)
                 self.plot_canvas.draw()
-                
-                # Also trigger draw_idle for Qt event processing
-                self.plot_canvas.draw_idle()
         except Exception as e:
             logger.error(f"Error updating plot: {e}", exc_info=True)
     

@@ -19,13 +19,21 @@ from typing import Optional, List, Dict, Tuple, Any
 logger = logging.getLogger(__name__)
 
 # Pre-compile regex patterns for better performance (matching phase_current_test_state_machine.py)
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
-REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
-REGEX_PAVA = re.compile(r'C\d+:PAVA\s+MEAN,([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)V?', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST,
+        REGEX_NUMBER, REGEX_NUMBER_SIMPLE, REGEX_PAVA
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+    REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+    REGEX_PAVA = re.compile(r'C\d+:PAVA\s+MEAN,([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)V?', re.IGNORECASE)
 
 try:
     import pyvisa

@@ -42,8 +42,8 @@ except ImportError:
     DAC_SETTLING_TIME_MS = 50
     DATA_COLLECTION_PERIOD_MS = 200
     POLL_INTERVAL_MS = 50
-    TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 2.0
-    TEST_MODE_TOTAL_TIMEOUT = 5.0
+    TEST_MODE_CONTINUOUS_MATCH_REQUIRED = 5.0
+    TEST_MODE_TOTAL_TIMEOUT = 30.0
     TEST_MODE_SIGNAL_RESEND_INTERVAL = 1.0
 
 # Import adapter interface
@@ -120,13 +120,71 @@ class TestRunner:
             self.eol_hw_config = eol_hw_config or getattr(gui, '_eol_hw_config', None)
             
             # Create callbacks from GUI methods if not provided
+            # Use thread-safe wrappers that check thread context
             if plot_update_callback is None and hasattr(gui, '_update_plot'):
-                self.plot_update_callback = lambda dac, fb, name: gui._update_plot(dac, fb, name)
+                def _thread_safe_plot_update(dac: float, fb: float, name: Optional[str] = None):
+                    """Thread-safe wrapper for plot update."""
+                    if gui is None:
+                        return
+                    try:
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread == main_thread:
+                            # Main thread - call directly
+                            gui._update_plot(dac, fb, name)
+                        else:
+                            # Background thread - use BlockingQueuedConnection to ensure immediate update
+                            # This blocks until the main thread processes the update, ensuring real-time plot updates
+                            try:
+                                QtCore.QMetaObject.invokeMethod(
+                                    gui,
+                                    '_update_plot',
+                                    QtCore.Qt.ConnectionType.BlockingQueuedConnection,
+                                    QtCore.Q_ARG(float, dac),
+                                    QtCore.Q_ARG(float, fb),
+                                    QtCore.Q_ARG(str, name or '')
+                                )
+                            except Exception:
+                                # If BlockingQueuedConnection fails (e.g., deadlock risk), fall back to QueuedConnection
+                                QtCore.QMetaObject.invokeMethod(
+                                    gui,
+                                    '_update_plot',
+                                    QtCore.Qt.ConnectionType.QueuedConnection,
+                                    QtCore.Q_ARG(float, dac),
+                                    QtCore.Q_ARG(float, fb),
+                                    QtCore.Q_ARG(str, name or '')
+                                )
+                                # Small sleep to allow main thread to process the queue
+                                time.sleep(0.005)  # 5ms sleep to allow main thread to process
+                    except Exception as e:
+                        logger.debug(f"Failed to update plot: {e}")
+                self.plot_update_callback = _thread_safe_plot_update
             else:
                 self.plot_update_callback = plot_update_callback
             
             if plot_clear_callback is None and hasattr(gui, '_clear_plot'):
-                self.plot_clear_callback = lambda: gui._clear_plot()
+                def _thread_safe_plot_clear():
+                    """Thread-safe wrapper for plot clear."""
+                    if gui is None:
+                        return
+                    try:
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread == main_thread:
+                            # Main thread - call directly
+                            gui._clear_plot()
+                        else:
+                            # Background thread - use QueuedConnection
+                            QtCore.QMetaObject.invokeMethod(
+                                gui,
+                                '_clear_plot',
+                                QtCore.Qt.ConnectionType.QueuedConnection
+                            )
+                    except Exception as e:
+                        logger.debug(f"Failed to clear plot: {e}")
+                self.plot_clear_callback = _thread_safe_plot_clear
             else:
                 self.plot_clear_callback = plot_clear_callback
             
@@ -253,6 +311,20 @@ class TestRunner:
         import logging
         logger = logging.getLogger(__name__)
         
+        # Define non-blocking sleep helper
+        def _nb_sleep(sec: float):
+            """Non-blocking sleep that processes Qt events."""
+            end = time.time() + float(sec)
+            while time.time() < end:
+                try:
+                    QtCore.QCoreApplication.processEvents()
+                except Exception:
+                    pass
+                remaining = end - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+        
         # Get test_mode from test profile (default 0)
         test_mode = test.get('test_mode', 0)
         
@@ -313,7 +385,7 @@ class TestRunner:
             next_resend_time = time.time() + TEST_MODE_SIGNAL_RESEND_INTERVAL
             logger.debug(f"Initial test mode command sent: {test_mode}, next resend scheduled at {next_resend_time:.2f}")
             # Small delay to allow DUT to process the command
-            time.sleep(0.1)
+            _nb_sleep(0.1)
         else:
             logger.info("EOL Command Message or Set DUT Test Mode Signal not configured - skipping test mode command")
         
@@ -372,7 +444,7 @@ class TestRunner:
                 # Signal not available yet
                 match_start_time = None
                 last_value = None
-                time.sleep(check_interval)
+                _nb_sleep(check_interval)
                 continue
             
             # Compare with test_mode
@@ -400,7 +472,7 @@ class TestRunner:
                 match_start_time = None
                 last_value = None
             
-            time.sleep(check_interval)
+            _nb_sleep(check_interval)
         
         # Failed to achieve required continuous match within total timeout
         elapsed_total = time.time() - start_time
@@ -424,6 +496,20 @@ class TestRunner:
         import time
         import logging
         logger = logging.getLogger(__name__)
+        
+        # Define non-blocking sleep helper
+        def _nb_sleep(sec: float):
+            """Non-blocking sleep that processes Qt events."""
+            end = time.time() + float(sec)
+            while time.time() < end:
+                try:
+                    QtCore.QCoreApplication.processEvents()
+                except Exception:
+                    pass
+                remaining = end - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
         
         # Get DUT Test Status Signal info from eol_hw_config
         if not self.eol_hw_config:
@@ -481,23 +567,27 @@ class TestRunner:
             signal_values[set_dut_test_mode_signal] = test_mode_value
             
             # Encode the message
+            if self.dbc_service is None:
+                return False, "DBC service not available"
             frame_data = self.dbc_service.encode_message(cmd_msg, signal_values)
             
             # Create and send frame
+            if AdapterFrame is None:
+                return False, "AdapterFrame not available"
             frame = AdapterFrame(
                 can_id=eol_cmd_msg_id,
                 data=frame_data,
                 timestamp=None
             )
             
-            if not self.can_service.send_frame(frame):
+            if self.can_service is None or not self.can_service.send_frame(frame):
                 logger.error(f"Failed to send test mode command to DUT")
                 return False, "Failed to send test mode command to DUT"
             
             logger.info(f"Successfully sent test mode {test_mode_value} to DUT")
             
             # Small delay to allow DUT to process the command
-            time.sleep(0.1)
+            _nb_sleep(0.1)
             
             return True, f"Test mode {test_mode_value} command sent successfully"
             
@@ -738,21 +828,29 @@ class TestRunner:
                                     else:
                                         ts, val = (None, None)
                                 else:
-                                    # Legacy: search signal cache (deprecated - should use signal_service)
-                                    if self.gui is not None and hasattr(self.gui, '_signal_values'):
+                                    # Fallback: try to use signal_service if available (even without message ID)
+                                    if self.signal_service is not None:
+                                        # Try to find signal by name only (less efficient but works)
+                                        # Note: This is a fallback - proper usage requires message_id
+                                        logger.debug(f"Feedback signal '{fb}' has no message ID, attempting fallback lookup via signal_service")
+                                        # Search through all cached signals for matching name
+                                        all_signals = self.signal_service.get_all_signals()
                                         candidates = []
-                                        for k, (t, v) in self.gui._signal_values.items():
+                                        for signal_key, (t, v) in all_signals.items():
                                             try:
-                                                _cid, sname = k.split(':', 1)
+                                                if ':' in signal_key:
+                                                    _, sname = signal_key.split(':', 1)
+                                                    if sname == fb:
+                                                        candidates.append((t, v))
                                             except Exception:
                                                 continue
-                                            if sname == fb:
-                                                candidates.append((t, v))
                                         if candidates:
                                             candidates.sort(key=lambda x: x[0], reverse=True)
                                             ts, val = candidates[0]
+                                            logger.debug(f"Found signal '{fb}' via fallback lookup")
                                         else:
                                             ts, val = (None, None)
+                                            logger.debug(f"Signal '{fb}' not found in signal_service cache")
                                     else:
                                         ts, val = (None, None)
                             else:
@@ -1004,6 +1102,7 @@ class TestRunner:
                     - Wait for DAC_SETTLING_TIME_MS after step change (settling period)
                     - Collect data for DATA_COLLECTION_PERIOD_MS (fixed period)
                     - Periodically resend DAC command every 50ms during collection
+                    - Optimized: Uses 25ms loop interval and batches plot updates every 50ms
                     
                     The data collection period must be less than (Dwell Time - Settling Time)
                     to ensure it fits within the available dwell window.
@@ -1041,12 +1140,26 @@ class TestRunner:
                     COMMAND_PERIOD_MS = 50
                     command_interval_sec = COMMAND_PERIOD_MS / 1000.0
                     
+                    # Optimization: Use larger loop interval to reduce iteration overhead
+                    # Changed from SLEEP_INTERVAL_SHORT (5ms) to 25ms for better performance
+                    DATA_COLLECTION_LOOP_INTERVAL_MS = 25
+                    data_collection_loop_interval_sec = DATA_COLLECTION_LOOP_INTERVAL_MS / 1000.0
+                    
+                    # Optimization: Batch plot updates every 50ms instead of every iteration
+                    PLOT_UPDATE_INTERVAL_MS = 50
+                    plot_update_interval_sec = PLOT_UPDATE_INTERVAL_MS / 1000.0
+                    
                     # Timing conversions
                     settling_time_sec = DAC_SETTLING_TIME_MS / 1000.0
                     collection_period_sec = actual_collection_period_ms / 1000.0
                     
                     start_time = time.time()
                     last_command_time = start_time
+                    last_plot_update_time = start_time
+                    last_event_process_time = start_time
+                    
+                    # Batch collection: store data points and update plot periodically
+                    batched_data_points = []  # List of (dac_voltage, fb_value) tuples
                     
                     # Send initial DAC command for this voltage level
                     # Note: MUX signals should NOT be included here - they require MessageType=17,
@@ -1083,13 +1196,16 @@ class TestRunner:
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during settling: {e}")
                         
-                        # Process Qt events to keep UI responsive
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
+                        # Process Qt events to keep UI responsive (less frequently during settling)
+                        # Process events approximately every 100ms during settling
+                        if (current_time - last_event_process_time) >= 0.1:  # Every ~100ms
+                            try:
+                                QtCore.QCoreApplication.processEvents()
+                                last_event_process_time = current_time
+                            except Exception:
+                                pass
                         
-                        time.sleep(SLEEP_INTERVAL_SHORT)
+                        time.sleep(data_collection_loop_interval_sec)
                     
                     # Calculate when the full dwell period ends
                     dwell_end_time = step_change_time + (dwell_ms / 1000.0)
@@ -1101,6 +1217,7 @@ class TestRunner:
                     data_points_collected = 0
                     
                     # Phase 1: Data collection period (after settling, before end of collection period)
+                    # Optimization: Use larger loop interval and batch plot updates
                     while time.time() < collection_end_time and time.time() < dwell_end_time:
                         current_time = time.time()
                         
@@ -1114,7 +1231,7 @@ class TestRunner:
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during collection: {e}")
                         
-                        # Collect feedback data points on every loop iteration during collection period
+                        # Collect feedback data points (optimized: less frequent checks)
                         if fb_signal and fb_msg_id:
                             try:
                                 # Use signal_service if available, otherwise fallback to GUI
@@ -1164,8 +1281,8 @@ class TestRunner:
                                             f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
                                             f"Feedback={fb_val} (no timestamp available)"
                                         )
-                                        if self.plot_update_callback:
-                                            self.plot_update_callback(measured_dac_voltage, fb_val, test_name)
+                                        # Batch the data point instead of updating plot immediately
+                                        batched_data_points.append((measured_dac_voltage, fb_val))
                                         data_points_collected += 1
                                     elif ts >= (dac_command_timestamp - TIMESTAMP_TOLERANCE_SEC):
                                         # This feedback value is fresh enough (within tolerance window)
@@ -1174,8 +1291,8 @@ class TestRunner:
                                             f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
                                             f"Feedback={fb_val}, timestamp_age={(time.time() - ts)*1000:.1f}ms"
                                         )
-                                        if self.plot_update_callback:
-                                            self.plot_update_callback(measured_dac_voltage, fb_val, test_name)
+                                        # Batch the data point instead of updating plot immediately
+                                        batched_data_points.append((measured_dac_voltage, fb_val))
                                         data_points_collected += 1
                                     else:
                                         # Stale feedback value - skip it (logged at debug level only if significant)
@@ -1188,15 +1305,92 @@ class TestRunner:
                             except Exception as e:
                                 logger.debug(f"Error collecting feedback during dwell: {e}")
                         
-                        # Process Qt events to keep UI responsive
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
+                        # Optimization: Batch plot updates every 50ms instead of every iteration
+                        if (current_time - last_plot_update_time) >= plot_update_interval_sec:
+                            if batched_data_points and self.plot_update_callback:
+                                # Update plot with all batched points in batch mode
+                                # This reduces canvas redraws and auto-scaling operations
+                                try:
+                                    # Add all points first - each will queue a plot update via callback
+                                    for dac_val, fb_val in batched_data_points:
+                                        try:
+                                            self.plot_update_callback(dac_val, fb_val, test_name)
+                                        except Exception as e:
+                                            logger.debug(f"Error updating plot with batched point: {e}")
+                                    
+                                    # After queuing all plot updates via BlockingQueuedConnection,
+                                    # they have already been processed in the main thread with draw()
+                                    # Force a single canvas update after all batched points are added
+                                    # Use direct access if in main thread
+                                    if self.gui is not None and hasattr(self.gui, 'plot_canvas') and self.gui.plot_canvas is not None:
+                                        try:
+                                            current_thread = QtCore.QThread.currentThread()
+                                            main_thread = QtCore.QCoreApplication.instance().thread()
+                                            
+                                            if current_thread == main_thread:
+                                                # Main thread - update directly with immediate draw
+                                                if hasattr(self.gui, 'plot_line') and self.gui.plot_line is not None:
+                                                    if hasattr(self.gui, 'plot_dac_voltages') and hasattr(self.gui, 'plot_feedback_values'):
+                                                        self.gui.plot_line.set_data(self.gui.plot_dac_voltages, self.gui.plot_feedback_values)
+                                                if hasattr(self.gui, 'plot_axes') and self.gui.plot_axes is not None:
+                                                    self.gui.plot_axes.relim()
+                                                    self.gui.plot_axes.autoscale()
+                                                # Use draw() for immediate update during test
+                                                self.gui.plot_canvas.draw()
+                                            # Background thread: updates already processed via BlockingQueuedConnection
+                                        except Exception as e:
+                                            logger.debug(f"Error finalizing batched plot update: {e}")
+                                except Exception as e:
+                                    logger.debug(f"Error updating plot with batched points: {e}")
+                                batched_data_points.clear()
+                            last_plot_update_time = current_time
                         
-                        # Small sleep to prevent busy waiting and allow other threads to process
-                        # This is minimal to maximize collection rate while maintaining system responsiveness
-                        time.sleep(SLEEP_INTERVAL_SHORT)
+                        # Process Qt events to keep UI responsive (less frequently)
+                        # Process events approximately every 100ms during data collection
+                        if (current_time - last_event_process_time) >= 0.1:  # Every ~100ms
+                            try:
+                                QtCore.QCoreApplication.processEvents()
+                                last_event_process_time = current_time
+                            except Exception:
+                                pass
+                        
+                        # Optimization: Use larger sleep interval (25ms instead of 5ms)
+                        # This reduces loop iteration overhead while maintaining good data collection rate
+                        time.sleep(data_collection_loop_interval_sec)
+                    
+                    # Flush any remaining batched data points
+                    if batched_data_points and self.plot_update_callback:
+                        try:
+                            # Add all remaining points
+                            for dac_val, fb_val in batched_data_points:
+                                try:
+                                    self.plot_update_callback(dac_val, fb_val, test_name)
+                                except Exception as e:
+                                    logger.debug(f"Error updating plot with final batched point: {e}")
+                            
+                            # Force final canvas update after all points are added
+                            # Updates already processed via BlockingQueuedConnection, just ensure final redraw
+                            if self.gui is not None and hasattr(self.gui, 'plot_canvas') and self.gui.plot_canvas is not None:
+                                try:
+                                    current_thread = QtCore.QThread.currentThread()
+                                    main_thread = QtCore.QCoreApplication.instance().thread()
+                                    
+                                    if current_thread == main_thread:
+                                        # Main thread - update directly with immediate draw
+                                        if hasattr(self.gui, 'plot_line') and self.gui.plot_line is not None:
+                                            if hasattr(self.gui, 'plot_dac_voltages') and hasattr(self.gui, 'plot_feedback_values'):
+                                                self.gui.plot_line.set_data(self.gui.plot_dac_voltages, self.gui.plot_feedback_values)
+                                        if hasattr(self.gui, 'plot_axes') and self.gui.plot_axes is not None:
+                                            self.gui.plot_axes.relim()
+                                            self.gui.plot_axes.autoscale()
+                                        # Use draw() for immediate update
+                                        self.gui.plot_canvas.draw()
+                                    # Background thread: updates already processed via BlockingQueuedConnection
+                                except Exception as e:
+                                    logger.debug(f"Error finalizing final batched plot update: {e}")
+                        except Exception as e:
+                            logger.debug(f"Error flushing batched plot points: {e}")
+                        batched_data_points.clear()
                     
                     # Phase 2: Continue holding DAC voltage for remaining dwell time (if any)
                     # This ensures the DAC voltage is held for the full dwell period, even after data collection ends
@@ -1237,11 +1431,43 @@ class TestRunner:
                 
                 def _encode_and_send(signals: dict):
                     # signals: mapping of signal name -> value
-                    nonlocal current_mux_enable, current_mux_channel
+                    nonlocal current_mux_enable, current_mux_channel, dac_frame_cache, last_cached_dac_voltage
                     
                     if not signals:
                         logger.warning("_encode_and_send called with empty signals dict")
                         return
+                    
+                    # Optimization: Check cache for DAC commands with same voltage
+                    # This avoids expensive re-encoding when voltage hasn't changed
+                    if dac_cmd_sig and dac_cmd_sig in signals:
+                        dac_voltage_key = int(signals[dac_cmd_sig])
+                        cache_key = (dac_voltage_key, current_mux_enable, current_mux_channel)
+                        
+                        if cache_key in dac_frame_cache and dac_voltage_key == last_cached_dac_voltage:
+                            # Use cached encoded frame
+                            cached_data_bytes = dac_frame_cache[cache_key]
+                            try:
+                                if self.can_service is not None and self.can_service.is_connected():
+                                    if AdapterFrame is None:
+                                        logger.error("AdapterFrame class not available")
+                                        return
+                                    f = AdapterFrame(can_id=can_id, data=cached_data_bytes, timestamp=time.time())
+                                    success = self.can_service.send_frame(f) if self.can_service is not None else False
+                                    if not success:
+                                        logger.warning(f"send_frame returned False for can_id=0x{can_id:X} (cached)")
+                                    
+                                    # Update real-time monitoring
+                                    if dac_cmd_sig in signals:
+                                        try:
+                                            dac_value_mv = signals[dac_cmd_sig]
+                                            dac_value_v = float(dac_value_mv) / 1000.0
+                                            self.update_monitor_signal('current_signal', dac_value_v)
+                                        except Exception as e:
+                                            logger.debug(f"Failed to update monitor signal: {e}")
+                                    return
+                            except Exception as e:
+                                logger.debug(f"Error sending cached frame, falling back to encoding: {e}")
+                                # Fall through to normal encoding if cache send fails
                     
                     encode_data = {'DeviceID': 0}  # always include DeviceID
                     mux_value = None
@@ -1466,6 +1692,18 @@ class TestRunner:
                                 data_bytes = self.dbc_service.encode_message(target_msg, encode_data)
                             else:
                                 data_bytes = target_msg.encode(encode_data)
+                            
+                            # Optimization: Cache encoded frame for DAC commands
+                            if dac_cmd_sig and dac_cmd_sig in signals:
+                                dac_voltage_key = int(signals[dac_cmd_sig])
+                                cache_key = (dac_voltage_key, current_mux_enable, current_mux_channel)
+                                dac_frame_cache[cache_key] = data_bytes
+                                last_cached_dac_voltage = dac_voltage_key
+                                # Limit cache size to prevent memory growth (keep last 10 entries)
+                                if len(dac_frame_cache) > 10:
+                                    # Remove oldest entry (simple FIFO - remove first key)
+                                    oldest_key = next(iter(dac_frame_cache))
+                                    del dac_frame_cache[oldest_key]
                         except Exception as encode_error:
                             # Log the encode_data for debugging memory corruption issues
                             logger.error(
@@ -1506,12 +1744,15 @@ class TestRunner:
 
                     # Phase 1: Use CanService if available
                     if self.can_service is not None and self.can_service.is_connected():
+                        if AdapterFrame is None:
+                            logger.error("AdapterFrame class not available")
+                            return False, "AdapterFrame class not available"
                         f = AdapterFrame(can_id=can_id, data=data_bytes, timestamp=time.time())
                         logger.debug(f'Signals: {signals}')
                         logger.debug(f'Encode data: {encode_data}')
                         logger.debug(f"Sending frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
                         try:
-                            success = self.can_service.send_frame(f)
+                            success = self.can_service.send_frame(f) if self.can_service is not None else False
                             if not success:
                                 logger.warning(f"send_frame returned False for can_id=0x{can_id:X}")
                         except Exception as e:
@@ -1542,6 +1783,11 @@ class TestRunner:
                 current_mux_enable = 0
                 current_mux_channel = mux_channel_value if mux_channel_value is not None else 0
                 
+                # Optimization: Cache for encoded DAC frames to avoid re-encoding same voltage
+                # Key: (dac_voltage, mux_enable, mux_channel), Value: encoded_data_bytes
+                dac_frame_cache = {}
+                last_cached_dac_voltage = None
+                
                 # Track total data points collected across all voltage steps
                 total_data_points_collected = 0
                 
@@ -1552,13 +1798,26 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Failed to clear plot: {e}")
                 
-                # Initialize plot for Analog Sweep Test
+                # Initialize plot for Analog Sweep Test (thread-safe)
                 test_type = test.get('type', '')
                 if test_type == 'Analog Sweep Test':
                     test_name = test.get('name', '')
                     if self.gui is not None and hasattr(self.gui, '_initialize_analog_sweep_plot'):
                         try:
-                            self.gui._initialize_analog_sweep_plot(test_name)
+                            current_thread = QtCore.QThread.currentThread()
+                            main_thread = QtCore.QCoreApplication.instance().thread()
+                            
+                            if current_thread == main_thread:
+                                # Main thread - call directly
+                                self.gui._initialize_analog_sweep_plot(test_name)
+                            else:
+                                # Background thread - use QueuedConnection
+                                QtCore.QMetaObject.invokeMethod(
+                                    self.gui,
+                                    '_initialize_analog_sweep_plot',
+                                    QtCore.Qt.ConnectionType.QueuedConnection,
+                                    QtCore.Q_ARG(str, test_name)
+                                )
                         except Exception as e:
                             logger.debug(f"Failed to initialize Analog Sweep Test plot: {e}")
                 
@@ -5550,10 +5809,23 @@ class TestRunner:
                     self.plot_clear_callback()
                     logger.info("Plot cleared for second sweep")
                 
-                # Re-initialize plot for second sweep
+                # Re-initialize plot for second sweep (thread-safe)
                 if self.gui is not None and hasattr(self.gui, '_initialize_output_current_plot'):
                     try:
-                        self.gui._initialize_output_current_plot(test_name)
+                        current_thread = QtCore.QThread.currentThread()
+                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        
+                        if current_thread == main_thread:
+                            # Main thread - call directly
+                            self.gui._initialize_output_current_plot(test_name)
+                        else:
+                            # Background thread - use QueuedConnection
+                            QtCore.QMetaObject.invokeMethod(
+                                self.gui,
+                                '_initialize_output_current_plot',
+                                QtCore.Qt.ConnectionType.QueuedConnection,
+                                QtCore.Q_ARG(str, test_name)
+                            )
                     except Exception as e:
                         logger.debug(f"Failed to initialize Output Current Calibration plot for second sweep: {e}")
                 
