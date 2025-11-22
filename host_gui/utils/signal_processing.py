@@ -45,7 +45,9 @@ def apply_lowpass_filter(
     Returns:
         Filtered voltage values (same type as input)
     """
-    if not voltage_values or len(voltage_values) < 10:
+    # Check if voltage_values is empty or has insufficient data
+    # Handle both list and numpy array cases
+    if voltage_values is None or len(voltage_values) < 10:
         logger.warning("Insufficient data points for filtering, returning original data")
         return voltage_values
     

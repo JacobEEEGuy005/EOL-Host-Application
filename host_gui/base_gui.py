@@ -2007,21 +2007,42 @@ class BaseGUI(QtWidgets.QMainWindow):
                         exec_data['calibration'] = calibration_params
             elif test_type == 'Phase Current Test':
                 # Store plot data for phase current calibration tests
-                exec_data['plot_data'] = {
-                    'iq_refs': list(plot_data.get('iq_refs', [])),
-                    'osc_ch1': list(plot_data.get('osc_ch1', [])),
-                    'osc_ch2': list(plot_data.get('osc_ch2', [])),
-                    'can_v': list(plot_data.get('can_v', [])),
-                    'can_w': list(plot_data.get('can_w', [])),
-                    'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
-                    'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
-                    'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
-                    'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
-                    'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
-                    'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
-                    'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
-                    'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
-                }
+                if plot_data and isinstance(plot_data, dict):
+                    exec_data['plot_data'] = {
+                        'iq_refs': list(plot_data.get('iq_refs', [])),
+                        'id_refs': list(plot_data.get('id_refs', [])),
+                        'osc_ch1': list(plot_data.get('osc_ch1', [])),
+                        'osc_ch2': list(plot_data.get('osc_ch2', [])),
+                        'can_v': list(plot_data.get('can_v', [])),
+                        'can_w': list(plot_data.get('can_w', [])),
+                        'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
+                        'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
+                        'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
+                        'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
+                        'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
+                        'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
+                        'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
+                        'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
+                    }
+                else:
+                    # If plot_data is None or not a dict, store empty structure
+                    logger.warning(f"plot_data is None or not a dict for Phase Current Test: {type(plot_data)}")
+                    exec_data['plot_data'] = {
+                        'iq_refs': [],
+                        'id_refs': [],
+                        'osc_ch1': [],
+                        'osc_ch2': [],
+                        'can_v': [],
+                        'can_w': [],
+                        'gain_errors_v': [],
+                        'gain_corrections_v': [],
+                        'gain_errors_w': [],
+                        'gain_corrections_w': [],
+                        'avg_gain_error_v': None,
+                        'avg_gain_correction_v': None,
+                        'avg_gain_error_w': None,
+                        'avg_gain_correction_w': None
+                    }
             elif test_type == 'Output Current Calibration':
                 # Store plot data for Output Current Calibration tests
                 # Check if we have dual sweep data (new format) or single plot data (old format)
@@ -2502,6 +2523,102 @@ Data Points Used: {data_points}"""
                         
                         gain_info_text.setPlainText(gain_info)
                         layout.addWidget(gain_info_text)
+                    
+                    # Add data table
+                    try:
+                        if not isinstance(plot_data, dict):
+                            logger.warning(f"plot_data is not a dict for Phase Current Test: {type(plot_data)}")
+                            plot_data = {}
+                        
+                        plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                        plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                        plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                        plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                        plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                        plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                        
+                        if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plot_osc_w:
+                            table_label = QtWidgets.QLabel(f'<b>Test Data Table:</b>')
+                            layout.addWidget(table_label)
+                        
+                        # Create table widget
+                        table = QtWidgets.QTableWidget()
+                        table.setColumnCount(6)
+                        table.setHorizontalHeaderLabels([
+                            'Iq_ref (A)',
+                            'Id_ref (A)',
+                            'DUT Phase V Current (A)',
+                            'Measured Phase V Current (A)',
+                            'DUT Phase W Current (A)',
+                            'Measured Phase W Current (A)'
+                        ])
+                        
+                        # Determine number of rows
+                        max_rows = max(
+                            len(plot_iq_refs) if plot_iq_refs else 0,
+                            len(plot_id_refs) if plot_id_refs else 0,
+                            len(plot_can_v) if plot_can_v else 0,
+                            len(plot_osc_v) if plot_osc_v else 0,
+                            len(plot_can_w) if plot_can_w else 0,
+                            len(plot_osc_w) if plot_osc_w else 0
+                        )
+                        
+                        table.setRowCount(max_rows)
+                        
+                        # Populate table
+                        for i in range(max_rows):
+                            # Iq_ref
+                            iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                            if iq_val is not None:
+                                table.setItem(i, 0, QtWidgets.QTableWidgetItem(f'{iq_val:.4f}'))
+                            else:
+                                table.setItem(i, 0, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Id_ref
+                            id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                            if id_val is not None:
+                                table.setItem(i, 1, QtWidgets.QTableWidgetItem(f'{id_val:.4f}'))
+                            else:
+                                table.setItem(i, 1, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase V Current
+                            can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                            if can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val):
+                                table.setItem(i, 2, QtWidgets.QTableWidgetItem(f'{can_v_val:.4f}'))
+                            else:
+                                table.setItem(i, 2, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase V Current
+                            osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                            if osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val):
+                                table.setItem(i, 3, QtWidgets.QTableWidgetItem(f'{osc_v_val:.4f}'))
+                            else:
+                                table.setItem(i, 3, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase W Current
+                            can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                            if can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val):
+                                table.setItem(i, 4, QtWidgets.QTableWidgetItem(f'{can_w_val:.4f}'))
+                            else:
+                                table.setItem(i, 4, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase W Current
+                            osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                            if osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val):
+                                table.setItem(i, 5, QtWidgets.QTableWidgetItem(f'{osc_w_val:.4f}'))
+                            else:
+                                table.setItem(i, 5, QtWidgets.QTableWidgetItem('N/A'))
+                        
+                        # Resize columns to fit content
+                        table.resizeColumnsToContents()
+                        table.setMaximumHeight(300)
+                        table.setAlternatingRowColors(True)
+                        layout.addWidget(table)
+                    except Exception as e:
+                        logger.error(f"Error creating data table in test details dialog: {e}", exc_info=True)
+                        error_label = QtWidgets.QLabel(f'<i>Data table creation failed: {e}</i>')
+                        error_label.setStyleSheet('color: red;')
+                        layout.addWidget(error_label)
                         
                 except Exception as e:
                     logger.error(f"Error creating phase current plots in test details dialog: {e}", exc_info=True)
@@ -4361,6 +4478,108 @@ Data Points Used: {data_points}"""
                         
                         test_item.addChild(gain_item)
                     
+                    # Add data table - always show table for Phase Current Test if plot_data exists
+                    try:
+                        if not isinstance(plot_data, dict):
+                            logger.warning(f"plot_data is not a dict for Phase Current Test in report: {type(plot_data)}")
+                            plot_data = {}
+                        
+                        plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                        plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                        plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                        plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                        plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                        plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                        
+                        # Always create table for Phase Current Test, even if data is empty
+                        # This ensures the table structure is visible in the report
+                        logger.debug(f"Creating Test Data Table for Phase Current Test: iq_refs={len(plot_iq_refs)}, id_refs={len(plot_id_refs)}, can_v={len(plot_can_v)}, osc_v={len(plot_osc_v)}, can_w={len(plot_can_w)}, osc_w={len(plot_osc_w)}")
+                        
+                        table_item = QtWidgets.QTreeWidgetItem(['Test Data Table', '', '', ''])
+                        table_item.setExpanded(False)
+                        
+                        # Create table widget
+                        table_widget = QtWidgets.QTableWidget()
+                        table_widget.setColumnCount(6)
+                        table_widget.setHorizontalHeaderLabels([
+                            'Iq_ref (A)',
+                            'Id_ref (A)',
+                            'DUT Phase V Current (A)',
+                            'Measured Phase V Current (A)',
+                            'DUT Phase W Current (A)',
+                            'Measured Phase W Current (A)'
+                        ])
+                        
+                        # Determine number of rows (at least 1 to show headers even if no data)
+                        max_rows = max(
+                            len(plot_iq_refs) if plot_iq_refs else 0,
+                            len(plot_id_refs) if plot_id_refs else 0,
+                            len(plot_can_v) if plot_can_v else 0,
+                            len(plot_osc_v) if plot_osc_v else 0,
+                            len(plot_can_w) if plot_can_w else 0,
+                            len(plot_osc_w) if plot_osc_w else 0,
+                            1  # At least 1 row to show table structure
+                        )
+                        
+                        table_widget.setRowCount(max_rows)
+                        
+                        # Populate table
+                        for i in range(max_rows):
+                            # Iq_ref
+                            iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                            if iq_val is not None:
+                                table_widget.setItem(i, 0, QtWidgets.QTableWidgetItem(f'{iq_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 0, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Id_ref
+                            id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                            if id_val is not None:
+                                table_widget.setItem(i, 1, QtWidgets.QTableWidgetItem(f'{id_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 1, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase V Current
+                            can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                            if can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val):
+                                table_widget.setItem(i, 2, QtWidgets.QTableWidgetItem(f'{can_v_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 2, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase V Current
+                            osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                            if osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val):
+                                table_widget.setItem(i, 3, QtWidgets.QTableWidgetItem(f'{osc_v_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 3, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase W Current
+                            can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                            if can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val):
+                                table_widget.setItem(i, 4, QtWidgets.QTableWidgetItem(f'{can_w_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 4, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase W Current
+                            osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                            if osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val):
+                                table_widget.setItem(i, 5, QtWidgets.QTableWidgetItem(f'{osc_w_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 5, QtWidgets.QTableWidgetItem('N/A'))
+                        
+                        # Resize columns to fit content
+                        table_widget.resizeColumnsToContents()
+                        table_widget.setMaximumHeight(300)
+                        table_widget.setAlternatingRowColors(True)
+                        
+                        # Set widget as item widget
+                        self.report_tree.setItemWidget(table_item, 1, table_widget)
+                        
+                        test_item.addChild(table_item)
+                    except Exception as e:
+                        logger.error(f"Error creating data table in report tree: {e}", exc_info=True)
+                        # Don't add table if there's an error, but continue with the rest of the report
+                    
                     # Add plot widget if plot data is available
                     if matplotlib_available:
                         plot_item = QtWidgets.QTreeWidgetItem(['Plot: CAN vs Oscilloscope', '', '', ''])
@@ -5306,6 +5525,65 @@ Data Points Used: {data_points}"""
                             
                             html_parts.append('</table>')
                         
+                        # Test data table
+                        try:
+                            if not isinstance(plot_data, dict):
+                                logger.warning(f"plot_data is not a dict for Phase Current Test in HTML export: {type(plot_data)}")
+                                plot_data = {}
+                            
+                            plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                            plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                            plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                            plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                            plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                            plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                            
+                            if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plot_osc_w:
+                                html_parts.append('<h3>Test Data Table</h3>')
+                                html_parts.append('<table class="calibration-table">')
+                                html_parts.append('<tr><th>Iq_ref (A)</th><th>Id_ref (A)</th><th>DUT Phase V Current (A)</th><th>Measured Phase V Current (A)</th><th>DUT Phase W Current (A)</th><th>Measured Phase W Current (A)</th></tr>')
+                                
+                                max_rows = max(
+                                    len(plot_iq_refs) if plot_iq_refs else 0,
+                                    len(plot_id_refs) if plot_id_refs else 0,
+                                    len(plot_can_v) if plot_can_v else 0,
+                                    len(plot_osc_v) if plot_osc_v else 0,
+                                    len(plot_can_w) if plot_can_w else 0,
+                                    len(plot_osc_w) if plot_osc_w else 0
+                                )
+                                
+                                for i in range(max_rows):
+                                    # Iq_ref
+                                    iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                                    iq_str = f'{iq_val:.4f}' if iq_val is not None else 'N/A'
+                                    
+                                    # Id_ref
+                                    id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                                    id_str = f'{id_val:.4f}' if id_val is not None else 'N/A'
+                                    
+                                    # DUT Phase V Current
+                                    can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                                    can_v_str = f'{can_v_val:.4f}' if (can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val)) else 'N/A'
+                                    
+                                    # Measured Phase V Current
+                                    osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                                    osc_v_str = f'{osc_v_val:.4f}' if (osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val)) else 'N/A'
+                                    
+                                    # DUT Phase W Current
+                                    can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                                    can_w_str = f'{can_w_val:.4f}' if (can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val)) else 'N/A'
+                                    
+                                    # Measured Phase W Current
+                                    osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                                    osc_w_str = f'{osc_w_val:.4f}' if (osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val)) else 'N/A'
+                                    
+                                    html_parts.append(f'<tr><td>{iq_str}</td><td>{id_str}</td><td>{can_v_str}</td><td>{osc_v_str}</td><td>{can_w_str}</td><td>{osc_w_str}</td></tr>')
+                                
+                                html_parts.append('</table>')
+                        except Exception as e:
+                            logger.error(f"Error creating data table in HTML export: {e}", exc_info=True)
+                            html_parts.append(f'<p><i>Error creating data table: {escape(str(e))}</i></p>')
+                        
                         # Plot image (CAN vs Oscilloscope)
                         osc_ch1 = plot_data.get('osc_ch1', [])
                         osc_ch2 = plot_data.get('osc_ch2', [])
@@ -5736,6 +6014,80 @@ Data Points Used: {data_points}"""
                                 ]))
                                 
                                 story.append(gain_table)
+                            
+                            # Test data table
+                            try:
+                                if not isinstance(plot_data, dict):
+                                    logger.warning(f"plot_data is not a dict for Phase Current Test in PDF export: {type(plot_data)}")
+                                    plot_data = {}
+                                
+                                plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                                plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                                plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                                plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                                plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                                plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                                
+                                if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plot_osc_w:
+                                    story.append(Spacer(1, 0.1*inch))
+                                    story.append(Paragraph('<b>Test Data Table</b>', styles['Heading3']))
+                                    
+                                    table_data = [['Iq_ref (A)', 'Id_ref (A)', 'DUT Phase V Current (A)', 'Measured Phase V Current (A)', 'DUT Phase W Current (A)', 'Measured Phase W Current (A)']]
+                                    
+                                    max_rows = max(
+                                        len(plot_iq_refs) if plot_iq_refs else 0,
+                                        len(plot_id_refs) if plot_id_refs else 0,
+                                        len(plot_can_v) if plot_can_v else 0,
+                                        len(plot_osc_v) if plot_osc_v else 0,
+                                        len(plot_can_w) if plot_can_w else 0,
+                                        len(plot_osc_w) if plot_osc_w else 0
+                                    )
+                                    
+                                    for i in range(max_rows):
+                                        # Iq_ref
+                                        iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                                        iq_str = f'{iq_val:.4f}' if iq_val is not None else 'N/A'
+                                        
+                                        # Id_ref
+                                        id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                                        id_str = f'{id_val:.4f}' if id_val is not None else 'N/A'
+                                        
+                                        # DUT Phase V Current
+                                        can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                                        can_v_str = f'{can_v_val:.4f}' if (can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val)) else 'N/A'
+                                        
+                                        # Measured Phase V Current
+                                        osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                                        osc_v_str = f'{osc_v_val:.4f}' if (osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val)) else 'N/A'
+                                        
+                                        # DUT Phase W Current
+                                        can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                                        can_w_str = f'{can_w_val:.4f}' if (can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val)) else 'N/A'
+                                        
+                                        # Measured Phase W Current
+                                        osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                                        osc_w_str = f'{osc_w_val:.4f}' if (osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val)) else 'N/A'
+                                        
+                                        table_data.append([iq_str, id_str, can_v_str, osc_v_str, can_w_str, osc_w_str])
+                                    
+                                    data_table = Table(table_data)
+                                data_table.setStyle(TableStyle([
+                                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                    ('FONTSIZE', (0, 0), (-1, 0), 8),
+                                    ('FONTSIZE', (0, 1), (-1, -1), 7),
+                                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                    ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                                ]))
+                                
+                                story.append(data_table)
+                            except Exception as e:
+                                logger.error(f"Error creating data table in PDF export: {e}", exc_info=True)
+                                story.append(Paragraph(f'<i>Error creating data table: {str(e)}</i>', styles['Normal']))
                             
                             # Plot image (CAN vs Oscilloscope)
                             osc_ch1 = plot_data.get('osc_ch1', [])
