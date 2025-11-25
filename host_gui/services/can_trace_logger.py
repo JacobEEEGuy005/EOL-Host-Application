@@ -92,8 +92,11 @@ class CanTraceLogger:
             
             # Sanitize DUT UID for filename (remove invalid characters)
             if dut_uid:
-                # Replace invalid filename characters with underscores
-                safe_uid = "".join(c for c in dut_uid if c.isalnum() or c in ('-', '_', '.')).strip()
+                # Replace invalid filename characters with hyphen while preserving allowed ones
+                safe_uid = "".join(
+                    c if (c.isalnum() or c in ('-', '_', '.')) else '-'
+                    for c in dut_uid
+                ).strip('-_.')
                 if not safe_uid:
                     safe_uid = "Unknown"
             else:
