@@ -5777,7 +5777,7 @@ Data Points Used: {data_points}"""
             from reportlab.lib.pagesizes import letter, A4
             from reportlab.lib import colors
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, KeepTogether
             from reportlab.lib.units import inch
             reportlab_available = True
         except ImportError:
@@ -5805,11 +5805,37 @@ Data Points Used: {data_points}"""
         try:
             if reportlab_available:
                 # Use reportlab for professional PDF generation
-                doc = SimpleDocTemplate(fname, pagesize=letter)
+                doc = SimpleDocTemplate(
+                    fname,
+                    pagesize=letter,
+                    leftMargin=0.75*inch,
+                    rightMargin=0.75*inch,
+                    topMargin=0.75*inch,
+                    bottomMargin=0.75*inch,
+                )
                 story = []
                 styles = getSampleStyleSheet()
+                body_style = ParagraphStyle(
+                    'Body',
+                    parent=styles['Normal'],
+                    fontSize=10,
+                    leading=13,
+                )
+                value_style = ParagraphStyle(
+                    'Value',
+                    parent=body_style,
+                    spaceAfter=4,
+                )
                 # Track temporary files for cleanup after PDF is built
                 temp_files = []
+                
+                def make_paragraph(text):
+                    if text is None:
+                        text = 'N/A'
+                    elif not isinstance(text, str):
+                        text = str(text)
+                    text = text.replace('\n', '<br/>')
+                    return Paragraph(text, value_style)
                 
                 # Extract DUT UID from execution data using helper method
                 dut_uid = self._get_dut_uid_from_execution_data()
@@ -5869,7 +5895,11 @@ Data Points Used: {data_points}"""
                     ['Total Execution Time', f'{total_time:.2f}s']
                 ])
                 
-                summary_table = Table(summary_data)
+                summary_table = Table(
+                    summary_data,
+                    colWidths=[2.6*inch, 3.6*inch],
+                    repeatRows=1,
+                )
                 summary_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -5902,18 +5932,22 @@ Data Points Used: {data_points}"""
                             break
                     
                     story.append(Paragraph(f'<b>{test_name}</b>', styles['Heading2']))
-                    story.append(Spacer(1, 0.1*inch))
+                    story.append(Spacer(1, 0.05*inch))
                     
                     test_details = [
                         ['Field', 'Value'],
-                        ['Type', test_type],
-                        ['Status', status],
-                        ['Execution Time', exec_time],
-                        ['Parameters', params],
-                        ['Notes', notes.replace('\n', ' ')]
+                        ['Type', make_paragraph(test_type)],
+                        ['Status', make_paragraph(status)],
+                        ['Execution Time', make_paragraph(exec_time)],
+                        ['Parameters', make_paragraph(params)],
+                        ['Notes', make_paragraph(notes)],
                     ]
                     
-                    test_table = Table(test_details)
+                    test_table = Table(
+                        test_details,
+                        colWidths=[1.8*inch, 4.4*inch],
+                        repeatRows=1,
+                    )
                     test_table.setStyle(TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -5922,14 +5956,17 @@ Data Points Used: {data_points}"""
                         ('FONTSIZE', (0, 0), (-1, 0), 10),
                         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                         ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
                         ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                     ]))
                     
                     story.append(test_table)
+                    story.append(Spacer(1, 0.15*inch))
                     
-                    # Calibration for analog tests
-                    if test_type == 'Analog':
+                    # Calibration for analog tests (check if test type contains "Analog")
+                    is_analog_test = 'Analog' in test_type or (test_config and 'Analog' in test_config.get('type', ''))
+                    if is_analog_test:
                         calibration = exec_data.get('calibration')
                         if calibration:
                             story.append(Spacer(1, 0.1*inch))
@@ -5967,7 +6004,11 @@ Data Points Used: {data_points}"""
                                     adjustment_factor = expected_gain / gain
                                     calib_data.append(['Gain Adjustment Factor', f'{adjustment_factor:.6f}'])
                             
-                            calib_table = Table(calib_data)
+                            calib_table = Table(
+                                calib_data,
+                                colWidths=[2.3*inch, 3.9*inch],
+                                repeatRows=1,
+                            )
                             calib_table.setStyle(TableStyle([
                                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -5976,35 +6017,49 @@ Data Points Used: {data_points}"""
                                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                                 ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
                                 ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                             ]))
                             
                             story.append(calib_table)
                         
-                        # Plot image
+                        # Plot image - generate plot even if calibration data is missing
                         plot_data = exec_data.get('plot_data')
                         if plot_data:
                             dac_voltages = plot_data.get('dac_voltages', [])
                             feedback_values = plot_data.get('feedback_values', [])
                             
                             if dac_voltages and feedback_values:
-                                # Save plot to temporary file
-                                import tempfile
-                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                                    tmp_path = tmp_file.name
-                                
-                                plot_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
-                                if plot_bytes:
-                                    with open(tmp_path, 'wb') as f:
-                                        f.write(plot_bytes)
+                                try:
+                                    # Save plot to temporary file
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
                                     
-                                    story.append(Spacer(1, 0.1*inch))
-                                    story.append(Paragraph('<b>Plot</b>', styles['Heading3']))
-                                    img = Image(tmp_path, width=5*inch, height=3*inch)
-                                    story.append(img)
-                                    
-                                    # Track temp file for cleanup after PDF is built
-                                    temp_files.append(tmp_path)
+                                    plot_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        plot_block = [
+                                            Spacer(1, 0.1*inch),
+                                            Paragraph('<b>Plot: Feedback vs DAC Output</b>', styles['Heading3']),
+                                            Image(tmp_path, width=5*inch, height=3*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                        logger.debug(f"Added plot image to PDF for {test_name}")
+                                    else:
+                                        logger.warning(f"Failed to generate plot image for {test_name} - plot_bytes is None")
+                                except Exception as plot_error:
+                                    logger.error(f"Error generating plot for {test_name} in PDF: {plot_error}", exc_info=True)
+                                    # Continue without plot rather than failing entire PDF generation
+                            else:
+                                logger.debug(f"No plot data (dac_voltages or feedback_values) for {test_name} in PDF export")
+                        else:
+                            logger.debug(f"No plot_data found for {test_name} in PDF export")
                     
                     # Phase current calibration test results
                     elif test_type == 'Phase Current Test' or (test_config and test_config.get('type') == 'Phase Current Test'):
@@ -6023,11 +6078,23 @@ Data Points Used: {data_points}"""
                                 
                                 gain_data = [['Parameter', 'Phase V', 'Phase W']]
                                 if avg_gain_error_v is not None:
-                                    gain_data.append(['Average Gain Error (%)', f'{avg_gain_error_v:+.4f}%', f'{avg_gain_error_w:+.4f}%'])
+                                    gain_data.append([
+                                        'Average Gain Error (%)',
+                                        f'{avg_gain_error_v:+.4f}%',
+                                        f'{avg_gain_error_w:+.4f}%' if avg_gain_error_w is not None else 'N/A'
+                                    ])
                                 if avg_gain_correction_v is not None:
-                                    gain_data.append(['Average Gain Correction Factor', f'{avg_gain_correction_v:.6f}', f'{avg_gain_correction_w:.6f}'])
+                                    gain_data.append([
+                                        'Average Gain Correction Factor',
+                                        f'{avg_gain_correction_v:.6f}',
+                                        f'{avg_gain_correction_w:.6f}' if avg_gain_correction_w is not None else 'N/A'
+                                    ])
                                 
-                                gain_table = Table(gain_data)
+                                gain_table = Table(
+                                    gain_data,
+                                    colWidths=[2.8*inch, 1.7*inch, 1.7*inch],
+                                    repeatRows=1,
+                                )
                                 gain_table.setStyle(TableStyle([
                                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -6036,6 +6103,7 @@ Data Points Used: {data_points}"""
                                     ('FONTSIZE', (0, 0), (-1, 0), 10),
                                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                                     ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
                                     ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                                 ]))
                                 
@@ -6096,7 +6164,11 @@ Data Points Used: {data_points}"""
                                         
                                         table_data.append([iq_str, id_str, can_v_str, osc_v_str, can_w_str, osc_w_str])
                                     
-                                    data_table = Table(table_data)
+                                    data_table = Table(
+                                        table_data,
+                                        colWidths=[1.1*inch]*6,
+                                        repeatRows=1,
+                                    )
                                     data_table.setStyle(TableStyle([
                                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -6131,10 +6203,12 @@ Data Points Used: {data_points}"""
                                     with open(tmp_path, 'wb') as f:
                                         f.write(plot_bytes)
                                     
-                                    story.append(Spacer(1, 0.1*inch))
-                                    story.append(Paragraph('<b>Plot: Average Phase Current (CAN vs Oscilloscope)</b>', styles['Heading3']))
-                                    img = Image(tmp_path, width=6*inch, height=2.5*inch)
-                                    story.append(img)
+                                    plot_block = [
+                                        Spacer(1, 0.1*inch),
+                                        Paragraph('<b>Plot: Average Phase Current (CAN vs Oscilloscope)</b>', styles['Heading3']),
+                                        Image(tmp_path, width=6*inch, height=2.5*inch)
+                                    ]
+                                    story.append(KeepTogether(plot_block))
                                     
                                     # Track temp file for cleanup after PDF is built
                                     temp_files.append(tmp_path)
@@ -6171,9 +6245,11 @@ Data Points Used: {data_points}"""
                                         with open(tmp_path, 'wb') as f:
                                             f.write(plot_bytes)
                                         
-                                        story.append(Paragraph(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>', styles['Heading4']))
-                                        img = Image(tmp_path, width=5*inch, height=3.75*inch)
-                                        story.append(img)
+                                        plot_block = [
+                                            Paragraph(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>', styles['Heading4']),
+                                            Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
                                         
                                         # Track temp file for cleanup after PDF is built
                                         temp_files.append(tmp_path)
@@ -6197,10 +6273,12 @@ Data Points Used: {data_points}"""
                                         with open(tmp_path, 'wb') as f:
                                             f.write(plot_bytes)
                                         
-                                        story.append(Spacer(1, 0.1*inch))
-                                        story.append(Paragraph(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>', styles['Heading4']))
-                                        img = Image(tmp_path, width=5*inch, height=3.75*inch)
-                                        story.append(img)
+                                        plot_block = [
+                                            Spacer(1, 0.1*inch),
+                                            Paragraph(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>', styles['Heading4']),
+                                            Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
                                         
                                         # Track temp file for cleanup after PDF is built
                                         temp_files.append(tmp_path)
@@ -6271,10 +6349,12 @@ Data Points Used: {data_points}"""
                                         with open(tmp_path, 'wb') as f:
                                             f.write(plot_bytes)
                                         
-                                        story.append(Spacer(1, 0.1*inch))
-                                        story.append(Paragraph('<b>Plot: Output Current Calibration (DUT vs Oscilloscope)</b>', styles['Heading3']))
-                                        img = Image(tmp_path, width=5*inch, height=3.75*inch)
-                                        story.append(img)
+                                        plot_block = [
+                                            Spacer(1, 0.1*inch),
+                                            Paragraph('<b>Plot: Output Current Calibration (DUT vs Oscilloscope)</b>', styles['Heading3']),
+                                            Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
                                         
                                         # Track temp file for cleanup after PDF is built
                                         temp_files.append(tmp_path)
