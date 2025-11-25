@@ -63,3 +63,4 @@ Thumbs.db
 
 # Generated test reports
 backend/data/reports/
+backend/data/can_traces/
