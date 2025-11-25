@@ -960,6 +960,44 @@ List potential errors and how to handle them:
 - Verify test results include: first sweep gain error (from regression), first sweep adjustment factor, calculated trim value, second sweep gain error (from regression), slope and intercept for both sweeps
 - Verify pass/fail determination uses only second sweep gain error from linear regression
 
+## Report Export
+
+### HTML Export
+Test results are automatically included in HTML report exports:
+- Test details (name, type, status, execution time, parameters, notes)
+- Calibration Results table (for dual sweep format):
+  - First Sweep (Trim Value)
+  - First Sweep Slope, Intercept, Gain Error (%), Adjustment Factor
+  - Calculated Trim Value (%)
+  - Second Sweep (Trim Value)
+  - Second Sweep Slope, Intercept, Gain Error (%)
+  - Tolerance (%)
+  - Result (PASS/FAIL)
+- Plot images:
+  - "Plot: {First Sweep Label}" with embedded PNG image
+  - "Plot: {Second Sweep Label}" with embedded PNG image
+- For single plot format (legacy):
+  - Calibration Parameters table (slope, intercept, gain error, adjustment factor)
+  - Single plot image: "Plot: Output Current Calibration (DUT vs Oscilloscope)"
+
+### PDF Export
+Test results are automatically included in PDF report exports:
+- Test details table with all test information
+- Calibration Results table (same as HTML export for dual sweep format)
+- Plot images embedded in PDF:
+  - **First Sweep Plot**:
+    - Title: "{First Sweep Label}" (e.g., "First Sweep (Trim Value: 100%)")
+    - Image size: 5x3.75 inches
+    - **Plot title and image are kept together on the same page** using ReportLab's `KeepTogether` flowable
+  - **Second Sweep Plot**:
+    - Title: "{Second Sweep Label}" (e.g., "Second Sweep (Trim Value: 98.5%)")
+    - Image size: 5x3.75 inches
+    - **Plot title and image are kept together on the same page** using ReportLab's `KeepTogether` flowable
+- For single plot format (legacy):
+  - Calibration Parameters table
+  - Single plot with title "Plot: Output Current Calibration (DUT vs Oscilloscope)" (5x3.75 inches, using `KeepTogether`)
+- Professional formatting with consistent styling and spacing
+
 ## Reference Implementation
 
 ### Similar Test Type to Follow

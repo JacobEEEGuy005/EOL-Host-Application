@@ -466,6 +466,19 @@ List potential errors and how to handle them:
 - **Cleanup Pattern**: Disable/cleanup at end of test
 - **Real-Time Display Pattern**: Update UI label with latest value during collection
 
+## Report Export
+
+### HTML Export
+Test results are automatically included in HTML report exports:
+- Test details (name, type, status, execution time, parameters, notes)
+- No plot data (test does not generate plots)
+
+### PDF Export
+Test results are automatically included in PDF report exports:
+- Test details table with all test information
+- No plot data (test does not generate plots)
+- Professional formatting with consistent styling and spacing
+
 ## Acceptance Criteria
 
 ### Functional Requirements

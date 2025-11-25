@@ -718,6 +718,19 @@ List potential errors and how to handle them:
 - Test error cases (fault detection, signal not found, etc.)
 - Test with insufficient data (less than 1 second) for current analysis
 
+## Report Export
+
+### HTML Export
+Test results are automatically included in HTML report exports:
+- Test details (name, type, status, execution time, parameters, notes)
+- No plot data (test does not generate plots)
+
+### PDF Export
+Test results are automatically included in PDF report exports:
+- Test details table with all test information
+- No plot data (test does not generate plots)
+- Professional formatting with consistent styling and spacing
+
 ## Reference Implementation
 
 ### Similar Test Type to Follow

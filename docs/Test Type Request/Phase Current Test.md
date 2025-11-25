@@ -656,28 +656,33 @@ List potential errors and how to handle them:
 - Verify real-time plot updates correctly
 - Verify calibration parameters are calculated correctly
 
-## Reference Implementation
+## Report Export
 
-### Similar Test Type to Follow
-- **Test Type**: `Output Current Calibration`
-- **Why Similar**: 
-  - Both compare oscilloscope measurements with CAN feedback
-  - Both iterate through multiple test points
-  - Both use linear regression for calibration
-  - Both update plots in real-time
-- **Key Differences**: 
-  - Phase Current Test is more complex (state machine, steady-state analysis)
-  - Phase Current Test uses multiple channels (phase V and W)
-  - Phase Current Test has more configuration options
-  - Phase Current Test analyzes steady-state periods
+### HTML Export
+Test results are automatically included in HTML report exports:
+- Test details (name, type, status, execution time, parameters, notes)
+- Gain Error and Correction Factor table:
+  - Average Gain Error (%) for Phase V and W
+  - Average Gain Correction Factor for Phase V and W
+- Test Data Table with 6 columns:
+  - Iq_ref (A)
+  - Id_ref (A)
+  - DUT Phase V Current (A)
+  - Measured Phase V Current (A)
+  - DUT Phase W Current (A)
+  - Measured Phase W Current (A)
+- Plot image: "Plot: Average Phase Current (CAN vs Oscilloscope)" with embedded PNG image showing both Phase V and Phase W subplots
 
-### Code Patterns to Use
-- **State Machine Pattern**: Use PhaseCurrentTestStateMachine for sequence management
-- **Oscilloscope Setup Pattern**: Validate and configure oscilloscope settings
-- **Multi-Point Iteration Pattern**: Loop through test points and collect data
-- **Steady-State Analysis Pattern**: Detect and analyze steady-state periods
-- **Linear Regression Pattern**: Calculate calibration parameters
-- **Real-Time Plot Pattern**: Update plot after each test point
+### PDF Export
+Test results are automatically included in PDF report exports:
+- Test details table with all test information
+- Gain Error and Correction Factor table (same as HTML export)
+- Test Data Table (same as HTML export)
+- Plot image embedded in PDF:
+  - Title: "Plot: Average Phase Current (CAN vs Oscilloscope)"
+  - Image size: 6x2.5 inches
+  - **Plot title and image are kept together on the same page** using ReportLab's `KeepTogether` flowable to prevent page breaks between title and plot
+- Professional formatting with consistent styling and spacing
 
 ## Acceptance Criteria
 

@@ -394,6 +394,52 @@ List potential errors and how to handle them:
 - [ ] Test with different tolerance values
 - [ ] Verify real-time temperature display works correctly
 
+## Report Export
+
+### HTML Export
+Test results are automatically included in HTML report exports:
+- Test details (name, type, status, execution time, parameters, notes)
+- No plot data (test does not generate plots)
+
+### PDF Export
+Test results are automatically included in PDF report exports:
+- Test details table with all test information
+- No plot data (test does not generate plots)
+- Professional formatting with consistent styling and spacing
+
+---
+
+## Instructions for AI Agent
+
+Please implement this new test type following the documentation in:
+- `docs/ADDING_NEW_TEST_TYPES.md` - Full implementation guide
+- `docs/TEST_TYPE_QUICK_REFERENCE.md` - Quick reference
+- `docs/TEST_TYPE_SYSTEM_OVERVIEW.md` - System overview
+
+### Implementation Steps
+1. Review the test type requirements above
+2. Follow the step-by-step guide in `ADDING_NEW_TEST_TYPES.md`
+3. Update all required files:
+   - `backend/data/tests/schema.json`
+   - `host_gui/models/test_profile.py`
+   - `host_gui/base_gui.py` (multiple methods)
+   - `host_gui/test_runner.py`
+   - `host_gui/services/test_execution_service.py` (optional)
+4. Implement validation logic
+5. Implement execution logic
+6. Test thoroughly with both valid and invalid configurations
+7. Ensure all acceptance criteria are met
+
+### Key Reminders
+- Use exact test type name consistently across all files: `"Temperature Validation Test"`
+- Support both DBC and non-DBC modes
+- Use `_nb_sleep()` instead of `time.sleep()`
+- Provide meaningful error messages
+- Add appropriate logging
+- Follow existing code patterns and style
+- Display temperature values in degrees Celsius (°C)
+- Update real-time display during data collection
+
 ---
 
 ## Instructions for AI Agent

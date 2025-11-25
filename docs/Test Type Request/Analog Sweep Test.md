@@ -453,6 +453,34 @@ List potential errors and how to handle them:
 - **Signal Cache Clearing**: Test clears signal cache before starting to ensure fresh timestamps
 - **Real-Time Plotting**: Plot updates in real-time during data collection
 - **Plot Data Storage**: Plot data is captured and stored for test report
+
+## Report Export
+
+### HTML Export
+Test results are automatically included in HTML report exports:
+- Test details (name, type, status, execution time, parameters, notes)
+- Calibration parameters table (if available):
+  - Gain (Slope)
+  - Offset
+  - R² (Linearity)
+  - Mean/Max Error
+  - MSE
+  - Data Points
+  - Expected Gain (if available)
+  - Gain Error (if available)
+  - Tolerance Check (if available)
+  - Gain Adjustment Factor (if available)
+- Plot image: "Plot: Feedback vs DAC Output" with embedded PNG image
+
+### PDF Export
+Test results are automatically included in PDF report exports:
+- Test details table with all test information
+- Calibration parameters table (same as HTML export)
+- Plot image embedded in PDF:
+  - Title: "Plot: Feedback vs DAC Output"
+  - Image size: 5x3 inches
+  - **Plot title and image are kept together on the same page** using ReportLab's `KeepTogether` flowable to prevent page breaks between title and plot
+- Professional formatting with consistent styling and spacing
 - **DBC Support**: Test supports both DBC and non-DBC modes
 
 ### Dependencies
