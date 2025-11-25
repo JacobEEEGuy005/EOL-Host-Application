@@ -6041,6 +6041,7 @@ Data Points Used: {data_points}"""
                                         with open(tmp_path, 'wb') as f:
                                             f.write(plot_bytes)
                                         
+                                        # Use KeepTogether to ensure plot title and image stay on same page
                                         plot_block = [
                                             Spacer(1, 0.1*inch),
                                             Paragraph('<b>Plot: Feedback vs DAC Output</b>', styles['Heading3']),
@@ -6203,6 +6204,7 @@ Data Points Used: {data_points}"""
                                     with open(tmp_path, 'wb') as f:
                                         f.write(plot_bytes)
                                     
+                                    # Use KeepTogether to ensure plot title and image stay on same page
                                     plot_block = [
                                         Spacer(1, 0.1*inch),
                                         Paragraph('<b>Plot: Average Phase Current (CAN vs Oscilloscope)</b>', styles['Heading3']),
@@ -6245,6 +6247,7 @@ Data Points Used: {data_points}"""
                                         with open(tmp_path, 'wb') as f:
                                             f.write(plot_bytes)
                                         
+                                        # Use KeepTogether to ensure plot title and image stay on same page
                                         plot_block = [
                                             Paragraph(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>', styles['Heading4']),
                                             Image(tmp_path, width=5*inch, height=3.75*inch)
@@ -6273,6 +6276,7 @@ Data Points Used: {data_points}"""
                                         with open(tmp_path, 'wb') as f:
                                             f.write(plot_bytes)
                                         
+                                        # Use KeepTogether to ensure plot title and image stay on same page
                                         plot_block = [
                                             Spacer(1, 0.1*inch),
                                             Paragraph(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>', styles['Heading4']),

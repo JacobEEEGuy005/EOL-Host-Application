@@ -16,6 +16,7 @@ The EOL Host Application is a comprehensive testing framework for End of Line (E
 - **Oscilloscope Integration**: Support for USBTMC oscilloscopes (Siglent SDS1104X-U and compatible)
 - **Live Data Visualization**: Real-time CAN frame monitoring and signal visualization
 - **Test Results**: Comprehensive test reports with pass/fail status and detailed information
+- **Report Export**: Export test reports to HTML and PDF formats with embedded plots and calibration data
 - **Async Execution**: Non-blocking test execution with pause/resume capabilities
 
 ## Architecture

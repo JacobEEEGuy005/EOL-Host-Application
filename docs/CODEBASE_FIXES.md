@@ -82,7 +82,20 @@ A comprehensive review identified 50+ issues across the codebase. This document 
 
 ## Additional Fixes Applied
 
-### 5. Enhanced None Checks ✅
+### 5. PDF Report Plot Title Page Break Fix ✅
+- **Location**: `host_gui/base_gui.py` - `_export_report_pdf()` method
+- **Issue**: Plot titles (e.g., "Plot: Feedback vs DAC Output") could appear on a different page than the plot image when PDF pagination occurred, making reports difficult to read.
+- **Fix**: Wrapped all plot titles, spacers, and images in ReportLab's `KeepTogether` flowable containers to ensure they stay on the same page.
+- **Impact**: Improved PDF report readability - plot titles and images are now always on the same page
+- **Status**: Completed
+- **Affected Sections**:
+  - Analog Tests plot (line ~6049)
+  - Phase Current Test plot (line ~6211)
+  - Output Current Calibration - First Sweep plot (line ~6252)
+  - Output Current Calibration - Second Sweep plot (line ~6281)
+  - Output Current Calibration - Single plot format (line ~6357)
+
+### 6. Enhanced None Checks ✅
 - **Location**: `test_runner.py` - Multiple locations
 - **Issue**: Some critical service accesses lacked None checks before use
 - **Fix**: Added None checks for:

@@ -45,7 +45,7 @@ Add the new test type to the schema's enum list and create a corresponding `oneO
 
 #### 1.1 Add to Type Enum
 
-Locate the `type` property in the schema (around line 13) and add your test type name to the enum array:
+Locate the `type` property in the schema (around line 13 in `schema.json`) and add your test type name to the enum array:
 
 ```json
 "type": {
@@ -66,7 +66,7 @@ Locate the `type` property in the schema (around line 13) and add your test type
 
 #### 1.2 Add Actuation Schema
 
-In the `actuation.oneOf` array (starting around line 17), add a new object defining the required and optional properties for your test type's actuation configuration:
+In the `actuation.oneOf` array (starting around line 18 in `schema.json`), add a new object defining the required and optional properties for your test type's actuation configuration:
 
 ```json
 {
@@ -111,7 +111,7 @@ In the `actuation.oneOf` array (starting around line 17), add a new object defin
 
 #### 2.1 Update ActuationConfig Docstring
 
-Add documentation for your test type's fields in the `ActuationConfig` class docstring (around line 10). Document all fields that your test type will use.
+Add documentation for your test type's fields in the `ActuationConfig` class docstring in `host_gui/models/test_profile.py`. Document all fields that your test type will use.
 
 #### 2.2 Add Fields to ActuationConfig
 
@@ -131,7 +131,7 @@ your_new_field_2: Optional[str] = None
 
 #### 3.1 Add to Test Type ComboBox
 
-In `_on_create_test()` method (around line 5357), add your test type to the combo box:
+In `_on_create_test()` method (around line 8579 in `base_gui.py`), add your test type to the combo box:
 
 ```python
 type_combo.addItems([
@@ -149,7 +149,7 @@ type_combo.addItems([
 
 #### 3.2 Create Widget for Test Type Configuration
 
-Create a widget and layout for your test type's configuration fields (around line 5360-5376):
+Create a widget and layout for your test type's configuration fields (after adding to combo box in `_on_create_test()`):
 
 ```python
 your_test_widget = QtWidgets.QWidget()
@@ -195,7 +195,7 @@ your_msg_combo.currentIndexChanged.connect(_update_your_signals)
 
 #### 3.3 Add Widget to Stacked Widget
 
-Register your widget in the test type to index mapping (around line 6322-6330):
+Register your widget in the test type to index mapping (in `_on_create_test()` method):
 
 ```python
 test_type_to_index['Your New Test Type'] = act_stacked.addWidget(your_test_widget)
@@ -203,7 +203,7 @@ test_type_to_index['Your New Test Type'] = act_stacked.addWidget(your_test_widge
 
 #### 3.4 Handle Feedback Fields Visibility
 
-In the `_on_type_change()` function (around line 6335), add logic to show/hide feedback fields if needed:
+In the `_on_type_change()` function (within `_on_create_test()` method), add logic to show/hide feedback fields if needed:
 
 ```python
 def _on_type_change(txt: str):
@@ -218,7 +218,7 @@ def _on_type_change(txt: str):
 
 #### 3.5 Build Actuation Dictionary
 
-In the `on_accept()` function (around line 6370), add a branch to build the actuation dictionary for your test type:
+In the `on_accept()` function (within `_on_create_test()` method), add a branch to build the actuation dictionary for your test type:
 
 ```python
 elif t == 'Your New Test Type':
@@ -258,7 +258,7 @@ elif t == 'Your New Test Type':
 
 #### 4.1 Add to Edit Dialog ComboBox
 
-In `_on_edit_test()` method (around line 8500+), add your test type to the combo box (same as create dialog).
+In `_on_edit_test()` method (around line 12376 in `base_gui.py`), add your test type to the combo box (same as create dialog).
 
 #### 4.2 Create Edit Widget
 
@@ -276,7 +276,7 @@ your_field_1_edit_edit = QtWidgets.QLineEdit(str(act.get('field_1', '')))
 
 #### 4.3 Register Edit Widget
 
-Add to the edit dialog's stacked widget mapping (around line 8841):
+Add to the edit dialog's stacked widget mapping (in `_on_edit_test()` method):
 
 ```python
 test_type_to_index_edit['Your New Test Type'] = act_stacked_edit.addWidget(your_test_widget_edit)
@@ -284,11 +284,11 @@ test_type_to_index_edit['Your New Test Type'] = act_stacked_edit.addWidget(your_
 
 #### 4.4 Handle Edit Dialog Type Changes
 
-Update `_on_type_change_edit()` function (around line 8854) to handle your test type.
+Update `_on_type_change_edit()` function (within `_on_edit_test()` method) to handle your test type.
 
 #### 4.5 Update Actuation in Edit Dialog
 
-In the edit dialog's `on_accept()` function (around line 8890), add a branch to update the actuation dictionary for your test type (similar to create dialog).
+In the edit dialog's `on_accept()` function (within `_on_edit_test()` method), add a branch to update the actuation dictionary for your test type (similar to create dialog).
 
 ### Step 5: Update Validation Logic
 
@@ -296,7 +296,7 @@ In the edit dialog's `on_accept()` function (around line 8890), add a branch to 
 
 #### 5.1 Add to Type Validation
 
-In `_validate_test()` method (around line 7229), add your test type to the allowed types:
+In `_validate_test()` method (around line 11640 in `base_gui.py`), add your test type to the allowed types:
 
 ```python
 if test_type not in (
@@ -315,7 +315,7 @@ if test_type not in (
 
 #### 5.2 Add Type-Specific Validation
 
-Add validation logic for your test type's required fields (around line 7243):
+Add validation logic for your test type's required fields (within `_validate_test()` method):
 
 ```python
 elif test_type == 'Your New Test Type':
@@ -337,7 +337,7 @@ elif test_type == 'Your New Test Type':
 
 #### 6.1 Add Execution Branch
 
-In the `run_test()` method (around line 200), add a branch to handle your test type:
+In the `run_test()` method in `test_runner.py`, add a branch to handle your test type:
 
 ```python
 elif act.get('type') == 'Your New Test Type':
@@ -436,7 +436,7 @@ If you want to support your test type in the decoupled service layer (for headle
 
 #### 7.1 Add Execution Branch
 
-In `run_single_test()` method (around line 147), add a branch:
+In `run_single_test()` method (around line 599 in `test_runner.py`), add a branch:
 
 ```python
 elif act.get('type') == 'Your New Test Type':
@@ -470,7 +470,7 @@ def _run_your_new_test(self, test: Dict[str, Any], timeout: float) -> Tuple[bool
 
 #### 8.1 Add to Report Type Filter
 
-In `_refresh_test_report()` method (around line 2260), add your test type to the filter dropdown:
+In `_refresh_test_report()` method (around line 4203 in `base_gui.py`), add your test type to the filter dropdown:
 
 ```python
 self.report_type_filter.addItems([
@@ -484,7 +484,7 @@ self.report_type_filter.addItems([
 
 #### 8.2 Add Report Tree Display Logic
 
-In `_refresh_test_report()` method (around line 2547+), add a section to display your test type's results in the report tree:
+In `_refresh_test_report()` method (around line 4203 in `base_gui.py`), add a section to display your test type's results in the report tree:
 
 ```python
 # For your new test type, add results and plot sections
@@ -557,11 +557,11 @@ if is_your_test and test_config:
             test_item.addChild(plot_item)
 ```
 
-**Reference Implementation:** See `Output Current Calibration` section in `_refresh_test_report()` (lines 2660-2763) for a complete example.
+**Reference Implementation:** Search for `Output Current Calibration` in `_refresh_test_report()` method for a complete example.
 
 #### 8.3 Add to Test Details Popup
 
-In `_show_test_details_popup()` method (around line 1800+), add a section to display your test type's plot and results in the popup dialog:
+In `_show_test_details_popup()` method (around line 2168 in `base_gui.py`), add a section to display your test type's plot and results in the popup dialog:
 
 ```python
 # For your new test type
@@ -605,7 +605,7 @@ elif test_type == 'Your New Test Type':
 
 #### 9.1 Store Plot Data for Reports
 
-In `_on_test_finished()` or `_on_test_failed()` methods (around line 1500+), ensure plot data is stored for your test type:
+In `_on_test_finished()` method (around line 15979 in `base_gui.py`) or `_on_test_failed()` method, ensure plot data is stored for your test type:
 
 ```python
 # Store plot data for your test type
@@ -634,7 +634,7 @@ if result_data:
     }
 ```
 
-**Reference Implementation:** See `Output Current Calibration` handling in `_on_test_finished()` (around line 1535+).
+**Reference Implementation:** Search for `Output Current Calibration` in `_on_test_finished()` method for a complete example.
 
 ### Step 10: Add Plot Initialization (If Using Live Plots)
 
@@ -701,11 +701,11 @@ if self.gui is not None and hasattr(self.gui, '_initialize_your_test_plot'):
         logger.debug(f"Failed to initialize Your New Test Type plot: {e}")
 ```
 
-**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2344-2350).
+**Reference Implementation:** Search for `Output Current Calibration` in `test_runner.py` for a complete example.
 
 #### 10.3 Update Plot Update Method
 
-In `_update_plot()` method (around line 2111), add handling for your test type:
+In `_update_plot()` method (around line 3940 in `base_gui.py`), add handling for your test type:
 
 ```python
 # Detect your test type
@@ -738,7 +738,7 @@ if x_value is not None and y_value is not None:
         self.plot_canvas.draw_idle()
 ```
 
-**Reference Implementation:** See `Output Current Calibration` handling in `_update_plot()` (around line 2171+).
+**Reference Implementation:** Search for `Output Current Calibration` in `_update_plot()` method for a complete example.
 
 ### Step 11: Add HTML/PDF Export Support (If Using Plots)
 
@@ -832,7 +832,7 @@ def _generate_your_test_plot_base64(self, test_name: str, x_values: list,
 
 #### 11.2 Add to HTML Export
 
-In `_export_report_html()` method (around line 3217), add a section for your test type:
+In `_export_report_html()` method (around line 5341 in `base_gui.py`), add a section for your test type:
 
 ```python
 # Your New Test Type test results
@@ -862,11 +862,46 @@ elif test_type == 'Your New Test Type' or (test_config and test_config.get('type
                 html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Plot for {test_name}" class="plot-image">')
 ```
 
-**Reference Implementation:** See `Output Current Calibration` section in `_export_report_html()` (around line 3410+).
+**Reference Implementation:** Search for `Output Current Calibration` in `_export_report_html()` method for a complete example.
 
 #### 11.3 Add to PDF Export (Optional)
 
-In `_export_report_pdf()` method (around line 3325), add similar logic for PDF export if needed. See existing implementations for Phase Current Test or Analog tests.
+In `_export_report_pdf()` method (around line 5773), add similar logic for PDF export if needed. **Important:** When adding plots to PDF, wrap the plot title, spacer, and image in a `KeepTogether` flowable to prevent page breaks between the title and plot.
+
+Example implementation:
+
+```python
+# Your New Test Type test results
+elif test_type == 'Your New Test Type' or (test_config and test_config.get('type') == 'Your New Test Type'):
+    plot_data = exec_data.get('plot_data')
+    if plot_data:
+        x_values = plot_data.get('x_values', [])
+        y_values = plot_data.get('y_values', [])
+        
+        if x_values and y_values:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+            
+            plot_bytes = self._generate_your_test_plot_image(test_name, x_values, y_values, 'png')
+            if plot_bytes:
+                with open(tmp_path, 'wb') as f:
+                    f.write(plot_bytes)
+                
+                # IMPORTANT: Use KeepTogether to keep title and plot on same page
+                from reportlab.platypus import KeepTogether
+                plot_block = [
+                    Spacer(1, 0.1*inch),
+                    Paragraph('<b>Plot: Your Plot Title</b>', styles['Heading3']),
+                    Image(tmp_path, width=5*inch, height=3*inch)
+                ]
+                story.append(KeepTogether(plot_block))
+                
+                # Track temp file for cleanup after PDF is built
+                temp_files.append(tmp_path)
+```
+
+**Reference Implementation:** Search for `Analog Tests`, `Phase Current Test`, or `Output Current Calibration` in `_export_report_pdf()` method for complete examples with `KeepTogether` usage.
 
 ### Step 12: Handle Multiplexed Signals (If Needed)
 
@@ -923,7 +958,7 @@ frame = AdapterFrame(can_id=message_id, data=frame_data)
 self.can_service.send_frame(frame)
 ```
 
-**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2354+) for complete multiplexor handling.
+**Reference Implementation:** Search for `Output Current Calibration` and `MessageType` in `test_runner.py` for complete multiplexor handling.
 
 #### 12.2 Common Pattern for Multiple Messages
 
@@ -1023,7 +1058,7 @@ else:
     osc_value = None
 ```
 
-**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2247-2325) for complete oscilloscope integration.
+**Reference Implementation:** Search for `Output Current Calibration` and oscilloscope usage in `test_runner.py` for complete oscilloscope integration.
 
 ### Step 14: Data Analysis and Calculations (If Needed)
 
@@ -1070,7 +1105,7 @@ adjustment_factor = expected_slope / slope if abs(slope) > 1e-10 else 0.0
 passed = abs(gain_error) <= tolerance_percent
 ```
 
-**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2600+) for complete linear regression implementation.
+**Reference Implementation:** Search for `Output Current Calibration` and linear regression in `test_runner.py` for complete linear regression implementation.
 
 #### 14.2 Store Analysis Results
 
@@ -1288,7 +1323,7 @@ if self.gui is not None:
     }
 ```
 
-**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2149+) for complete implementation.
+**Reference Implementation:** Search for `Output Current Calibration` in `test_runner.py` for complete implementation.
 
 ### Pattern 5: Test with Multiplexed CAN Signals
 
@@ -1331,7 +1366,7 @@ frame = AdapterFrame(can_id=message_id, data=frame_data)
 self.can_service.send_frame(frame)
 ```
 
-**Reference Implementation:** See `Output Current Calibration` in `test_runner.py` (around line 2354+) for complete multiplexor handling.
+**Reference Implementation:** Search for `Output Current Calibration` and `MessageType` in `test_runner.py` for complete multiplexor handling.
 
 ## Important Notes
 

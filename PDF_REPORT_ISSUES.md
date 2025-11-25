@@ -243,13 +243,23 @@ if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plo
 
 **Fix Required:** Add consistent handling for missing test configs.
 
+## ✅ **FIXED ISSUES**
+
+### 21. **Plot Titles Appearing on Different Pages Than Plots** (FIXED)
+**Location:** Lines 6044-6049, 6204-6211, 6244-6252, 6270-6281, 6344-6357
+**Issue:** Plot titles (e.g., "Plot: Feedback vs DAC Output") could appear on a different page than the plot image when PDF pagination occurred.
+**Fix Applied:** Wrapped plot titles, spacers, and images in `KeepTogether` flowable containers to ensure they stay on the same page.
+**Status:** ✅ Fixed - All plot sections now use `KeepTogether` to prevent page breaks between titles and images.
+
 ## 📊 **SUMMARY**
 
 **Critical Issues:** 4
 **Moderate Issues:** 6
 **Minor Issues/Improvements:** 10
+**Fixed Issues:** 1
 
 **Total Issues Found:** 20
+**Total Issues Fixed:** 1
 
 ## 🔧 **RECOMMENDED PRIORITY FIXES**
 

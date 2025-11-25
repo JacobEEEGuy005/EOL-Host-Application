@@ -4,7 +4,7 @@ EOL Host GUI - PySide6-based application for End of Line testing of IPC (Integra
 This module provides a GUI interface for:
 - Connecting to CAN bus adapters (PCAN, SocketCAN, PythonCAN, Canalystii, SimAdapter)
 - Loading and managing DBC (Database CAN) files for signal decoding
-- Configuring and executing test sequences (9 test types)
+- Configuring and executing test sequences (12 test types)
 - Real-time monitoring of CAN frames and decoded signals
 - Visualizing test results with live plots
 - Managing oscilloscope connections for advanced tests

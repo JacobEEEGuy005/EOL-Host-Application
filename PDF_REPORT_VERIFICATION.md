@@ -86,6 +86,7 @@
 - ✅ Temporary file handling with cleanup
 - ✅ Proper image sizing for PDF embedding
 - ✅ Error handling for plot generation failures
+- ✅ Plot titles and images kept together on same page using `KeepTogether` (prevents title/plot page breaks)
 
 ### 5. **Error Handling**
 - ✅ Try-except blocks around critical sections
@@ -137,6 +138,7 @@ All tables use consistent styling:
 - ✅ 0.2 inch spacing after title
 - ✅ 0.3 inch spacing after summary
 - ✅ Page breaks between tests
+- ✅ Plot titles and images grouped with `KeepTogether` to prevent page breaks between them
 
 ## 🔧 **RECOMMENDATIONS**
 
@@ -159,7 +161,7 @@ All tables use consistent styling:
 - ✅ Clean temporary file management
 - ✅ Consistent code structure
 - ✅ Good separation of concerns
-- ✅ Proper use of ReportLab API
+- ✅ Proper use of ReportLab API (including `KeepTogether` for plot layout)
 - ✅ Seaborn integration for plots
 
 ## 📝 **CONCLUSION**
