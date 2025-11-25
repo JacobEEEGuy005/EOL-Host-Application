@@ -9,7 +9,7 @@ import os
 import queue
 import threading
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 from backend.adapters.interface import Frame, Adapter
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,9 @@ class CanService:
         self.worker: Optional[AdapterWorker] = None
         self.frame_queue = queue.Queue()
         self.adapter_name: Optional[str] = None
+        
+        # Optional callback for frame transmission logging (set by GUI)
+        self.tx_frame_callback: Optional[Callable[[Frame], None]] = None
         
         # Load channel and bitrate from parameters or environment (backwards compatibility)
         # Note: ConfigManager should be used by caller to provide these values
@@ -269,6 +272,14 @@ class CanService:
         try:
             self.adapter.send(frame)
             logger.debug(f"Sent frame: can_id=0x{frame.can_id:X} data={frame.data.hex()}")
+            
+            # Call TX frame callback if set (for CAN trace logging)
+            if self.tx_frame_callback is not None:
+                try:
+                    self.tx_frame_callback(frame)
+                except Exception as e:
+                    logger.debug(f"Error in TX frame callback: {e}")
+            
             return True
         except Exception as e:
             logger.error(f"Failed to send frame: {e}", exc_info=True)

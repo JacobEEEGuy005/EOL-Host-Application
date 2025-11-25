@@ -149,11 +149,13 @@ except ImportError:
 # Import services
 try:
     from host_gui.services import CanService, DbcService, SignalService
+    from host_gui.services.can_trace_logger import CanTraceLogger
 except ImportError:
     logger.error("Failed to import services")
     CanService = None
     DbcService = None
     SignalService = None
+    CanTraceLogger = None
 
 # Import exceptions
 try:
@@ -367,6 +369,25 @@ class BaseGUI(QtWidgets.QMainWindow):
             self.signal_service = SignalService(self.dbc_service)
         else:
             self.signal_service = None
+        
+        # Initialize CAN trace logger
+        if CanTraceLogger is not None:
+            try:
+                self.can_trace_logger = CanTraceLogger()
+                # Set callback in CanService to log all TX frames
+                if self.can_service is not None:
+                    def log_tx_frame(frame):
+                        if self.can_trace_logger is not None:
+                            try:
+                                self.can_trace_logger.log_frame(frame, direction='TX')
+                            except Exception:
+                                pass  # Silently ignore logging errors
+                    self.can_service.tx_frame_callback = log_tx_frame
+            except Exception as e:
+                logger.warning(f"Failed to initialize CanTraceLogger: {e}", exc_info=True)
+                self.can_trace_logger = None
+        else:
+            self.can_trace_logger = None
         
         self._services_initialized = True
         
@@ -2018,22 +2039,22 @@ class BaseGUI(QtWidgets.QMainWindow):
             elif test_type == 'Phase Current Test':
                 # Store plot data for phase current calibration tests
                 if plot_data and isinstance(plot_data, dict):
-                exec_data['plot_data'] = {
-                    'iq_refs': list(plot_data.get('iq_refs', [])),
+                    exec_data['plot_data'] = {
+                        'iq_refs': list(plot_data.get('iq_refs', [])),
                         'id_refs': list(plot_data.get('id_refs', [])),
-                    'osc_ch1': list(plot_data.get('osc_ch1', [])),
-                    'osc_ch2': list(plot_data.get('osc_ch2', [])),
-                    'can_v': list(plot_data.get('can_v', [])),
-                    'can_w': list(plot_data.get('can_w', [])),
-                    'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
-                    'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
-                    'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
-                    'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
-                    'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
-                    'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
-                    'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
-                    'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
-                }
+                        'osc_ch1': list(plot_data.get('osc_ch1', [])),
+                        'osc_ch2': list(plot_data.get('osc_ch2', [])),
+                        'can_v': list(plot_data.get('can_v', [])),
+                        'can_w': list(plot_data.get('can_w', [])),
+                        'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
+                        'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
+                        'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
+                        'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
+                        'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
+                        'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
+                        'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
+                        'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
+                    }
                 else:
                     # If plot_data is None or not a dict, store empty structure
                     logger.warning(f"plot_data is None or not a dict for Phase Current Test: {type(plot_data)}")
@@ -15820,6 +15841,23 @@ Data Points Used: {data_points}"""
         # Enable pause button for all test sequences (including single test)
         self.pause_test_btn.setEnabled(True)
         self.resume_test_btn.setEnabled(False)
+        
+        # Start CAN trace logging
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            try:
+                # Get DUT UID from input field
+                dut_uid = None
+                if hasattr(self, 'dut_uid_input') and self.dut_uid_input is not None:
+                    dut_uid_text = self.dut_uid_input.text().strip()
+                    if dut_uid_text:
+                        dut_uid = dut_uid_text
+                
+                test_name = f"Sequence_{total_tests}_tests"
+                log_path = self.can_trace_logger.start_logging(dut_uid=dut_uid, test_name=test_name)
+                if log_path:
+                    logger.info(f"CAN trace logging started: {os.path.basename(log_path)}")
+            except Exception as e:
+                logger.error(f"Failed to start CAN trace logging: {e}", exc_info=True)
     
     def _on_sequence_progress(self, current: int, total: int) -> None:
         """Handle sequence progress signal from TestExecutionThread."""
@@ -16141,6 +16179,19 @@ Data Points Used: {data_points}"""
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}')
         
+        # Stop CAN trace logging (defer slightly to allow GUI to update first)
+        # Use QTimer to defer the stop operation so GUI remains responsive
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            def stop_trace_logging():
+                try:
+                    log_path = self.can_trace_logger.stop_logging()
+                    if log_path:
+                        logger.info(f"CAN trace saved: {os.path.basename(log_path)}")
+                except Exception as e:
+                    logger.error(f"Error stopping CAN trace logging: {e}", exc_info=True)
+            # Defer by 100ms to allow GUI to update first
+            QtCore.QTimer.singleShot(100, stop_trace_logging)
+        
         # Re-enable DUT UID input
         if hasattr(self, 'dut_uid_input'):
             self.dut_uid_input.setEnabled(True)
@@ -16173,6 +16224,18 @@ Data Points Used: {data_points}"""
         
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Test sequence was cancelled by user')
+        
+        # Stop CAN trace logging (defer slightly to allow GUI to update first)
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            def stop_trace_logging():
+                try:
+                    log_path = self.can_trace_logger.stop_logging()
+                    if log_path:
+                        logger.info(f"CAN trace saved (cancelled): {os.path.basename(log_path)}")
+                except Exception as e:
+                    logger.error(f"Error stopping CAN trace logging: {e}", exc_info=True)
+            # Defer by 100ms to allow GUI to update first
+            QtCore.QTimer.singleShot(100, stop_trace_logging)
         
         # Re-enable DUT UID input
         if hasattr(self, 'dut_uid_input'):
@@ -16291,6 +16354,15 @@ Data Points Used: {data_points}"""
             self.test_execution_thread.stop()
             self.test_execution_thread.wait(2000)  # Wait up to 2 seconds
             self.test_execution_thread = None
+        
+        # Stop CAN trace logging if active
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            try:
+                log_path = self.can_trace_logger.stop_logging()
+                if log_path:
+                    logger.info(f"CAN trace saved on close: {os.path.basename(log_path)}")
+            except Exception as e:
+                logger.error(f"Error stopping CAN trace logger on close: {e}", exc_info=True)
         
         # Phase 3: Cleanup service container
         if self.service_container is not None:
@@ -16577,6 +16649,13 @@ Data Points Used: {data_points}"""
         Args:
             frame: CAN frame object with attributes: can_id, data, timestamp
         """
+        # Log RX frame to CAN trace (if logging is active)
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            try:
+                self.can_trace_logger.log_frame(frame, direction='RX')
+            except Exception as e:
+                logger.debug(f"Error logging RX frame to trace: {e}")
+        
         r = self.frame_table.rowCount()
         self.frame_table.insertRow(r)
         ts = getattr(frame, 'timestamp', '')
@@ -16784,6 +16863,7 @@ Data Points Used: {data_points}"""
                 # Send via service
                 success = self.can_service.send_frame(frame)
                 if success:
+                    # Note: TX frame logging to CAN trace is handled by CanService.tx_frame_callback
                     # Log message
                     self._append_msg_log('TX', frame)
                     logger.debug(f"Sent frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")
