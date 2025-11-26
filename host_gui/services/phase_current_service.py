@@ -22,8 +22,17 @@ except ImportError:
 try:
     import matplotlib
     matplotlib_available = True
+    # Import seaborn for enhanced plot styling
+    try:
+        import seaborn as sns
+        sns.set_style("whitegrid")
+        sns.set_palette("husl")
+        seaborn_available = True
+    except ImportError:
+        seaborn_available = False
 except ImportError:
     matplotlib_available = False
+    seaborn_available = False
 
 # Import utility functions
 try:
@@ -40,10 +49,17 @@ except ImportError:
 
 # Pre-compile regex patterns for oscilloscope command parsing
 import re
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
 
 try:
     from PySide6 import QtCore
@@ -79,11 +95,18 @@ class PhaseCurrentTestStateMachine:
         self.test = test
         self.act = test.get('actuation', {})
         
-        # Services
-        self.oscilloscope_service = getattr(gui, 'oscilloscope_service', None)
-        self.can_service = getattr(gui, 'can_service', None)
-        self.dbc_service = getattr(gui, 'dbc_service', None)
-        self.signal_service = getattr(gui, 'signal_service', None)
+        # Services - safely access GUI attributes
+        if gui is not None:
+            self.oscilloscope_service = getattr(gui, 'oscilloscope_service', None)
+            self.can_service = getattr(gui, 'can_service', None)
+            self.dbc_service = getattr(gui, 'dbc_service', None)
+            self.signal_service = getattr(gui, 'signal_service', None)
+        else:
+            self.oscilloscope_service = None
+            self.can_service = None
+            self.dbc_service = None
+            self.signal_service = None
+            logger.warning("GUI is None in PhaseCurrentTestStateMachine initialization")
         
         # Test parameters
         self.min_iq = self.act.get('min_iq')
@@ -135,6 +158,10 @@ class PhaseCurrentTestStateMachine:
             logger.debug("Matplotlib not available, skipping live plot initialization")
             return
         
+        if self.gui is None:
+            logger.debug("GUI is None, skipping live plot initialization")
+            return
+        
         try:
             # Check if GUI has plot infrastructure
             if not hasattr(self.gui, 'plot_canvas') or self.gui.plot_canvas is None:
@@ -161,24 +188,29 @@ class PhaseCurrentTestStateMachine:
             self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'ro', markersize=6, label='Phase W')
             
             # Set labels and titles
-            self.gui.plot_axes_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
-            self.gui.plot_axes_v.set_ylabel('Average Phase V Current from CAN (A)')
-            self.gui.plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
-            self.gui.plot_axes_v.grid(True, alpha=0.3)
-            # Add diagonal reference line (y=x) for Phase V
-            self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            # Legend removed for Phase Current test
+            # Main title centered between subplots
+            self.gui.plot_figure.suptitle('DUT Phase Current vs Measured Phase Current', fontsize=12, y=0.98)
             
-            self.gui.plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
-            self.gui.plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
-            self.gui.plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+            # Subplot 1: Phase V
+            self.gui.plot_axes_v.set_xlabel('Measured Phase V Current (A)')
+            self.gui.plot_axes_v.set_ylabel('DUT Phase V Current (A)')
+            self.gui.plot_axes_v.set_title('')  # Remove subplot title, main title is centered
+            self.gui.plot_axes_v.grid(True, alpha=0.3)
+            # Add diagonal reference line (y=x) for Phase V - displayed before test starts
+            self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            self.gui.plot_axes_v.legend()
+            
+            # Subplot 2: Phase W
+            self.gui.plot_axes_w.set_xlabel('Measured Phase W Current (A)')
+            self.gui.plot_axes_w.set_ylabel('DUT Phase W Current (A)')
+            self.gui.plot_axes_w.set_title('')  # Remove subplot title, main title is centered
             self.gui.plot_axes_w.grid(True, alpha=0.3)
-            # Add diagonal reference line (y=x) for Phase W
+            # Add diagonal reference line (y=x) for Phase W - displayed before test starts
             self.gui.plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            # Legend removed for Phase Current test
+            self.gui.plot_axes_w.legend()
             
             # Tight layout
-            self.gui.plot_figure.tight_layout()
+            self.gui.plot_figure.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for suptitle
             
             # Update canvas
             self.gui.plot_canvas.draw()
@@ -190,6 +222,9 @@ class PhaseCurrentTestStateMachine:
     def _update_live_plots(self) -> None:
         """Update live plots with latest data point."""
         if not matplotlib_available:
+            return
+        
+        if self.gui is None:
             return
         
         try:
@@ -332,14 +367,27 @@ class PhaseCurrentTestStateMachine:
                                 if is_new_sample:
                                     logger.info(f"Phase V Current: {v_val} A, Phase W Current: {w_val} A")
                                     self.collected_signals.append((signal_timestamp, v_val, w_val))
+                                    
+                                    # Update real-time monitoring
+                                    if self.gui is not None:
+                                        try:
+                                            if hasattr(self.gui, 'update_monitor_signal_by_name') and callable(getattr(self.gui, 'update_monitor_signal_by_name', None)):
+                                                self.gui.update_monitor_signal_by_name('dut_phase_v_current', v_val)
+                                                self.gui.update_monitor_signal_by_name('dut_phase_w_current', w_val)
+                                        except Exception as e:
+                                            logger.debug(f"Failed to update phase current monitoring: {e}")
                         except Exception as e:
                             logger.warning(f"Failed to collect signals from cache: {e}", exc_info=True)
                     
                     # Process Qt events to keep UI responsive
-                    if hasattr(self.gui, 'processEvents'):
-                        self.gui.processEvents()
-                    elif QtCore and hasattr(QtCore.QCoreApplication, 'processEvents'):
-                        QtCore.QCoreApplication.processEvents()
+                    if self.gui is not None:
+                        try:
+                            if hasattr(self.gui, 'processEvents') and callable(getattr(self.gui, 'processEvents', None)):
+                                self.gui.processEvents()
+                            elif QtCore and hasattr(QtCore.QCoreApplication, 'processEvents'):
+                                QtCore.QCoreApplication.processEvents()
+                        except Exception as e:
+                            logger.debug(f"Failed to process Qt events: {e}")
                     
                     # Sleep to avoid excessive polling (frames are decoded by _poll_frames periodically)
                     time.sleep(poll_interval)
@@ -351,8 +399,11 @@ class PhaseCurrentTestStateMachine:
                 osc_ch1_avg, osc_ch2_avg, can_v_avg, can_w_avg = self._analyze_data()
                 
                 # Step 9: Append results
+                # Note: id_ref is always 0.0 in current implementation
+                id_ref = 0.0
                 self.results.append({
                     'iq_ref': iq_ref,
+                    'id_ref': id_ref,
                     'osc_ch1_avg': osc_ch1_avg,
                     'osc_ch2_avg': osc_ch2_avg,
                     'can_v_avg': can_v_avg,
@@ -390,73 +441,84 @@ class PhaseCurrentTestStateMachine:
             self._disable_test_mode()
             
             # Store results for plotting and calculate gain error/correction
-            if hasattr(self.gui, '_test_plot_data_temp'):
-                test_name = self.test.get('name', 'phase_current_test')
-                
-                # Calculate gain error and correction factor for Phase V and Phase W
-                gain_errors_v = []
-                gain_corrections_v = []
-                gain_errors_w = []
-                gain_corrections_w = []
-                
-                for r in self.results:
-                    osc_v = r.get('osc_ch1_avg')
-                    can_v = r.get('can_v_avg')
-                    osc_w = r.get('osc_ch2_avg')
-                    can_w = r.get('can_w_avg')
+            if self.gui is not None and hasattr(self.gui, '_test_plot_data_temp'):
+                try:
+                    test_name = self.test.get('name', 'phase_current_test')
                     
-                    # Phase V gain error and correction
-                    if osc_v is not None and can_v is not None and abs(osc_v) > 1e-10:
-                        gain_error_v = ((can_v - osc_v) / osc_v) * 100.0
-                        gain_errors_v.append(gain_error_v)
-                        if abs(can_v) > 1e-10:
-                            gain_correction_v = osc_v / can_v
-                            gain_corrections_v.append(gain_correction_v)
+                    # Initialize _test_plot_data_temp if it doesn't exist
+                    if not hasattr(self.gui, '_test_plot_data_temp') or self.gui._test_plot_data_temp is None:
+                        self.gui._test_plot_data_temp = {}
+                    
+                    # Calculate gain error and correction factor for Phase V and Phase W
+                    gain_errors_v = []
+                    gain_corrections_v = []
+                    gain_errors_w = []
+                    gain_corrections_w = []
+                    
+                    for r in self.results:
+                        osc_v = r.get('osc_ch1_avg')
+                        can_v = r.get('can_v_avg')
+                        osc_w = r.get('osc_ch2_avg')
+                        can_w = r.get('can_w_avg')
+                        
+                        # Phase V gain error and correction
+                        if osc_v is not None and can_v is not None and abs(osc_v) > 1e-10:
+                            gain_error_v = ((can_v - osc_v) / osc_v) * 100.0
+                            gain_errors_v.append(gain_error_v)
+                            if abs(can_v) > 1e-10:
+                                gain_correction_v = osc_v / can_v
+                                gain_corrections_v.append(gain_correction_v)
+                            else:
+                                gain_corrections_v.append(float('nan'))
                         else:
+                            gain_errors_v.append(float('nan'))
                             gain_corrections_v.append(float('nan'))
-                    else:
-                        gain_errors_v.append(float('nan'))
-                        gain_corrections_v.append(float('nan'))
-                    
-                    # Phase W gain error and correction
-                    if osc_w is not None and can_w is not None and abs(osc_w) > 1e-10:
-                        gain_error_w = ((can_w - osc_w) / osc_w) * 100.0
-                        gain_errors_w.append(gain_error_w)
-                        if abs(can_w) > 1e-10:
-                            gain_correction_w = osc_w / can_w
-                            gain_corrections_w.append(gain_correction_w)
+                        
+                        # Phase W gain error and correction
+                        if osc_w is not None and can_w is not None and abs(osc_w) > 1e-10:
+                            gain_error_w = ((can_w - osc_w) / osc_w) * 100.0
+                            gain_errors_w.append(gain_error_w)
+                            if abs(can_w) > 1e-10:
+                                gain_correction_w = osc_w / can_w
+                                gain_corrections_w.append(gain_correction_w)
+                            else:
+                                gain_corrections_w.append(float('nan'))
                         else:
+                            gain_errors_w.append(float('nan'))
                             gain_corrections_w.append(float('nan'))
-                    else:
-                        gain_errors_w.append(float('nan'))
-                        gain_corrections_w.append(float('nan'))
-                
-                # Calculate average gain error and correction factor
-                valid_errors_v = [e for e in gain_errors_v if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
-                valid_corrections_v = [c for c in gain_corrections_v if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
-                valid_errors_w = [e for e in gain_errors_w if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
-                valid_corrections_w = [c for c in gain_corrections_w if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
-                
-                avg_gain_error_v = sum(valid_errors_v) / len(valid_errors_v) if valid_errors_v else None
-                avg_gain_correction_v = sum(valid_corrections_v) / len(valid_corrections_v) if valid_corrections_v else None
-                avg_gain_error_w = sum(valid_errors_w) / len(valid_errors_w) if valid_errors_w else None
-                avg_gain_correction_w = sum(valid_corrections_w) / len(valid_corrections_w) if valid_corrections_w else None
-                
-                self.gui._test_plot_data_temp[test_name] = {
-                    'iq_refs': [r['iq_ref'] for r in self.results],
-                    'osc_ch1': [r['osc_ch1_avg'] for r in self.results],
-                    'osc_ch2': [r['osc_ch2_avg'] for r in self.results],
-                    'can_v': [r['can_v_avg'] for r in self.results],
-                    'can_w': [r['can_w_avg'] for r in self.results],
-                    'gain_errors_v': gain_errors_v,
-                    'gain_corrections_v': gain_corrections_v,
-                    'gain_errors_w': gain_errors_w,
-                    'gain_corrections_w': gain_corrections_w,
-                    'avg_gain_error_v': avg_gain_error_v,
-                    'avg_gain_correction_v': avg_gain_correction_v,
-                    'avg_gain_error_w': avg_gain_error_w,
-                    'avg_gain_correction_w': avg_gain_correction_w
-                }
+                    
+                    # Calculate average gain error and correction factor
+                    valid_errors_v = [e for e in gain_errors_v if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                    valid_corrections_v = [c for c in gain_corrections_v if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                    valid_errors_w = [e for e in gain_errors_w if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                    valid_corrections_w = [c for c in gain_corrections_w if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                    
+                    avg_gain_error_v = sum(valid_errors_v) / len(valid_errors_v) if valid_errors_v else None
+                    avg_gain_correction_v = sum(valid_corrections_v) / len(valid_corrections_v) if valid_corrections_v else None
+                    avg_gain_error_w = sum(valid_errors_w) / len(valid_errors_w) if valid_errors_w else None
+                    avg_gain_correction_w = sum(valid_corrections_w) / len(valid_corrections_w) if valid_corrections_w else None
+                    
+                    # Safely extract data from results, handling missing keys gracefully
+                    self.gui._test_plot_data_temp[test_name] = {
+                        'iq_refs': [r.get('iq_ref', 0.0) for r in self.results],
+                        'id_refs': [r.get('id_ref', 0.0) for r in self.results],
+                        'osc_ch1': [r.get('osc_ch1_avg') for r in self.results],
+                        'osc_ch2': [r.get('osc_ch2_avg') for r in self.results],
+                        'can_v': [r.get('can_v_avg') for r in self.results],
+                        'can_w': [r.get('can_w_avg') for r in self.results],
+                        'gain_errors_v': gain_errors_v,
+                        'gain_corrections_v': gain_corrections_v,
+                        'gain_errors_w': gain_errors_w,
+                        'gain_corrections_w': gain_corrections_w,
+                        'avg_gain_error_v': avg_gain_error_v,
+                        'avg_gain_correction_v': avg_gain_correction_v,
+                        'avg_gain_error_w': avg_gain_error_w,
+                        'avg_gain_correction_w': avg_gain_correction_w
+                    }
+                    logger.debug(f"Stored plot data for Phase Current Test '{test_name}': {len(self.results)} results")
+                except Exception as e:
+                    logger.error(f"Failed to store plot data for Phase Current Test: {e}", exc_info=True)
+                    # Continue execution even if storing plot data fails
             
             info = f"Completed {len(self.results)}/{len(self.iq_ref_array)} test points"
             return True, info
@@ -475,12 +537,19 @@ class PhaseCurrentTestStateMachine:
             logger.error("Oscilloscope not connected")
             return False
         
+        if self.gui is None:
+            logger.error("GUI is None, cannot validate oscilloscope settings")
+            return False
+        
         if not hasattr(self.gui, '_oscilloscope_config'):
             logger.error("Oscilloscope configuration not available")
             return False
         
         errors = []
-        config = self.gui._oscilloscope_config
+        config = getattr(self.gui, '_oscilloscope_config', None)
+        if config is None:
+            logger.error("Oscilloscope configuration is None")
+            return False
         
         # Check enabled channels
         for ch_num in [1, 2]:
@@ -699,6 +768,15 @@ class PhaseCurrentTestStateMachine:
             if not self.can_service.send_frame(frame):
                 logger.error("Failed to send trigger message")
                 return False
+            
+            # Track sent command values for monitoring
+            if self.gui is not None:
+                try:
+                    if hasattr(self.gui, 'track_sent_command_value'):
+                        self.gui.track_sent_command_value('set_iq', iq_ref)
+                        self.gui.track_sent_command_value('set_id', 0.0)  # id_ref is always 0.0 in current implementation
+                except Exception as e:
+                    logger.debug(f"Failed to track sent command values: {e}")
             
             return True
         except Exception as e:

@@ -34,7 +34,7 @@ except ImportError:
     DWELL_TIME_DEFAULT = 100
     DWELL_TIME_MIN = 10
     SLEEP_INTERVAL_SHORT = 0.01
-    MSG_TYPE_SET_RELAY = 1
+    MSG_TYPE_SET_RELAY = 16  # Correct value from DBC: CMD_SetRelay = 16
 
 # Import adapter interface
 try:
@@ -156,6 +156,12 @@ class TestExecutionService:
                 # Since TestExecutionService is meant to be decoupled, we'll note this needs implementation
                 logger.warning("Temperature Validation Test execution not fully implemented in TestExecutionService")
                 return False, "Temperature Validation Test execution not yet implemented in TestExecutionService"
+            elif act.get('type') == 'Analog PWM Sensor':
+                # Analog PWM Sensor Test uses the same execution logic as in test_runner
+                # For now, delegate to test_runner or implement here
+                # Since TestExecutionService is meant to be decoupled, we'll note this needs implementation
+                logger.warning("Analog PWM Sensor Test execution not fully implemented in TestExecutionService")
+                return False, "Analog PWM Sensor Test execution not yet implemented in TestExecutionService"
             else:
                 logger.error(f"Unknown test type: {act.get('type')}")
                 return False, f"Unknown test type: {act.get('type')}"

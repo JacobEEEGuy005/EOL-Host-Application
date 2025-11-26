@@ -3,6 +3,28 @@ Base GUI module for EOL Host Application.
 
 This module contains the BaseGUI class, the main application window.
 Extracted from main.py for better modularity.
+
+Architecture:
+The GUI uses a service-based architecture:
+- Services are initialized in __init__() and accessed as attributes
+- ServiceContainer provides dependency injection (optional)
+- TestExecutionThread handles async test execution
+- Services handle all hardware communication (CAN, oscilloscope)
+
+Key Services:
+- can_service: CanService instance for CAN adapter management
+- dbc_service: DbcService instance for DBC file operations
+- signal_service: SignalService instance for signal decoding
+- oscilloscope_service: OscilloscopeService instance for oscilloscope management
+- service_container: ServiceContainer instance for dependency injection (optional)
+- test_execution_thread: TestExecutionThread instance for async test execution
+
+Deprecated Attributes (for backwards compatibility):
+- sim: Use can_service instead
+- worker: Managed by CanService
+- frame_q: Use can_service.frame_queue instead
+- _dbc_db: Use dbc_service instead
+- _signal_values: Use signal_service instead
 """
 import sys
 import json
@@ -30,11 +52,21 @@ try:
             raise ImportError("Matplotlib Qt backend not available")
     from matplotlib.figure import Figure
     matplotlib_available = True
+    # Import and configure seaborn for enhanced plot styling
+    try:
+        import seaborn as sns
+        # Set seaborn style for all matplotlib plots
+        sns.set_style("whitegrid")
+        sns.set_palette("husl")
+        seaborn_available = True
+    except ImportError:
+        seaborn_available = False
 except Exception:
     matplotlib = None
     FigureCanvasQTAgg = None
     Figure = None
     matplotlib_available = False
+    seaborn_available = False
 try:
     import cantools
 except Exception:
@@ -42,18 +74,8 @@ except Exception:
 
 import logging
 
-# Configure logging
-log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-try:
-    log_level = getattr(logging, log_level, logging.INFO)
-except (AttributeError, TypeError):
-    log_level = logging.INFO
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Logging is configured centrally in host_gui.config.configure_logging()
+# which is called early in main.py. No need to configure here.
 logger = logging.getLogger(__name__)
 
 # Ensure repo root on sys.path
@@ -117,8 +139,8 @@ except ImportError:
         LEFT_PANEL_MIN_WIDTH = 300
         LOGO_WIDTH = 280
         LOGO_HEIGHT = 80
-        SLEEP_INTERVAL_SHORT = 0.02
-        SLEEP_INTERVAL_MEDIUM = 0.05
+        SLEEP_INTERVAL_SHORT = 0.005  # Match constants.py
+        SLEEP_INTERVAL_MEDIUM = 0.01  # Match constants.py
         MUX_CHANNEL_MAX = 65535
         DWELL_TIME_MAX_MS = 60000
         PLOT_GRID_ALPHA = 0.3
@@ -127,11 +149,13 @@ except ImportError:
 # Import services
 try:
     from host_gui.services import CanService, DbcService, SignalService
+    from host_gui.services.can_trace_logger import CanTraceLogger
 except ImportError:
     logger.error("Failed to import services")
     CanService = None
     DbcService = None
     SignalService = None
+    CanTraceLogger = None
 
 # Import exceptions
 try:
@@ -193,14 +217,21 @@ except ImportError:
     signal = None
     scipy_available = False
 
-# Pre-compile regex patterns for oscilloscope command parsing
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
-REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
-REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST,
+        REGEX_NUMBER, REGEX_NUMBER_SIMPLE, REGEX_TRA
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+    REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+    REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
 
 # Import TestRunner
 from host_gui.test_runner import TestRunner
@@ -244,14 +275,14 @@ class BaseGUI(QtWidgets.QMainWindow):
         signal_service: SignalService instance for signal decoding
         
         # DUT UID management
-        current_dut_uid (Optional[int]): The DUT (Device Under Test) UID for the 
+        current_dut_uid (Optional[str]): The DUT (Device Under Test) UID for the 
             current test sequence. Set when Run Sequence is executed and cleared 
             when results are cleared. This UID is stored as metadata in all test 
             execution data and displayed in test reports.
         dut_uid_input (QLineEdit): Input field for entering DUT UID. Located in 
-            Test Status tab next to Run buttons. Validates for positive integers 
-            only. Required before running test sequences.
-        _cached_dut_uid (Optional[int]): Cached DUT UID value for performance 
+            Test Status tab next to Run buttons. Supports alphanumeric characters 
+            plus '-', '/', '_' (up to 64 chars). Required before running test sequences.
+        _cached_dut_uid (Optional[str]): Cached DUT UID value for performance 
             optimization when generating multiple reports.
         _dut_uid_cache_valid (bool): Flag indicating whether the DUT UID cache 
             is valid and can be used.
@@ -263,6 +294,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         service_container: ServiceContainer instance for dependency injection (None if unavailable)
     """
     
+    DUT_UID_MAX_LENGTH = 64
+    DUT_UID_ALLOWED_CHARS_DESC = 'letters, numbers, "-", "/", "_"'
+    DUT_UID_REGEX_PATTERN = r'^[A-Za-z0-9_/\-]{0,64}$'
+    
     def __init__(self):
         """Initialize the main GUI window and build all UI components."""
         super().__init__()
@@ -273,16 +308,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Phase 4: Initialize ConfigManager first (must be early, before window sizing and services)
         try:
-            from host_gui.config import ConfigManager
+            from host_gui.config import ConfigManager, configure_logging
             self.config_manager = ConfigManager()
-            # Update log level if ConfigManager loaded it
+            # Update log level if ConfigManager loaded it from config file (overrides env var)
             if self.config_manager.app_settings.log_level:
-                try:
-                    new_level = getattr(logging, self.config_manager.app_settings.log_level.upper(), logging.INFO)
-                    logging.getLogger().setLevel(new_level)
-                    logger.info(f"Log level set to {self.config_manager.app_settings.log_level} from ConfigManager")
-                except Exception as e:
-                    logger.debug(f"Failed to update log level from ConfigManager: {e}")
+                configure_logging(self.config_manager.app_settings.log_level)
+                logger.info(f"Log level updated to {self.config_manager.app_settings.log_level} from ConfigManager")
         except Exception as e:
             logger.warning(f"Failed to initialize ConfigManager, using defaults: {e}", exc_info=True)
             self.config_manager = None
@@ -343,6 +374,25 @@ class BaseGUI(QtWidgets.QMainWindow):
         else:
             self.signal_service = None
         
+        # Initialize CAN trace logger
+        if CanTraceLogger is not None:
+            try:
+                self.can_trace_logger = CanTraceLogger()
+                # Set callback in CanService to log all TX frames
+                if self.can_service is not None:
+                    def log_tx_frame(frame):
+                        if self.can_trace_logger is not None:
+                            try:
+                                self.can_trace_logger.log_frame(frame, direction='TX')
+                            except Exception:
+                                pass  # Silently ignore logging errors
+                    self.can_service.tx_frame_callback = log_tx_frame
+            except Exception as e:
+                logger.warning(f"Failed to initialize CanTraceLogger: {e}", exc_info=True)
+                self.can_trace_logger = None
+        else:
+            self.can_trace_logger = None
+        
         self._services_initialized = True
         
         # Phase 2: Async test execution thread (initialized when needed)
@@ -368,6 +418,18 @@ class BaseGUI(QtWidgets.QMainWindow):
                 self._can_bitrate = int(os.environ.get('CAN_BITRATE', os.environ.get('PCAN_BITRATE', str(CAN_BITRATE_DEFAULT))))
             except Exception:
                 self._can_bitrate = CAN_BITRATE_DEFAULT
+
+        # Shared connection widgets for dialog/backwards compatibility
+        self.device_combo = QtWidgets.QComboBox()
+        self.refresh_btn = QtWidgets.QPushButton('Refresh')
+        self.connect_btn = QtWidgets.QPushButton('Connect')
+        self.can_channel_combo = QtWidgets.QComboBox()
+        self.can_bitrate_combo = QtWidgets.QComboBox()
+        self.oscilloscope_combo = QtWidgets.QComboBox()
+        self.osc_refresh_btn = QtWidgets.QPushButton('Refresh')
+        self.osc_connect_btn = QtWidgets.QPushButton('Connect')
+        self.osc_status_label = QtWidgets.QLabel('Status: Disconnected')
+        self.osc_status_label.setStyleSheet('color: gray;')
 
         self._build_menu()
         self._build_toolbar()
@@ -395,18 +457,186 @@ class BaseGUI(QtWidgets.QMainWindow):
         self.poll_timer.setInterval(FRAME_POLL_INTERVAL_MS)
         self.poll_timer.timeout.connect(self._poll_frames)
 
+        # Initialize dialog reference
+        self._connect_eol_dialog = None
+
     def _build_menu(self):
-        """Build the application menu bar with File and Help menus."""
+        """Build the application menu bar with File, EOL, and Help menus."""
         menubar = self.menuBar()
+        
+        # Add logo to menu bar (left side)
+        logo_label = QtWidgets.QLabel()
+        logo_pix = self._generate_logo_pixmap(LOGO_WIDTH, LOGO_HEIGHT)
+        logo_label.setPixmap(logo_pix)
+        logo_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        logo_label.setContentsMargins(5, 0, 10, 0)
+        menubar.setCornerWidget(logo_label, QtCore.Qt.TopLeftCorner)
+        
+        # File menu
         file_menu = menubar.addMenu('&File')
         exit_act = QtGui.QAction('E&xit', self)
         exit_act.triggered.connect(self.close)
         file_menu.addAction(exit_act)
 
+        # EOL menu (new)
+        eol_menu = menubar.addMenu('&EOL')
+        connect_eol_act = QtGui.QAction('&Connect EOL', self)
+        connect_eol_act.triggered.connect(self._show_connect_eol_dialog)
+        eol_menu.addAction(connect_eol_act)
+
+        # Help menu
         help_menu = menubar.addMenu('&Help')
+        help_act = QtGui.QAction('&Help', self)
+        help_act.triggered.connect(self._open_help)
+        help_menu.addAction(help_act)
         about_act = QtGui.QAction('&About', self)
         about_act.triggered.connect(lambda: QtWidgets.QMessageBox.information(self, 'About', 'EOL Host Native GUI'))
         help_menu.addAction(about_act)
+
+    def _show_connect_eol_dialog(self):
+        """Show the Connect EOL dialog with CAN and Oscilloscope connection options."""
+        if not hasattr(self, '_connect_eol_dialog') or self._connect_eol_dialog is None:
+            self._connect_eol_dialog = self._create_connect_eol_dialog()
+        self._connect_eol_dialog.show()
+        self._connect_eol_dialog.raise_()
+        self._connect_eol_dialog.activateWindow()
+
+    def _create_connect_eol_dialog(self) -> QtWidgets.QDialog:
+        """Create the Connect EOL dialog window."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Connect EOL')
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(500)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # CAN Interface section
+        dev_group = QtWidgets.QGroupBox('CAN Interface')
+        dg = QtWidgets.QVBoxLayout(dev_group)
+        dg.addWidget(self.device_combo)
+        hb = QtWidgets.QHBoxLayout()
+        try:
+            self.refresh_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.refresh_btn.clicked.connect(self._refresh_can_devices)
+        try:
+            self.connect_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.connect_btn.clicked.connect(self._connect_selected_device)
+        hb.addWidget(self.refresh_btn)
+        hb.addWidget(self.connect_btn)
+        dg.addLayout(hb)
+        layout.addWidget(dev_group)
+        
+        # CAN Settings section
+        can_settings = QtWidgets.QGroupBox('CAN Settings')
+        cs_layout = QtWidgets.QFormLayout(can_settings)
+        cs_layout.addRow('Channel:', self.can_channel_combo)
+        self.can_bitrate_combo.clear()
+        bitrate_choices = ['10 kbps','20 kbps','50 kbps','125 kbps','250 kbps','500 kbps','800 kbps','1000 kbps']
+        self.can_bitrate_combo.addItems(bitrate_choices)
+        self.can_bitrate_combo.setToolTip('Bitrate in kbps (e.g. 500). Canalystii backend will be converted to bps automatically.')
+        # Set default if present
+        try:
+            if self._can_bitrate:
+                kb = str(int(self._can_bitrate))
+                for i in range(self.can_bitrate_combo.count()):
+                    if self.can_bitrate_combo.itemText(i).startswith(kb):
+                        self.can_bitrate_combo.setCurrentIndex(i)
+                        break
+        except Exception as e:
+            logger.debug(f"Failed to load CAN settings: {e}")
+        cs_layout.addRow('Bitrate (kbps):', self.can_bitrate_combo)
+        apply_btn = QtWidgets.QPushButton('Apply')
+        def _apply_settings():
+            self._can_channel = self.can_channel_combo.currentText().strip() or self._can_channel
+            try:
+                txt = self.can_bitrate_combo.currentText().strip()
+                if txt:
+                    self._can_bitrate = int(txt.split()[0])
+            except Exception as e:
+                logger.warning(f"Failed to save CAN settings: {e}", exc_info=True)
+            if self.can_service is not None:
+                if self._can_channel:
+                    self.can_service.channel = self._can_channel
+                if self._can_bitrate:
+                    self.can_service.bitrate = self._can_bitrate
+                logger.info(f"Updated CanService settings: channel={self.can_service.channel}, bitrate={self.can_service.bitrate}kbps")
+            QtWidgets.QMessageBox.information(dialog, 'Settings', 'CAN settings applied')
+        apply_btn.clicked.connect(_apply_settings)
+        cs_layout.addRow(apply_btn)
+        layout.addWidget(can_settings)
+        
+        # Oscilloscope Connection section
+        osc_group = QtWidgets.QGroupBox('Oscilloscope Connection')
+        osc_layout = QtWidgets.QVBoxLayout(osc_group)
+        self.oscilloscope_combo.clear()
+        self.oscilloscope_combo.setToolTip('Select an available oscilloscope (USB or LAN)')
+        if self.oscilloscope_service is None:
+            self.oscilloscope_combo.addItem('PyVISA not available')
+            self.oscilloscope_combo.setEnabled(False)
+        osc_layout.addWidget(self.oscilloscope_combo)
+        osc_btn_layout = QtWidgets.QHBoxLayout()
+        try:
+            self.osc_refresh_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.osc_refresh_btn.clicked.connect(self._refresh_oscilloscopes)
+        if self.oscilloscope_service is None:
+            self.osc_refresh_btn.setEnabled(False)
+        osc_btn_layout.addWidget(self.osc_refresh_btn)
+        try:
+            self.osc_connect_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.osc_connect_btn.clicked.connect(self._toggle_oscilloscope_connection)
+        if self.oscilloscope_service is None:
+            self.osc_connect_btn.setEnabled(False)
+        osc_btn_layout.addWidget(self.osc_connect_btn)
+        osc_layout.addLayout(osc_btn_layout)
+        osc_layout.addWidget(self.osc_status_label)
+        layout.addWidget(osc_group)
+        
+        # Device changed handler
+        def _on_device_changed(text: str):
+            text = (text or '').strip()
+            channels = []
+            if text.lower().startswith('pcan'):
+                channels = ['PCAN_USBBUS1','PCAN_USBBUS2','PCAN_USBBUS3','PCAN_USBBUS4']
+            elif text.lower().startswith('socketcan'):
+                channels = ['can0','can1','can2']
+            elif text.lower().startswith('canalystii') or text.lower() == 'canalystii':
+                channels = ['0','1']
+            elif text.lower().startswith('sim'):
+                channels = ['sim']
+            else:
+                channels = [self._can_channel]
+            self.can_channel_combo.clear()
+            self.can_channel_combo.addItems(channels)
+            try:
+                self.can_channel_combo.setCurrentIndex(0)
+            except Exception:
+                pass
+        
+        self.device_combo.currentTextChanged.connect(_on_device_changed)
+        
+        # Close button
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        button_box.rejected.connect(dialog.close)
+        layout.addWidget(button_box)
+        
+        # Initialize device list
+        self._refresh_can_devices()
+        self._refresh_oscilloscopes()
+        
+        # Set start_btn reference for compatibility
+        self.start_btn = self.connect_btn
+        
+        return dialog
 
     def _build_eol_hw_configurator(self) -> QtWidgets.QWidget:
         """Builds the EOL H/W Configuration tab widget.
@@ -420,6 +650,10 @@ class BaseGUI(QtWidgets.QMainWindow):
         Configuration includes:
         - EOL Feedback Message: DBC message that contains feedback data
         - Measured DAC Output Voltage Signal: Signal within that message for DAC measurement
+        - EOL Command Message ID: DBC message ID for sending commands to DUT
+        - Set DUT Test Mode Signal: Signal within EOL Command Message for setting test mode
+        - DUT Feedback Message ID: DBC message ID for receiving feedback from DUT
+        - DUT Test Status Signal: Signal within DUT Feedback Message for test status
         
         Returns:
             QWidget containing the EOL H/W Configuration layout
@@ -444,16 +678,30 @@ class BaseGUI(QtWidgets.QMainWindow):
         config_group = QtWidgets.QGroupBox('Current EOL Hardware Configuration')
         config_layout = QtWidgets.QFormLayout()
         
+        self.eol_config_name_label = QtWidgets.QLabel('No configuration loaded')
+        self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
         self.eol_feedback_msg_label = QtWidgets.QLabel('Not configured')
         self.eol_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
         self.eol_dac_signal_label = QtWidgets.QLabel('Not configured')
         self.eol_dac_signal_label.setStyleSheet('color: gray; font-style: italic;')
-        self.eol_config_name_label = QtWidgets.QLabel('No configuration loaded')
-        self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
+        
+        # New fields
+        self.eol_command_msg_label = QtWidgets.QLabel('Not configured')
+        self.eol_command_msg_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dut_test_mode_signal_label = QtWidgets.QLabel('Not configured')
+        self.eol_dut_test_mode_signal_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dut_feedback_msg_label = QtWidgets.QLabel('Not configured')
+        self.eol_dut_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+        self.eol_dut_test_status_signal_label = QtWidgets.QLabel('Not configured')
+        self.eol_dut_test_status_signal_label.setStyleSheet('color: gray; font-style: italic;')
         
         config_layout.addRow('Configuration Name:', self.eol_config_name_label)
         config_layout.addRow('EOL Feedback Message:', self.eol_feedback_msg_label)
         config_layout.addRow('Measured DAC Output Voltage Signal:', self.eol_dac_signal_label)
+        config_layout.addRow('EOL Command Message ID:', self.eol_command_msg_label)
+        config_layout.addRow('Set DUT Test Mode Signal:', self.eol_dut_test_mode_signal_label)
+        config_layout.addRow('DUT Feedback Message ID:', self.eol_dut_feedback_msg_label)
+        config_layout.addRow('DUT Test Status Signal:', self.eol_dut_test_status_signal_label)
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         
@@ -475,6 +723,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             'feedback_message_id': None,
             'feedback_message_name': None,
             'measured_dac_signal': None,
+            'eol_command_message_id': None,
+            'eol_command_message_name': None,
+            'set_dut_test_mode_signal': None,
+            'dut_feedback_message_id': None,
+            'dut_feedback_message_name': None,
+            'dut_test_status_signal': None,
             'created_at': None,
             'updated_at': None
         }
@@ -740,6 +994,12 @@ class BaseGUI(QtWidgets.QMainWindow):
             'feedback_message_id': None,
             'feedback_message_name': None,
             'measured_dac_signal': None,
+            'eol_command_message_id': None,
+            'eol_command_message_name': None,
+            'set_dut_test_mode_signal': None,
+            'dut_feedback_message_id': None,
+            'dut_feedback_message_name': None,
+            'dut_test_status_signal': None,
             'created_at': None,
             'updated_at': None
         }
@@ -789,11 +1049,11 @@ class BaseGUI(QtWidgets.QMainWindow):
         self._test_execution_data = {}
         
         # DUT UID for current test sequence (set when sequence starts)
-        # Type: Optional[int] - ensures type safety
-        self.current_dut_uid: Optional[int] = None
+        # Type: Optional[str] - preserves user-entered formatting
+        self.current_dut_uid: Optional[str] = None
         
         # DUT UID cache for performance optimization
-        self._cached_dut_uid: Optional[int] = None
+        self._cached_dut_uid: Optional[str] = None
         self._dut_uid_cache_valid: bool = False
         
         # Temporary storage for plot data captured at the end of run_single_test
@@ -819,7 +1079,7 @@ class BaseGUI(QtWidgets.QMainWindow):
 
         return tab
 
-    def _get_dut_uid_from_execution_data(self, use_cache: bool = True) -> Optional[int]:
+    def _get_dut_uid_from_execution_data(self, use_cache: bool = True) -> Optional[str]:
         """Extract DUT UID from test execution data.
         
         The DUT UID is stored in each test's execution data when a sequence runs.
@@ -830,40 +1090,35 @@ class BaseGUI(QtWidgets.QMainWindow):
             use_cache: If True, use cached value if available (performance optimization)
         
         Returns:
-            DUT UID as integer if found in any execution data, None otherwise.
+            DUT UID as string if found in any execution data, None otherwise.
             
         Note:
             Returns None if no tests have been executed or if DUT UID was not
             set during sequence execution (e.g., for manually run single tests).
         """
-        if use_cache and self._dut_uid_cache_valid and self._cached_dut_uid is not None:
+        if use_cache and self._dut_uid_cache_valid:
             return self._cached_dut_uid
         
         for exec_data in self._test_execution_data.values():
             dut_uid = exec_data.get('dut_uid')
             if dut_uid is not None:
-                # Ensure it's an integer (type safety)
-                try:
-                    result = int(dut_uid)
-                    # Cache the result
+                result = str(dut_uid).strip()
+                if result:
                     self._cached_dut_uid = result
                     self._dut_uid_cache_valid = True
                     return result
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid DUT UID type found in execution data: {type(dut_uid)}")
-                    continue
         
         # Not found - cache the "not found" result too
         self._cached_dut_uid = None
         self._dut_uid_cache_valid = True
         return None
     
-    def _get_validated_dut_uid(self) -> Tuple[Optional[int], Optional[str]]:
+    def _get_validated_dut_uid(self) -> Tuple[Optional[str], Optional[str]]:
         """Get and validate DUT UID from input field.
         
         Returns:
-            Tuple of (validated_dut_uid: Optional[int], error_message: Optional[str])
-            - If valid: (int, None)
+            Tuple of (validated_dut_uid: Optional[str], error_message: Optional[str])
+            - If valid: (str, None)
             - If empty: (None, "Please enter a DUT UID...")
             - If invalid: (None, "Invalid DUT UID format...")
         """
@@ -879,30 +1134,31 @@ class BaseGUI(QtWidgets.QMainWindow):
         # Use validator to check format
         validator = self.dut_uid_input.validator()
         if validator is None:
-            # Fallback validation if validator not set
-            try:
-                dut_uid = int(dut_uid_text)
-                if dut_uid <= 0:
-                    return None, f'DUT UID must be a positive integer. Received: {dut_uid_text}'
-                return dut_uid, None
-            except ValueError:
-                return None, f'DUT UID must be a valid integer. Received: "{dut_uid_text}"'
+            normalized = dut_uid_text.strip()
+            if normalized:
+                return normalized, None
+            return None, "DUT UID input field not available"
         
         # Check validator state
-        state, value, pos = validator.validate(dut_uid_text, 0)
+        state, value, _ = validator.validate(dut_uid_text, 0)
         
         if state == QtGui.QValidator.Acceptable:
-            try:
-                dut_uid = int(value)
-                if dut_uid <= 0:
-                    return None, f'DUT UID must be a positive integer. Received: {dut_uid}'
-                return dut_uid, None
-            except (ValueError, TypeError):
-                return None, f'Could not convert DUT UID to integer: "{value}"'
+            normalized = value.strip()
+            if not normalized:
+                return None, "Please enter a DUT UID before running the test sequence."
+            return normalized, None
         elif state == QtGui.QValidator.Intermediate:
-            return None, f'DUT UID is incomplete or invalid: "{dut_uid_text}"'
+            return None, (
+                f'DUT UID is incomplete or contains invalid characters.\n\n'
+                f'Allowed characters: {self.DUT_UID_ALLOWED_CHARS_DESC}. '
+                f'Max length: {self.DUT_UID_MAX_LENGTH} characters.'
+            )
         else:  # Invalid
-            return None, f'Invalid DUT UID format: "{dut_uid_text}". Must be a positive integer.'
+            return None, (
+                f'Invalid DUT UID format: "{dut_uid_text}".\n\n'
+                f'Allowed characters: {self.DUT_UID_ALLOWED_CHARS_DESC}. '
+                f'Max length: {self.DUT_UID_MAX_LENGTH} characters.'
+            )
     
     def _show_dut_uid_error(self, error_type: str, details: str = "") -> None:
         """Show user-friendly DUT UID error message.
@@ -919,15 +1175,14 @@ class BaseGUI(QtWidgets.QMainWindow):
             ),
             'invalid_format': (
                 'Invalid DUT UID Format',
-                f'DUT UID must be a valid positive integer.\n\n'
-                f'Received: "{details}"\n\n'
-                f'Please enter a number between 1 and 2,147,483,647.'
+                f'DUT UID may only contain {self.DUT_UID_ALLOWED_CHARS_DESC} and must be between 1 '
+                f'and {self.DUT_UID_MAX_LENGTH} characters.\n\n'
+                f'Received: "{details}"'
             ),
             'invalid_range': (
-                'DUT UID Out of Range',
-                f'DUT UID must be a positive integer.\n\n'
-                f'Received: {details}\n\n'
-                f'Please enter a number between 1 and 2,147,483,647.'
+                'DUT UID Length Error',
+                f'DUT UID length must be between 1 and {self.DUT_UID_MAX_LENGTH} characters.\n\n'
+                f'Received length: {details}'
             ),
             'type_error': (
                 'DUT UID Type Error',
@@ -942,7 +1197,7 @@ class BaseGUI(QtWidgets.QMainWindow):
             f'An error occurred with the DUT UID input.\n\n{details}'
         ))
         
-        self.status_label.setText('DUT UID error')
+        self.status_label.setText('Test Status : DUT UID error')
         self.tabs_main.setCurrentIndex(self.status_tab_index)
         QtWidgets.QMessageBox.warning(self, title, message)
         
@@ -989,7 +1244,7 @@ class BaseGUI(QtWidgets.QMainWindow):
         """Builds the Test Status tab widget and returns it.
         
         The Test Status tab provides:
-        - Test execution controls (Run Selected, Run Sequence)
+        - Test execution controls (Run Sequence, Pause Test, Resume Test)
         - Real-time monitoring of current and feedback signals
         - Live plot showing Feedback vs DAC Voltage (for analog tests)
         - Test results table with pass/fail status
@@ -1000,82 +1255,203 @@ class BaseGUI(QtWidgets.QMainWindow):
         """
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        # Use SetNoConstraint to allow layout to respect parent widget boundaries
+        layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
 
         # Run buttons and DUT UID input
         btn_layout = QtWidgets.QHBoxLayout()
-        self.run_test_btn = QtWidgets.QPushButton('Run Selected Test')
         self.run_seq_btn = QtWidgets.QPushButton('Run Sequence')
+        
+        # Pause and Resume buttons for test sequences
+        self.pause_test_btn = QtWidgets.QPushButton('Pause Test')
+        self.resume_test_btn = QtWidgets.QPushButton('Resume Test')
+        self.pause_test_btn.setEnabled(False)  # Disabled by default
+        self.resume_test_btn.setEnabled(False)  # Disabled by default
         
         # DUT UID input field - required for test sequence execution
         # Located next to Run buttons for easy access
         dut_uid_label = QtWidgets.QLabel('DUT UID:')
         self.dut_uid_input = QtWidgets.QLineEdit()
-        self.dut_uid_input.setPlaceholderText('Enter IPC UID number')
+        self.dut_uid_input.setPlaceholderText('Enter DUT UID (A-Z, 0-9, -, /, _)')
         self.dut_uid_input.setMaximumWidth(200)
-        self.dut_uid_input.setToolTip('Enter IPC UID number for the test sequence')
+        dut_uid_tooltip = (
+            f'Enter DUT UID (allowed: {self.DUT_UID_ALLOWED_CHARS_DESC}; '
+            f'max {self.DUT_UID_MAX_LENGTH} characters)'
+        )
+        self.dut_uid_input.setToolTip(dut_uid_tooltip)
+        self._dut_uid_tooltip_text = dut_uid_tooltip
         
-        # Restrict input to positive integers only (1 to max 32-bit signed int)
-        # This prevents invalid data entry and ensures type consistency
-        validator = QtGui.QIntValidator(1, 2147483647, self.dut_uid_input)
+        # Restrict input to the allowed character set/length for DUT UID
+        # This prevents invalid data entry and provides immediate user feedback
+        regex = QtCore.QRegularExpression(self.DUT_UID_REGEX_PATTERN)
+        validator = QtGui.QRegularExpressionValidator(regex, self.dut_uid_input)
         self.dut_uid_input.setValidator(validator)
         
         # Connect text changed signal for visual feedback
         self.dut_uid_input.textChanged.connect(self._on_dut_uid_changed)
         
-        btn_layout.addWidget(self.run_test_btn)
         btn_layout.addWidget(self.run_seq_btn)
+        btn_layout.addWidget(self.pause_test_btn)
+        btn_layout.addWidget(self.resume_test_btn)
         btn_layout.addWidget(dut_uid_label)
         btn_layout.addWidget(self.dut_uid_input)
+        self.clear_results_btn = QtWidgets.QPushButton('Clear Results')
+        btn_layout.addWidget(self.clear_results_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-
-        # Control buttons
-        ctrl_layout = QtWidgets.QHBoxLayout()
-        self.clear_results_btn = QtWidgets.QPushButton('Clear Results')
-        self.repeat_test_btn = QtWidgets.QPushButton('Repeat Last Test')
-        ctrl_layout.addWidget(self.clear_results_btn)
-        ctrl_layout.addWidget(self.repeat_test_btn)
-        ctrl_layout.addStretch()
-        layout.addLayout(ctrl_layout)
 
         # Status display
         status_group = QtWidgets.QGroupBox('Test Execution Status')
         status_layout = QtWidgets.QVBoxLayout(status_group)
-
+        status_layout.setContentsMargins(5, 5, 5, 5)
+        status_layout.setSpacing(5)
+        status_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)  # Prevent compression
+        
         # Progress bar for sequence
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setVisible(False)
-        status_layout.addWidget(self.progress_bar)
+        # Ensure progress bar doesn't cause layout shifts
+        self.progress_bar.setFixedHeight(25)  # Fixed height for progress bar
+        status_layout.addWidget(self.progress_bar, 0)  # No stretch - fixed size
 
-        # Status label
-        self.status_label = QtWidgets.QLabel('Ready')
-        status_layout.addWidget(self.status_label)
-
-        # Create horizontal splitter for two-column layout
-        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        # Create horizontal layout for two-column layout (no splitter handle)
+        main_layout_widget = QtWidgets.QWidget()
+        main_layout = QtWidgets.QHBoxLayout(main_layout_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Left column: Real-time monitoring, plot, and execution log
+        # Left column: plot and execution log (Real-Time Monitoring is now in status_group)
         left_column = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_column)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(5, 5, 5, 5)  # Add margins for proper spacing
+        left_layout.setSpacing(8)  # Add spacing between widgets to prevent overlap (increased for better separation)
+        # Prevent layout from compressing widgets below their minimum sizes
+        left_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
+        # Set size policy for left column - Expanding horizontally, Minimum vertically (prevents compression)
+        left_column.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        # Set minimum height: 300 (plot) + 8 (spacing) + 200 (log) + 10 (margins) = 518px
+        left_column.setMinimumHeight(518)
 
-        # Real-time monitoring
+        # Real-time monitoring with compact grid layout (3 rows x 2 columns)
+        # Note: This will be added directly to status_layout, not to left_layout
         monitor_group = QtWidgets.QGroupBox('Real-Time Monitoring')
-        monitor_layout = QtWidgets.QFormLayout(monitor_group)
-        self.current_signal_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Current Signal Value:', self.current_signal_label)
-        self.feedback_signal_label = QtWidgets.QLabel('N/A')
-        monitor_layout.addRow('Feedback Signal Value:', self.feedback_signal_label)
-        left_layout.addWidget(monitor_group)
+        monitor_main_layout = QtWidgets.QVBoxLayout(monitor_group)
+        monitor_main_layout.setContentsMargins(2, 2, 2, 2)
+        monitor_main_layout.setSpacing(1)
+        
+        # Initialize monitoring data structures
+        self._monitor_data = {}  # Store signal data: {signal_name: {'value': val, 'timestamp': ts, 'history': []}}
+        self._monitor_last_update_times = {}  # Track update times for refresh rate
+        self._monitor_sparklines = {}  # Store sparkline widgets (not used in compact grid)
+        self._monitor_labels = {}  # Store all label widgets (QLabel) - can be any signal name
+        self._monitor_timestamps = {}  # Store timestamp items (QLabel)
+        self._monitor_table_rows = {}  # Map signal names to grid position (for backward compatibility)
+        self._monitor_display_names = {}  # Map signal keys to display names
+        self._monitor_sent_values = {}  # Track latest sent command values (for Digital Logic, Phase Current, etc.)
+        self._monitor_static_values = {}  # Store static reference values from test config
+        self._monitor_label_slots = []  # List of 6 label slots (QLabel widgets) in grid order
+        
+        # Create compact grid layout (3 rows x 2 columns)
+        grid_widget = QtWidgets.QWidget()
+        grid_layout = QtWidgets.QGridLayout(grid_widget)
+        grid_layout.setContentsMargins(1, 1, 1, 1)
+        grid_layout.setSpacing(1)
+        
+        # Create 6 empty label slots for dynamic configuration (3 rows x 2 columns)
+        for idx in range(6):
+            row = idx // 2  # Row: 0, 0, 1, 1, 2, 2
+            col = idx % 2   # Column: 0, 1, 0, 1, 0, 1
+            
+            # Create empty label slot
+            signal_label = QtWidgets.QLabel('')
+            signal_font = signal_label.font()
+            signal_font.setPointSize(8)
+            signal_font.setBold(True)
+            signal_label.setFont(signal_font)
+            signal_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            signal_label.setStyleSheet('padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+            signal_label.setMinimumHeight(20)
+            signal_label.setMaximumHeight(25)
+            
+            # Store label slot reference
+            self._monitor_label_slots.append(signal_label)
+            
+            # Add to grid
+            grid_layout.addWidget(signal_label, row, col)
+        
+        # Set row and column stretch to make cells equal size
+        grid_layout.setRowStretch(0, 1)
+        grid_layout.setRowStretch(1, 1)
+        grid_layout.setRowStretch(2, 1)
+        grid_layout.setColumnStretch(0, 1)
+        grid_layout.setColumnStretch(1, 1)
+        
+        # Set minimum height for the grid but allow proportional sizing
+        grid_widget.setMinimumHeight(80)  # Minimum height for usability
+        # Remove maximum height to allow proportional sizing
+        
+        # Initialize with empty labels (will be configured when test starts)
+        # Store backward compatibility references as None initially (will be set dynamically)
+        self.current_signal_label = None
+        self.feedback_signal_label = None
+        self.enable_relay_monitor_label = None
+        self.enable_pfc_monitor_label = None
+        self.pfc_power_good_monitor_label = None
+        self.output_current_monitor_label = None
+        
+        # Store timestamp references for backward compatibility (set to None since we don't display timestamps in compact format)
+        self.current_signal_timestamp = None
+        self.feedback_signal_timestamp = None
+        self.enable_relay_timestamp = None
+        self.enable_pfc_timestamp = None
+        self.pfc_power_good_timestamp = None
+        self.output_current_timestamp = None
+        
+        monitor_main_layout.addWidget(grid_widget)
+        
+        # Refresh rate indicator
+        refresh_rate_layout = QtWidgets.QHBoxLayout()
+        self.update_rate_label = QtWidgets.QLabel('Update Rate: -- Hz')
+        self.update_rate_label.setStyleSheet('font-size: 9pt; color: gray; font-style: italic;')
+        refresh_rate_layout.addStretch()
+        refresh_rate_layout.addWidget(self.update_rate_label)
+        monitor_main_layout.addLayout(refresh_rate_layout)
+        
+        # Initialize monitor data structures
+        for signal_name in ['current_signal', 'feedback_signal', 'enable_relay', 'enable_pfc', 'pfc_power_good', 'output_current']:
+            self._monitor_data[signal_name] = {
+                'value': None,
+                'timestamp': None,
+                'history': [],
+                'history_max_size': 50  # Keep last 50 values for sparkline
+            }
+        
+        # Add Real-Time Monitoring to status_layout (inside Test Execution Status group)
+        status_layout.addWidget(monitor_group, 0)  # No stretch factor - fixed size
+        # Set minimum height for Real-Time Monitoring but allow proportional sizing
+        monitor_group.setMinimumHeight(100)  # Minimum height for usability
+        # Remove maximum height to allow proportional sizing based on available space
+        monitor_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
         # Plot widget for analog tests (Feedback vs DAC Voltage)
         plot_group = QtWidgets.QGroupBox('Feedback vs DAC Output Voltage')
         plot_layout = QtWidgets.QVBoxLayout(plot_group)
+        plot_layout.setContentsMargins(5, 5, 5, 5)  # Add margins inside plot group
+        plot_layout.setSpacing(0)  # No spacing inside plot group
+        plot_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)  # Prevent compression
         if matplotlib_available:
             try:
                 self._init_plot()
                 if hasattr(self, 'plot_canvas') and self.plot_canvas is not None:
-                    plot_layout.addWidget(self.plot_canvas)
+                    # Set size constraints on plot canvas to prevent expansion beyond group bounds
+                    self.plot_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                    # Calculate available height: 300px (group) - ~20px (title) - 10px (margins) = 270px
+                    self.plot_canvas.setMinimumHeight(270)
+                    self.plot_canvas.setMaximumHeight(270)
+                    self.plot_canvas.setMinimumWidth(100)  # Allow horizontal expansion but constrain vertically
+                    plot_layout.addWidget(self.plot_canvas, 0, QtCore.Qt.AlignTop)  # Align to top, no stretch
                     plot_group.setVisible(True)
                 else:
                     no_plot_label = QtWidgets.QLabel('Plot initialization failed.')
@@ -1092,50 +1468,121 @@ class BaseGUI(QtWidgets.QMainWindow):
             no_plot_label.setAlignment(QtCore.Qt.AlignCenter)
             plot_layout.addWidget(no_plot_label)
             plot_group.setVisible(False)
-        left_layout.addWidget(plot_group)
+        # Plot will be added to plot_log_container later, not to left_layout
+        # Set minimum height for Plot section but allow proportional sizing
+        plot_group.setMinimumHeight(300)  # Minimum height: 270px (canvas) + 20px (title) + 10px (margins) = 300px
+        # Remove maximum height to allow proportional sizing based on available space
+        plot_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
 
         # Log text area
         self.test_log = QtWidgets.QPlainTextEdit()
         self.test_log.setReadOnly(True)
+        # Set size constraints on log widget - use Preferred to allow proportional sizing
+        self.test_log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        # Set minimum height but allow proportional sizing based on available space
+        self.test_log.setMinimumHeight(80)  # Minimum height for usability
+        # Remove maximum height to allow proportional sizing
         
         # Log in a group
         log_group = QtWidgets.QGroupBox('Execution Log')
         log_layout = QtWidgets.QVBoxLayout(log_group)
-        log_layout.addWidget(self.test_log)
-        left_layout.addWidget(log_group)
+        log_layout.setContentsMargins(5, 5, 5, 5)  # Add margins inside log group
+        log_layout.setSpacing(0)  # No spacing inside log group
+        log_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)  # Respect parent boundaries
+        log_layout.addWidget(self.test_log, 1)  # Stretch factor 1 - takes proportional space
+        # Log will be added to plot_log_container later, not to left_layout
+        # Set minimum height for Execution Log but allow proportional sizing
+        log_group.setMinimumHeight(110)  # Minimum height: 80px (text) + 20px (title) + 10px (margins)
+        # Remove maximum height to allow proportional sizing based on available space
+        log_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         
-        main_splitter.addWidget(left_column)
+        # left_column is now empty (plot and log moved out), so we don't need it in main_layout
+        # Instead, we'll add plot_log_container to the main tab layout
+        # Remove left_column from main_layout - we'll use plot_log_container instead
+        # main_layout.addWidget(left_column, 1)  # Commented out - not needed anymore
         
         # Right column: Test Plan
         # Test Plan table (renamed from Results table)
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(3)
         self.results_table.setHorizontalHeaderLabels(['Test Name', 'Type', 'Status'])
-        self.results_table.horizontalHeader().setStretchLastSection(True)
+        
+        # Set fixed column widths to ensure all columns are visible
+        self.results_table.setColumnWidth(0, 200)  # Test Name
+        self.results_table.setColumnWidth(1, 100)   # Type
+        self.results_table.setColumnWidth(2, 100)   # Status
+        
+        # Disable column resizing to lock the layout
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)  # Test Name
+        self.results_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)  # Type
+        self.results_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)  # Status
+        
         self.results_table.setAlternatingRowColors(True)
         # Enable single-click to show details
         self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.results_table.itemClicked.connect(self._on_test_plan_item_clicked)
         
-        # Test Plan in a group
+        # Test Plan in a group with fixed width
         table_group = QtWidgets.QGroupBox('Test Plan')
         table_layout = QtWidgets.QVBoxLayout(table_group)
         table_layout.addWidget(self.results_table)
-        main_splitter.addWidget(table_group)
+        # Set fixed width for Test Plan to ensure all columns are visible
+        table_group.setFixedWidth(410)  # 200 + 100 + 100 + margins
         
-        # Set splitter proportions (left column gets more space initially)
-        main_splitter.setStretchFactor(0, 2)  # Left column
-        main_splitter.setStretchFactor(1, 1)  # Right column (Test Plan)
+        # Test Plan will be added to bottom_container later, not to main_layout
+        # main_layout is now empty, so we don't need main_layout_widget
+        # Just add an empty widget or remove main_layout_widget entirely
         
-        status_layout.addWidget(main_splitter)
+        # Add main_layout_widget to status_layout with no stretch to prevent expansion
+        # Since main_layout is now empty, we can skip adding it or add a placeholder
+        # Actually, we don't need main_layout_widget anymore since Test Plan is moved out
+        # status_layout.addWidget(main_layout_widget, 0)  # Commented out - not needed
 
         layout.addWidget(status_group)
+        
+        # Add Plot and Execution Log as separate sections outside Test Execution Status
+        # Create a horizontal layout for plot/log (left) and test plan (right)
+        bottom_container = QtWidgets.QWidget()
+        # Set size policy to prevent container from expanding beyond available space
+        bottom_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        bottom_layout = QtWidgets.QHBoxLayout(bottom_container)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(8)
+        
+        # Create container for plot and log (left side)
+        plot_log_container = QtWidgets.QWidget()
+        # Set size policy to prevent container from expanding beyond available space
+        plot_log_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        plot_log_layout = QtWidgets.QVBoxLayout(plot_log_container)
+        plot_log_layout.setContentsMargins(0, 0, 0, 0)
+        plot_log_layout.setSpacing(8)
+        # Use SetNoConstraint to allow layout to respect parent widget boundaries
+        plot_log_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
+        
+        # Add plot_group to plot_log_layout with stretch factor 2 (takes ~67% of available space)
+        plot_log_layout.addWidget(plot_group, 2)  # Stretch factor 2 - larger proportion
+        
+        # Add log_group to plot_log_layout with stretch factor 0.7 (takes ~26% of available space)
+        plot_log_layout.addWidget(log_group, 0.7)  # Stretch factor 0.7 - reduced proportion
+        
+        # Add plot_log_container to bottom_layout (left side, with stretch)
+        bottom_layout.addWidget(plot_log_container, 1)  # Stretch factor 1
+        
+        # Add Test Plan to bottom_layout (right side, fixed width)
+        bottom_layout.addWidget(table_group, 0)  # Stretch factor 0 (fixed width)
+        
+        # Add bottom_container to main layout with stretch factor 1 to take remaining space
+        # but respect the parent widget's boundaries
+        layout.addWidget(bottom_container, 1)  # Stretch factor 1 - takes remaining space
+        
+        # Add stretch at the end to prevent widgets from extending beyond status bar
+        layout.addStretch(0)  # Stretch factor 0 - minimal stretch, just prevents overflow
 
         # Connect buttons
-        self.run_test_btn.clicked.connect(self._on_run_selected)
         self.run_seq_btn.clicked.connect(self._on_run_sequence)
+        self.pause_test_btn.clicked.connect(self._on_pause_test)
+        self.resume_test_btn.clicked.connect(self._on_resume_test)
         self.clear_results_btn.clicked.connect(self._on_clear_results)
-        self.repeat_test_btn.clicked.connect(self._on_repeat_test)
 
         return tab
 
@@ -1212,6 +1659,23 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Pre-dwell: {act['pre_dwell_time_ms']} ms")
             if act.get('dwell_time_ms') is not None:
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
+        elif test_type == 'Analog PWM Sensor':
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_pwm_frequency_signal'):
+                params.append(f"PWM Frequency Signal: {act['feedback_pwm_frequency_signal']}")
+            if act.get('feedback_duty_signal'):
+                params.append(f"Duty Signal: {act['feedback_duty_signal']}")
+            if act.get('reference_pwm_frequency') is not None:
+                params.append(f"Reference Frequency: {act['reference_pwm_frequency']:.2f} Hz")
+            if act.get('reference_duty') is not None:
+                params.append(f"Reference Duty: {act['reference_duty']:.2f} %")
+            if act.get('pwm_frequency_tolerance') is not None:
+                params.append(f"Frequency Tolerance: {act['pwm_frequency_tolerance']:.2f} Hz")
+            if act.get('duty_tolerance') is not None:
+                params.append(f"Duty Tolerance: {act['duty_tolerance']:.2f} %")
+            if act.get('acquisition_time_ms') is not None:
+                params.append(f"Acquisition: {act['acquisition_time_ms']} ms")
         elif test_type == 'Temperature Validation Test':
             if act.get('feedback_signal_source'):
                 params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
@@ -1234,6 +1698,35 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Dwell: {act['dwell_time_ms']} ms")
             if act.get('tolerance_v') is not None:
                 params.append(f"Tolerance: {act['tolerance_v']:.4f} V")
+        elif test_type == 'Output Current Calibration':
+            if act.get('test_trigger_source'):
+                params.append(f"Trigger Source: 0x{act['test_trigger_source']:X}")
+            if act.get('test_trigger_signal'):
+                params.append(f"Trigger Signal: {act['test_trigger_signal']}")
+            if act.get('test_trigger_signal_value') is not None:
+                params.append(f"Trigger Value: {act['test_trigger_signal_value']}")
+            if act.get('current_setpoint_signal'):
+                params.append(f"Setpoint Signal: {act['current_setpoint_signal']}")
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('feedback_signal'):
+                params.append(f"Feedback Signal: {act['feedback_signal']}")
+            if act.get('oscilloscope_channel'):
+                params.append(f"Oscilloscope Channel: {act['oscilloscope_channel']}")
+            if act.get('oscilloscope_timebase'):
+                params.append(f"Timebase: {act['oscilloscope_timebase']}")
+            if act.get('minimum_test_current') is not None:
+                params.append(f"Min Current: {act['minimum_test_current']:.2f} A")
+            if act.get('maximum_test_current') is not None:
+                params.append(f"Max Current: {act['maximum_test_current']:.2f} A")
+            if act.get('step_current') is not None:
+                params.append(f"Step Current: {act['step_current']:.2f} A")
+            if act.get('pre_acquisition_time_ms') is not None:
+                params.append(f"Pre-Acq Time: {act['pre_acquisition_time_ms']} ms")
+            if act.get('acquisition_time_ms') is not None:
+                params.append(f"Acquisition Time: {act['acquisition_time_ms']} ms")
+            if act.get('tolerance_percent') is not None:
+                params.append(f"Tolerance: {act['tolerance_percent']:.4f}%")
         elif test_type == 'Fan Control Test':
             if act.get('fan_test_trigger_source'):
                 params.append(f"Trigger Source: 0x{act['fan_test_trigger_source']:X}")
@@ -1245,12 +1738,64 @@ class BaseGUI(QtWidgets.QMainWindow):
                 params.append(f"Enabled Signal: {act['fan_enabled_signal']}")
             if act.get('fan_tach_feedback_signal'):
                 params.append(f"Tach Signal: {act['fan_tach_feedback_signal']}")
-            if act.get('fan_fault_feedback_signal'):
-                params.append(f"Fault Signal: {act['fan_fault_feedback_signal']}")
-            if act.get('dwell_time_ms') is not None:
-                params.append(f"Dwell: {act['dwell_time_ms']} ms")
-            if act.get('test_timeout_ms') is not None:
-                params.append(f"Timeout: {act['test_timeout_ms']} ms")
+        elif test_type == 'Charged HV Bus Test':
+            if act.get('command_signal_source'):
+                params.append(f"Command Source: 0x{act['command_signal_source']:X}")
+            if act.get('test_trigger_signal'):
+                params.append(f"Trigger Signal: {act['test_trigger_signal']}")
+            if act.get('test_trigger_signal_value') is not None:
+                params.append(f"Trigger Value: {act['test_trigger_signal_value']}")
+            if act.get('set_output_current_trim_signal'):
+                params.append(f"Trim Signal: {act['set_output_current_trim_signal']}")
+            if act.get('fallback_output_current_trim_value') is not None:
+                params.append(f"Fallback Trim: {act['fallback_output_current_trim_value']:.2f}%")
+            if act.get('set_output_current_setpoint_signal'):
+                params.append(f"Setpoint Signal: {act['set_output_current_setpoint_signal']}")
+            if act.get('output_test_current') is not None:
+                params.append(f"Output Current: {act['output_test_current']:.2f} A")
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('dut_test_state_signal'):
+                params.append(f"DUT State Signal: {act['dut_test_state_signal']}")
+            if act.get('enable_pfc_signal'):
+                params.append(f"Enable PFC Signal: {act['enable_pfc_signal']}")
+            if act.get('pfc_power_good_signal'):
+                params.append(f"PFC Power Good Signal: {act['pfc_power_good_signal']}")
+            if act.get('pcmc_signal'):
+                params.append(f"PCMC Signal: {act['pcmc_signal']}")
+            if act.get('test_time_ms'):
+                params.append(f"Test Time: {act['test_time_ms']} ms")
+        elif test_type == 'Charger Functional Test':
+            if act.get('command_signal_source'):
+                params.append(f"Command Source: 0x{act['command_signal_source']:X}")
+            if act.get('test_trigger_signal'):
+                params.append(f"Trigger Signal: {act['test_trigger_signal']}")
+            if act.get('test_trigger_signal_value') is not None:
+                params.append(f"Trigger Value: {act['test_trigger_signal_value']}")
+            if act.get('set_output_current_trim_signal'):
+                params.append(f"Trim Signal: {act['set_output_current_trim_signal']}")
+            if act.get('fallback_output_current_trim_value') is not None:
+                params.append(f"Fallback Trim: {act['fallback_output_current_trim_value']:.2f}%")
+            if act.get('set_output_current_setpoint_signal'):
+                params.append(f"Setpoint Signal: {act['set_output_current_setpoint_signal']}")
+            if act.get('output_test_current') is not None:
+                params.append(f"Output Current: {act['output_test_current']:.2f} A")
+            if act.get('feedback_signal_source'):
+                params.append(f"Feedback Source: 0x{act['feedback_signal_source']:X}")
+            if act.get('dut_test_state_signal'):
+                params.append(f"DUT State Signal: {act['dut_test_state_signal']}")
+            if act.get('enable_pfc_signal'):
+                params.append(f"Enable PFC Signal: {act['enable_pfc_signal']}")
+            if act.get('pfc_power_good_signal'):
+                params.append(f"PFC Power Good Signal: {act['pfc_power_good_signal']}")
+            if act.get('pcmc_signal'):
+                params.append(f"PCMC Signal: {act['pcmc_signal']}")
+            if act.get('output_current_signal'):
+                params.append(f"Output Current Signal: {act['output_current_signal']}")
+            if act.get('output_current_tolerance') is not None:
+                params.append(f"Current Tolerance: {act['output_current_tolerance']:.2f} A")
+            if act.get('test_time_ms'):
+                params.append(f"Test Time: {act['test_time_ms']} ms")
         
         return ', '.join(params) if params else 'None'
     
@@ -1407,6 +1952,12 @@ class BaseGUI(QtWidgets.QMainWindow):
         
         # Store execution data for popup display
         params_str = self._get_test_parameters_string(test)
+        
+        # CRITICAL: Preserve existing execution data (especially statistics) if it exists
+        # This prevents overwriting statistics that were set immediately in test_runner.py
+        existing_exec_data = self._test_execution_data.get(test_name, {})
+        existing_statistics = existing_exec_data.get('statistics')
+        
         exec_data = {
             'status': status,
             'exec_time': exec_time,
@@ -1415,18 +1966,14 @@ class BaseGUI(QtWidgets.QMainWindow):
             'test_type': test_type
         }
         
+        # Preserve existing statistics if they exist (they may have been set immediately in test_runner.py)
+        if existing_statistics is not None:
+            exec_data['statistics'] = existing_statistics
+            logger.debug(f"_update_test_plan_row: Preserved existing statistics for '{test_name}'")
+        
         # Add DUT UID metadata if available (from current test sequence)
-        # Ensure type safety - always store as integer
-        if self.current_dut_uid is not None:
-            try:
-                exec_data['dut_uid'] = int(self.current_dut_uid)
-            except (ValueError, TypeError) as e:
-                logger.error(
-                    f"Invalid DUT UID type in current_dut_uid: {type(self.current_dut_uid)}. "
-                    f"Value: {self.current_dut_uid}. Error: {e}"
-                )
-                # Don't store invalid UID - invalidate cache
-                self._invalidate_dut_uid_cache()
+        if self.current_dut_uid:
+            exec_data['dut_uid'] = self.current_dut_uid
         
         # Store plot data for analog tests and phase current calibration tests (make a copy to preserve data)
         if plot_data is not None:
@@ -1487,21 +2034,65 @@ class BaseGUI(QtWidgets.QMainWindow):
                         exec_data['calibration'] = calibration_params
             elif test_type == 'Phase Current Test':
                 # Store plot data for phase current calibration tests
-                exec_data['plot_data'] = {
-                    'iq_refs': list(plot_data.get('iq_refs', [])),
-                    'osc_ch1': list(plot_data.get('osc_ch1', [])),
-                    'osc_ch2': list(plot_data.get('osc_ch2', [])),
-                    'can_v': list(plot_data.get('can_v', [])),
-                    'can_w': list(plot_data.get('can_w', [])),
-                    'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
-                    'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
-                    'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
-                    'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
-                    'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
-                    'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
-                    'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
-                    'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
-                }
+                if plot_data and isinstance(plot_data, dict):
+                    exec_data['plot_data'] = {
+                        'iq_refs': list(plot_data.get('iq_refs', [])),
+                        'id_refs': list(plot_data.get('id_refs', [])),
+                        'osc_ch1': list(plot_data.get('osc_ch1', [])),
+                        'osc_ch2': list(plot_data.get('osc_ch2', [])),
+                        'can_v': list(plot_data.get('can_v', [])),
+                        'can_w': list(plot_data.get('can_w', [])),
+                        'gain_errors_v': list(plot_data.get('gain_errors_v', [])),
+                        'gain_corrections_v': list(plot_data.get('gain_corrections_v', [])),
+                        'gain_errors_w': list(plot_data.get('gain_errors_w', [])),
+                        'gain_corrections_w': list(plot_data.get('gain_corrections_w', [])),
+                        'avg_gain_error_v': plot_data.get('avg_gain_error_v'),
+                        'avg_gain_correction_v': plot_data.get('avg_gain_correction_v'),
+                        'avg_gain_error_w': plot_data.get('avg_gain_error_w'),
+                        'avg_gain_correction_w': plot_data.get('avg_gain_correction_w')
+                    }
+                else:
+                    # If plot_data is None or not a dict, store empty structure
+                    logger.warning(f"plot_data is None or not a dict for Phase Current Test: {type(plot_data)}")
+                    exec_data['plot_data'] = {
+                        'iq_refs': [],
+                        'id_refs': [],
+                        'osc_ch1': [],
+                        'osc_ch2': [],
+                        'can_v': [],
+                        'can_w': [],
+                        'gain_errors_v': [],
+                        'gain_corrections_v': [],
+                        'gain_errors_w': [],
+                        'gain_corrections_w': [],
+                        'avg_gain_error_v': None,
+                        'avg_gain_correction_v': None,
+                        'avg_gain_error_w': None,
+                        'avg_gain_correction_w': None
+                    }
+            elif test_type == 'Output Current Calibration':
+                # Store plot data for Output Current Calibration tests
+                # Check if we have dual sweep data (new format) or single plot data (old format)
+                if 'first_sweep' in plot_data and 'second_sweep' in plot_data:
+                    # New format: Dual sweep data
+                    exec_data['plot_data'] = {
+                        'first_sweep': plot_data.get('first_sweep', {}),
+                        'second_sweep': plot_data.get('second_sweep', {}),
+                        'calculated_trim_value': plot_data.get('calculated_trim_value'),
+                        'tolerance_percent': plot_data.get('tolerance_percent')
+                    }
+                else:
+                    # Old format: Single plot (backward compatibility)
+                    exec_data['plot_data'] = {
+                        'osc_averages': list(plot_data.get('osc_averages', [])),
+                        'can_averages': list(plot_data.get('can_averages', [])),
+                        'setpoint_values': list(plot_data.get('setpoint_values', [])),
+                        'slope': plot_data.get('slope'),
+                        'intercept': plot_data.get('intercept'),
+                        'gain_error': plot_data.get('gain_error'),
+                        'adjustment_factor': plot_data.get('adjustment_factor'),
+                        'tolerance_percent': plot_data.get('tolerance_percent')
+                    }
             elif test_type == 'Analog Static Test':
                 # Store plot data and statistics for analog_static tests
                 if plot_data:
@@ -1737,7 +2328,59 @@ Data Points Used: {data_points}"""
         plot_data = exec_data.get('plot_data')
         is_phase_current = test_config and test_config.get('type') == 'Phase Current Test'
         
-        if is_analog and plot_data and matplotlib_available:
+        # Check if this is Analog Sweep Test
+        is_analog_sweep = test_config and test_config.get('type') == 'Analog Sweep Test'
+        if is_analog_sweep and plot_data and matplotlib_available:
+            plot_dac_voltages = plot_data.get('dac_voltages', [])
+            plot_feedback_values = plot_data.get('feedback_values', [])
+            
+            if plot_dac_voltages and plot_feedback_values and len(plot_dac_voltages) == len(plot_feedback_values):
+                plot_label = QtWidgets.QLabel(f'<b>DUT Calculated Voltage vs DAC Voltage Plot:</b>')
+                layout.addWidget(plot_label)
+                
+                try:
+                    # Create a new figure and canvas for the dialog
+                    plot_figure = Figure(figsize=(6, 4))
+                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                    plot_axes = plot_figure.add_subplot(111)
+                    
+                    # Plot the data as scatter plot
+                    plot_axes.plot(plot_dac_voltages, plot_feedback_values, 'bo', markersize=6, label='Data Points')
+                    # Add ideal line (y=x)
+                    plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                    
+                    # Add regression line if available
+                    slope = plot_data.get('slope')
+                    intercept = plot_data.get('intercept')
+                    if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                        x_min = min(plot_dac_voltages)
+                        x_max = max(plot_dac_voltages)
+                        x_reg = [x_min, x_max]
+                        y_reg = [slope * x + intercept for x in x_reg]
+                        plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                    
+                    plot_axes.set_xlabel('DAC Voltage')
+                    plot_axes.set_ylabel('DUT Calculated Voltage')
+                    plot_axes.set_title(f'DUT Calculated Voltage vs DAC Voltage Plot{(": " + test_name) if test_name else ""}')
+                    plot_axes.grid(True, alpha=0.3)
+                    plot_axes.legend()
+                    
+                    # Auto-scale axes to fit all data
+                    plot_axes.relim()
+                    plot_axes.autoscale()
+                    
+                    # Tight layout
+                    plot_figure.tight_layout()
+                    
+                    # Add canvas to layout
+                    layout.addWidget(plot_canvas)
+                except Exception as e:
+                    logger.error(f"Error creating plot in test details dialog: {e}", exc_info=True)
+                    error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                    error_label.setStyleSheet('color: red;')
+                    layout.addWidget(error_label)
+        elif is_analog and plot_data and matplotlib_available:
+            # Other analog tests (backward compatibility)
             plot_dac_voltages = plot_data.get('dac_voltages', [])
             plot_feedback_values = plot_data.get('feedback_values', [])
             
@@ -1782,7 +2425,7 @@ Data Points Used: {data_points}"""
             plot_osc_w = plot_data.get('osc_ch2', [])
             
             if (plot_can_v or plot_osc_v or plot_can_w or plot_osc_w):
-                plot_label = QtWidgets.QLabel(f'<b>Average Phase Current: CAN vs Oscilloscope Comparison:</b>')
+                plot_label = QtWidgets.QLabel(f'<b>DUT Phase Current vs Measured Phase Current:</b>')
                 layout.addWidget(plot_label)
                 
                 try:
@@ -1812,10 +2455,20 @@ Data Points Used: {data_points}"""
                         plot_axes_v.plot(osc_v_clean, can_v_clean, 'bo', markersize=6, label='Phase V')
                         # Add diagonal reference line (y=x)
                         plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                        
+                        # Add regression line if available
+                        slope_v = plot_data.get('slope_v')
+                        intercept_v = plot_data.get('intercept_v')
+                        if slope_v is not None and intercept_v is not None and isinstance(slope_v, (int, float)) and isinstance(intercept_v, (int, float)):
+                            x_min = min(osc_v_clean)
+                            x_max = max(osc_v_clean)
+                            x_reg = [x_min, x_max]
+                            y_reg = [slope_v * x + intercept_v for x in x_reg]
+                            plot_axes_v.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope_v:.4f})')
                     
-                    plot_axes_v.set_xlabel('Average Phase V Current from Oscilloscope (A)')
-                    plot_axes_v.set_ylabel('Average Phase V Current from CAN (A)')
-                    plot_axes_v.set_title('Phase V: CAN vs Oscilloscope')
+                    plot_axes_v.set_xlabel('Measured Phase V Current (A)')
+                    plot_axes_v.set_ylabel('DUT Phase V Current (A)')
+                    plot_axes_v.set_title('')  # Remove subplot title, main title is centered
                     plot_axes_v.grid(True, alpha=0.3)
                     plot_axes_v.legend()
                     
@@ -1841,15 +2494,28 @@ Data Points Used: {data_points}"""
                         plot_axes_w.plot(osc_w_clean, can_w_clean, 'ro', markersize=6, label='Phase W')
                         # Add diagonal reference line (y=x)
                         plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                        
+                        # Add regression line if available
+                        slope_w = plot_data.get('slope_w')
+                        intercept_w = plot_data.get('intercept_w')
+                        if slope_w is not None and intercept_w is not None and isinstance(slope_w, (int, float)) and isinstance(intercept_w, (int, float)):
+                            x_min = min(osc_w_clean)
+                            x_max = max(osc_w_clean)
+                            x_reg = [x_min, x_max]
+                            y_reg = [slope_w * x + intercept_w for x in x_reg]
+                            plot_axes_w.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope_w:.4f})')
                     
-                    plot_axes_w.set_xlabel('Average Phase W Current from Oscilloscope (A)')
-                    plot_axes_w.set_ylabel('Average Phase W Current from CAN (A)')
-                    plot_axes_w.set_title('Phase W: CAN vs Oscilloscope')
+                    plot_axes_w.set_xlabel('Measured Phase W Current (A)')
+                    plot_axes_w.set_ylabel('DUT Phase W Current (A)')
+                    plot_axes_w.set_title('')  # Remove subplot title, main title is centered
                     plot_axes_w.grid(True, alpha=0.3)
                     plot_axes_w.legend()
                     
+                    # Main title centered between subplots
+                    plot_figure.suptitle('DUT Phase Current vs Measured Phase Current', fontsize=12, y=0.98)
+                    
                     # Tight layout
-                    plot_figure.tight_layout()
+                    plot_figure.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for suptitle
                     
                     # Add canvas to layout
                     layout.addWidget(plot_canvas)
@@ -1884,12 +2550,347 @@ Data Points Used: {data_points}"""
                         
                         gain_info_text.setPlainText(gain_info)
                         layout.addWidget(gain_info_text)
+                    
+                    # Add data table
+                    try:
+                        if not isinstance(plot_data, dict):
+                            logger.warning(f"plot_data is not a dict for Phase Current Test: {type(plot_data)}")
+                            plot_data = {}
+                        
+                        plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                        plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                        plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                        plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                        plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                        plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                        
+                        if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plot_osc_w:
+                            table_label = QtWidgets.QLabel(f'<b>Test Data Table:</b>')
+                            layout.addWidget(table_label)
+                        
+                        # Create table widget
+                        table = QtWidgets.QTableWidget()
+                        table.setColumnCount(6)
+                        table.setHorizontalHeaderLabels([
+                            'Iq_ref (A)',
+                            'Id_ref (A)',
+                            'DUT Phase V Current (A)',
+                            'Measured Phase V Current (A)',
+                            'DUT Phase W Current (A)',
+                            'Measured Phase W Current (A)'
+                        ])
+                        
+                        # Determine number of rows
+                        max_rows = max(
+                            len(plot_iq_refs) if plot_iq_refs else 0,
+                            len(plot_id_refs) if plot_id_refs else 0,
+                            len(plot_can_v) if plot_can_v else 0,
+                            len(plot_osc_v) if plot_osc_v else 0,
+                            len(plot_can_w) if plot_can_w else 0,
+                            len(plot_osc_w) if plot_osc_w else 0
+                        )
+                        
+                        table.setRowCount(max_rows)
+                        
+                        # Populate table
+                        for i in range(max_rows):
+                            # Iq_ref
+                            iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                            if iq_val is not None:
+                                table.setItem(i, 0, QtWidgets.QTableWidgetItem(f'{iq_val:.4f}'))
+                            else:
+                                table.setItem(i, 0, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Id_ref
+                            id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                            if id_val is not None:
+                                table.setItem(i, 1, QtWidgets.QTableWidgetItem(f'{id_val:.4f}'))
+                            else:
+                                table.setItem(i, 1, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase V Current
+                            can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                            if can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val):
+                                table.setItem(i, 2, QtWidgets.QTableWidgetItem(f'{can_v_val:.4f}'))
+                            else:
+                                table.setItem(i, 2, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase V Current
+                            osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                            if osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val):
+                                table.setItem(i, 3, QtWidgets.QTableWidgetItem(f'{osc_v_val:.4f}'))
+                            else:
+                                table.setItem(i, 3, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase W Current
+                            can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                            if can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val):
+                                table.setItem(i, 4, QtWidgets.QTableWidgetItem(f'{can_w_val:.4f}'))
+                            else:
+                                table.setItem(i, 4, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase W Current
+                            osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                            if osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val):
+                                table.setItem(i, 5, QtWidgets.QTableWidgetItem(f'{osc_w_val:.4f}'))
+                            else:
+                                table.setItem(i, 5, QtWidgets.QTableWidgetItem('N/A'))
+                        
+                        # Resize columns to fit content
+                        table.resizeColumnsToContents()
+                        table.setMaximumHeight(300)
+                        table.setAlternatingRowColors(True)
+                        layout.addWidget(table)
+                    except Exception as e:
+                        logger.error(f"Error creating data table in test details dialog: {e}", exc_info=True)
+                        error_label = QtWidgets.QLabel(f'<i>Data table creation failed: {e}</i>')
+                        error_label.setStyleSheet('color: red;')
+                        layout.addWidget(error_label)
                         
                 except Exception as e:
                     logger.error(f"Error creating phase current plots in test details dialog: {e}", exc_info=True)
                     error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
                     error_label.setStyleSheet('color: red;')
                     layout.addWidget(error_label)
+        
+        # Plot section for Output Current Calibration tests
+        is_output_current_calibration = test_config and test_config.get('type') == 'Output Current Calibration'
+        if is_output_current_calibration and plot_data and matplotlib_available:
+            # Check if we have dual sweep data (new format) or single plot data (old format)
+            first_sweep_data = plot_data.get('first_sweep')
+            second_sweep_data = plot_data.get('second_sweep')
+            
+            if first_sweep_data and second_sweep_data:
+                # New format: Dual sweep plots
+                plot_label = QtWidgets.QLabel(f'<b>Output Current Calibration: Dual Sweep Results</b>')
+                layout.addWidget(plot_label)
+                
+                try:
+                    # Helper function to create a plot
+                    def create_plot(plot_data_dict, plot_title):
+                        plot_figure = Figure(figsize=(8, 6))
+                        plot_canvas = FigureCanvasQTAgg(plot_figure)
+                        plot_axes = plot_figure.add_subplot(111)
+                        
+                        plot_osc_averages = plot_data_dict.get('osc_averages', [])
+                        plot_can_averages = plot_data_dict.get('can_averages', [])
+                        slope = plot_data_dict.get('slope')
+                        intercept = plot_data_dict.get('intercept')
+                        
+                        if plot_osc_averages and plot_can_averages:
+                            # Filter out NaN values and ensure matching lengths
+                            osc_clean = []
+                            can_clean = []
+                            min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                            for i in range(min_len):
+                                osc_val = plot_osc_averages[i]
+                                can_val = plot_can_averages[i]
+                                # Check if both are valid (not NaN)
+                                if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                    not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                    not (isinstance(can_val, float) and can_val != can_val)):
+                                    osc_clean.append(osc_val)
+                                    can_clean.append(can_val)
+                            
+                            if osc_clean and can_clean:
+                                # Plot data points
+                                plot_axes.plot(osc_clean, can_clean, 'bo', markersize=8, label='Data Points')
+                                
+                                # Add diagonal reference line (y=x) for ideal line
+                                plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                
+                                # Add regression line if slope and intercept are available
+                                if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                                    x_min = min(osc_clean)
+                                    x_max = max(osc_clean)
+                                    x_reg = [x_min, x_max]
+                                    y_reg = [slope * x + intercept for x in x_reg]
+                                    plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                
+                                plot_axes.set_xlabel('Measured Output Current (A)')
+                                plot_axes.set_ylabel('DUT Output Current (A)')
+                                plot_axes.set_title(plot_title)
+                                plot_axes.grid(True, alpha=0.3)
+                                plot_axes.legend()
+                                
+                                # Auto-scale axes to fit all data
+                                plot_axes.relim()
+                                plot_axes.autoscale()
+                                
+                                # Tight layout
+                                plot_figure.tight_layout()
+                        
+                        return plot_canvas
+                    
+                    # Create first sweep plot
+                    first_plot_label = QtWidgets.QLabel(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>')
+                    layout.addWidget(first_plot_label)
+                    first_plot_canvas = create_plot(first_sweep_data, first_sweep_data.get("plot_label", "First Sweep"))
+                    layout.addWidget(first_plot_canvas)
+                    
+                    # Create second sweep plot
+                    second_plot_label = QtWidgets.QLabel(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>')
+                    layout.addWidget(second_plot_label)
+                    second_plot_canvas = create_plot(second_sweep_data, second_sweep_data.get("plot_label", "Second Sweep"))
+                    layout.addWidget(second_plot_canvas)
+                    
+                    # Display calibration results
+                    gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
+                    layout.addWidget(gain_info_label)
+                    
+                    gain_info_text = QtWidgets.QTextEdit()
+                    gain_info_text.setReadOnly(True)
+                    gain_info_text.setMaximumHeight(200)
+                    
+                    gain_info = ""
+                    # First sweep results
+                    first_slope = first_sweep_data.get('slope')
+                    first_intercept = first_sweep_data.get('intercept')
+                    first_gain_error = first_sweep_data.get('gain_error')
+                    first_adjustment = first_sweep_data.get('adjustment_factor')
+                    first_trim = first_sweep_data.get('trim_value')
+                    if first_slope is not None:
+                        gain_info += f"First Sweep (Trim: {first_trim}%):\n"
+                        gain_info += f"  Linear Regression: Slope={first_slope:.6f}, Intercept={first_intercept:.6f}A\n"
+                    if first_gain_error is not None:
+                        gain_info += f"  Gain Error: {first_gain_error:.4f}%\n"
+                    if first_adjustment is not None:
+                        gain_info += f"  Adjustment Factor: {first_adjustment:.6f}\n"
+                    
+                    # Calculated trim value
+                    calculated_trim = plot_data.get('calculated_trim_value')
+                    if calculated_trim is not None:
+                        gain_info += f"\nCalculated Trim Value: {calculated_trim:.4f}%\n"
+                    
+                    # Second sweep results
+                    second_slope = second_sweep_data.get('slope')
+                    second_intercept = second_sweep_data.get('intercept')
+                    second_gain_error = second_sweep_data.get('gain_error')
+                    second_trim = second_sweep_data.get('trim_value')
+                    tolerance_percent = plot_data.get('tolerance_percent')
+                    if second_slope is not None:
+                        gain_info += f"\nSecond Sweep (Trim: {second_trim:.4f}%):\n"
+                        gain_info += f"  Linear Regression: Slope={second_slope:.6f}, Intercept={second_intercept:.6f}A\n"
+                    if second_gain_error is not None:
+                        gain_info += f"  Gain Error: {second_gain_error:.4f}%\n"
+                    if tolerance_percent is not None:
+                        gain_info += f"  Tolerance: {tolerance_percent:.4f}%\n"
+                        passed = second_gain_error is not None and abs(second_gain_error) <= tolerance_percent
+                        gain_info += f"  Result: {'PASS' if passed else 'FAIL'}\n"
+                    
+                    gain_info_text.setPlainText(gain_info)
+                    layout.addWidget(gain_info_text)
+                    
+                except Exception as e:
+                    logger.error(f"Error creating Output Current Calibration dual plots in test details dialog: {e}", exc_info=True)
+                    error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                    error_label.setStyleSheet('color: red;')
+                    layout.addWidget(error_label)
+            else:
+                # Old format: Single plot (backward compatibility)
+                plot_osc_averages = plot_data.get('osc_averages', [])
+                plot_can_averages = plot_data.get('can_averages', [])
+                
+                if plot_osc_averages and plot_can_averages:
+                    plot_label = QtWidgets.QLabel(f'<b>Output Current Calibration: DUT vs Oscilloscope Comparison:</b>')
+                    layout.addWidget(plot_label)
+                    
+                    try:
+                        # Create a new figure for the dialog
+                        plot_figure = Figure(figsize=(8, 6))
+                        plot_canvas = FigureCanvasQTAgg(plot_figure)
+                        plot_axes = plot_figure.add_subplot(111)
+                        
+                        # Filter out NaN values and ensure matching lengths
+                        osc_clean = []
+                        can_clean = []
+                        min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                        for i in range(min_len):
+                            osc_val = plot_osc_averages[i]
+                            can_val = plot_can_averages[i]
+                            # Check if both are valid (not NaN)
+                            if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                not (isinstance(can_val, float) and can_val != can_val)):
+                                osc_clean.append(osc_val)
+                                can_clean.append(can_val)
+                        
+                        if osc_clean and can_clean:
+                            # Plot data points
+                            plot_axes.plot(osc_clean, can_clean, 'bo', markersize=8, label='Data Points')
+                            
+                            # Add diagonal reference line (y=x) for ideal line
+                            plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                            
+                            # Add regression line if available
+                            slope = plot_data.get('slope')
+                            intercept = plot_data.get('intercept')
+                            if slope is not None and intercept is not None:
+                                # Calculate regression line points
+                                x_min = min(osc_clean)
+                                x_max = max(osc_clean)
+                                x_reg = [x_min, x_max]
+                                y_reg = [slope * x + intercept for x in x_reg]
+                                plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                            
+                            plot_axes.set_xlabel('Measured Output Current (A)')
+                            plot_axes.set_ylabel('DUT Output Current (A)')
+                            plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                            plot_axes.grid(True, alpha=0.3)
+                            plot_axes.legend()
+                            
+                            # Auto-scale axes to fit all data
+                            plot_axes.relim()
+                            plot_axes.autoscale()
+                            
+                            # Tight layout
+                            plot_figure.tight_layout()
+                            
+                            # Add canvas to layout
+                            layout.addWidget(plot_canvas)
+                            
+                            # Display gain error and adjustment factor
+                            # Support both old format (gain_error) and new format (avg_gain_error)
+                            gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
+                            adjustment_factor = plot_data.get('adjustment_factor')
+                            tolerance_percent = plot_data.get('tolerance_percent')
+                            slope = plot_data.get('slope')
+                            intercept = plot_data.get('intercept')
+                            
+                            if gain_error is not None:
+                                gain_info_label = QtWidgets.QLabel(f'<b>Calibration Results:</b>')
+                                layout.addWidget(gain_info_label)
+                                
+                                gain_info_text = QtWidgets.QTextEdit()
+                                gain_info_text.setReadOnly(True)
+                                gain_info_text.setMaximumHeight(120)
+                                
+                                gain_info = ""
+                                # Only show slope/intercept if available (old format)
+                                if slope is not None:
+                                    gain_info += f"Slope: {slope:.6f} (ideal: 1.0)\n"
+                                if intercept is not None:
+                                    gain_info += f"Intercept: {intercept:.6f} A\n"
+                                # Show average gain error (new format) or gain error (old format)
+                                if plot_data.get('avg_gain_error') is not None:
+                                    gain_info += f"Average Gain Error: {gain_error:.4f}%\n"
+                                else:
+                                    gain_info += f"Gain Error: {gain_error:+.4f}%\n"
+                                if adjustment_factor is not None:
+                                    gain_info += f"Adjustment Factor: {adjustment_factor:.6f}\n"
+                                if tolerance_percent is not None:
+                                    gain_info += f"Tolerance: {tolerance_percent:.4f}%\n"
+                                    passed = abs(gain_error) <= tolerance_percent
+                                    gain_info += f"Result: {'PASS' if passed else 'FAIL'}\n"
+                                
+                                gain_info_text.setPlainText(gain_info)
+                                layout.addWidget(gain_info_text)
+                        
+                    except Exception as e:
+                        logger.error(f"Error creating Output Current Calibration plot in test details dialog: {e}", exc_info=True)
+                        error_label = QtWidgets.QLabel(f'<i>Plot visualization failed: {e}</i>')
+                        error_label.setStyleSheet('color: red;')
+                        layout.addWidget(error_label)
         
         # Close button
         button_layout = QtWidgets.QHBoxLayout()
@@ -1901,7 +2902,8 @@ Data Points Used: {data_points}"""
         
         # Adjust dialog size for plot and calibration parameters if present
         if (is_analog and (plot_data and matplotlib_available or calibration_params)) or \
-           (is_phase_current and plot_data and matplotlib_available):
+           (is_phase_current and plot_data and matplotlib_available) or \
+           (is_output_current_calibration and plot_data and matplotlib_available):
             dialog.setMinimumWidth(700)
             dialog.setMinimumHeight(650)
         else:
@@ -1922,8 +2924,13 @@ Data Points Used: {data_points}"""
             return
         try:
             # Create figure and canvas
+            # Note: figsize is in inches, but actual size will be constrained by setMinimumHeight/setMaximumHeight
             self.plot_figure = Figure(figsize=(8, 4))
             self.plot_canvas = FigureCanvasQTAgg(self.plot_figure)
+            # Set size policy to respect parent constraints - Fixed vertically to prevent expansion
+            self.plot_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            # Ensure canvas respects maximum height constraint
+            self.plot_canvas.setMaximumHeight(270)
             self.plot_axes = self.plot_figure.add_subplot(111)
             
             # Initialize data storage
@@ -1948,26 +2955,998 @@ Data Points Used: {data_points}"""
             self.plot_axes = None
             self.plot_figure = None
 
+    @QtCore.Slot()
     def _clear_plot(self):
-        """Clear the plot data and reset axes."""
+        """Clear the plot data and reset axes.
+        
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
+        """
         if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
             return
         try:
             self.plot_dac_voltages = []
             self.plot_feedback_values = []
-            self.plot_line.set_data([], [])
+            # Clear Output Current Calibration plot data if it exists
+            if hasattr(self, 'plot_osc_values'):
+                self.plot_osc_values = []
+            if hasattr(self, 'plot_can_values'):
+                self.plot_can_values = []
+            if hasattr(self, '_output_current_plot_initialized'):
+                self._output_current_plot_initialized = False
+            if hasattr(self, '_analog_sweep_plot_initialized'):
+                self._analog_sweep_plot_initialized = False
+            if hasattr(self, '_analog_sweep_regression_line'):
+                self._analog_sweep_regression_line = None
+            # Clear plot and set to "Nil" for non-plot tests
+            self.plot_axes.clear()
+            self.plot_axes.set_xlabel('Nil')
+            self.plot_axes.set_ylabel('Nil')
+            self.plot_axes.set_title('Nil')
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+            # Create empty plot line
+            if hasattr(self, 'plot_line') and self.plot_line is not None:
+                self.plot_line.set_data([], [])
+            else:
+                self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.relim()
             self.plot_axes.autoscale()
-            self.plot_canvas.draw_idle()
+            self.plot_figure.tight_layout()
+            # Use draw() for immediate update during initialization
+            self.plot_canvas.draw()
         except Exception as e:
             logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
-
-    def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: Optional[str] = None) -> None:
-        """Update the plot with a new data point (DAC voltage, feedback value).
+    
+    @QtCore.Slot(str)
+    def _initialize_output_current_plot(self, test_name: str = '', sweep_title: str = '') -> None:
+        """Initialize the plot for Output Current Calibration test with proper labels and title.
+        
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
         
         Args:
-            dac_voltage: DAC output voltage in millivolts
-            feedback_value: IPC feedback signal value
+            test_name: Optional test name to include in the plot title (empty string converted to None internally)
+            sweep_title: Optional sweep title (e.g., "First Sweep (Trim Value: X%)" or "Second Sweep (Trim Value: Y%)")
+        """
+        if not matplotlib_available:
+            logger.debug("Matplotlib not available, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            logger.debug("Plot axes not initialized, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+            logger.debug("Plot canvas not initialized, skipping plot initialization")
+            return
+        try:
+            # Convert empty strings to None for internal use
+            if test_name == '':
+                test_name = None
+            if sweep_title == '':
+                sweep_title = None
+            
+            self.plot_axes.clear()
+            self.plot_axes.set_xlabel('Measured Output Current (A)')
+            self.plot_axes.set_ylabel('DUT Output Current (A)')
+            # Use sweep_title if provided, otherwise use default title
+            if sweep_title:
+                plot_title = sweep_title
+            else:
+                plot_title = f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}'
+            self.plot_axes.set_title(plot_title)
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+            # Add diagonal reference line (y=x) for ideal line - displayed before test starts
+            self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            # Create scatter plot for Output Current Calibration
+            self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+            self.plot_axes.legend()
+            self.plot_figure.tight_layout()
+            # Use draw() for immediate update during initialization
+            self.plot_canvas.draw()
+            self._output_current_plot_initialized = True
+            logger.debug(f"Initialized plot for Output Current Calibration: {plot_title}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Output Current Calibration plot: {e}", exc_info=True)
+    
+    @QtCore.Slot(str)
+    def _initialize_analog_sweep_plot(self, test_name: str = '') -> None:
+        """Initialize the plot for Analog Sweep Test with proper labels and title.
+        
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
+        
+        Args:
+            test_name: Optional test name to include in the plot title (empty string converted to None internally)
+        """
+        if not matplotlib_available:
+            logger.debug("Matplotlib not available, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            logger.debug("Plot axes not initialized, skipping plot initialization")
+            return
+        if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+            logger.debug("Plot canvas not initialized, skipping plot initialization")
+            return
+        try:
+            # Convert empty string to None for internal use
+            if test_name == '':
+                test_name = None
+            
+            self.plot_axes.clear()
+            self.plot_axes.set_xlabel('DAC Voltage')
+            self.plot_axes.set_ylabel('DUT Calculated Voltage')
+            plot_title = f'DUT Calculated Voltage vs DAC Voltage Plot{(": " + test_name) if test_name else ""}'
+            self.plot_axes.set_title(plot_title)
+            self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+            # Add diagonal reference line (y=x) for ideal line - displayed before test starts
+            self.plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            
+            # Initialize data arrays to empty (important for multiple tests in sequence)
+            self.plot_dac_voltages = []
+            self.plot_feedback_values = []
+            
+            # Create scatter plot for Analog Sweep Test with empty data
+            self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+            self.plot_axes.legend()
+            self.plot_figure.tight_layout()
+            # Use draw() for immediate update during initialization
+            self.plot_canvas.draw()
+            self._analog_sweep_plot_initialized = True
+            self._analog_sweep_regression_line = None
+            logger.debug(f"Initialized plot for Analog Sweep Test: {test_name}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Analog Sweep Test plot: {e}", exc_info=True)
+    
+    def _initialize_plot_for_test_type(self, test: Dict[str, Any]) -> None:
+        """Initialize plot based on test type.
+        
+        Args:
+            test: Test dictionary containing test configuration
+        """
+        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            return
+        
+        test_type = test.get('type', '')
+        test_name = test.get('name', '')
+        
+        if test_type == 'Analog Sweep Test':
+            self._initialize_analog_sweep_plot(test_name)
+        elif test_type == 'Output Current Calibration':
+            self._initialize_output_current_plot(test_name)
+        elif test_type == 'Phase Current Test':
+            # Phase Current Test plot is initialized in phase_current_service.py
+            # Just clear the plot here
+            self._clear_plot()
+        else:
+            # For all other test types (no plot), set to "Nil"
+            try:
+                self.plot_axes.clear()
+                self.plot_axes.set_xlabel('Nil')
+                self.plot_axes.set_ylabel('Nil')
+                self.plot_axes.set_title('Nil')
+                self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
+                if hasattr(self, 'plot_line') and self.plot_line is not None:
+                    self.plot_line.set_data([], [])
+                else:
+                    self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+                self.plot_figure.tight_layout()
+                # Use draw() for immediate update during initialization
+                self.plot_canvas.draw()
+            except Exception as e:
+                logger.debug(f"Failed to set Nil plot: {e}", exc_info=True)
+
+    def _create_sparkline_widget(self):
+        """Create a small sparkline widget for value history visualization."""
+        if not matplotlib_available:
+            return None
+        
+        fig = Figure(figsize=(2, 0.5), dpi=100)
+        ax = fig.add_subplot(111)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.set_facecolor('white')
+        fig.patch.set_facecolor('white')
+        canvas = FigureCanvasQTAgg(fig)
+        canvas.setMinimumWidth(80)
+        canvas.setMaximumWidth(80)
+        canvas.setMinimumHeight(30)
+        canvas.setMaximumHeight(30)
+        
+        return {'widget': canvas, 'figure': fig, 'axes': ax, 'data': []}
+    
+    def _format_signal_value(self, value: Any, signal_type: str) -> str:
+        """Format signal value with appropriate units and precision.
+        
+        Args:
+            value: The signal value to format
+            signal_type: Type of signal ('voltage', 'voltage_mv', 'current', 'temperature', 'frequency', 'duty', 'digital', 'generic')
+        
+        Returns:
+            Formatted string with value and unit
+        """
+        if value is None:
+            return 'N/A'
+        
+        try:
+            float_val = float(value)
+        except (ValueError, TypeError):
+            return str(value)
+        
+        formatters = {
+            'voltage': lambda v: f"{v:.2f} V",
+            'voltage_mv': lambda v: f"{v:.2f} mV",
+            'current': lambda v: f"{v:.2f} A",
+            'temperature': lambda v: f"{v:.2f} °C",
+            'frequency': lambda v: f"{v:.2f} Hz",
+            'duty': lambda v: f"{v:.2f} %",
+            'digital': lambda v: f"{int(round(v))}",
+            'generic': lambda v: f"{v:.2f}",
+        }
+        
+        formatter = formatters.get(signal_type, lambda v: f"{v:.2f}")
+        return formatter(float_val)
+    
+    def _get_signal_type(self, signal_name: str) -> str:
+        """Determine signal type from signal name.
+        
+        Returns signal type for formatting:
+        - 'voltage_mv': For signals that should be displayed in millivolts (mV)
+        - 'voltage': For signals that should be displayed in volts (V)
+        - 'current': For current signals in Amperes (A)
+        - 'temperature': For temperature in Celsius (°C)
+        - 'frequency': For frequency in Hertz (Hz)
+        - 'duty': For duty cycle in percent (%)
+        - 'digital': For digital signals (0 or 1)
+        - 'generic': For generic numeric values
+        """
+        name_lower = signal_name.lower()
+        
+        # Signals that should be displayed in millivolts (mV)
+        if name_lower in ['current_signal', 'feedback_signal', 'eol_measurement', 'dut_measurement']:
+            # Analog Sweep Test: current_signal (DAC voltage) and feedback_signal in mV
+            # External 5V Test: eol_measurement and dut_measurement in mV
+            return 'voltage_mv'
+        
+        # Voltage signals in Volts (V) - DC Bus, etc.
+        if 'voltage' in name_lower or 'dc bus' in name_lower:
+            return 'voltage'
+        
+        # Current signals
+        if 'current' in name_lower:
+            return 'current'
+        # Special case: set_id and set_iq are current values (Amperes)
+        if name_lower in ['set_id', 'set_iq']:
+            return 'current'
+        
+        # Temperature signals
+        if 'temp' in name_lower or 'temperature' in name_lower:
+            return 'temperature'
+        
+        # Frequency signals
+        if 'freq' in name_lower or 'frequency' in name_lower or 'pwm' in name_lower:
+            return 'frequency'
+        
+        # Duty cycle signals
+        if 'duty' in name_lower:
+            return 'duty'
+        
+        # Digital signals
+        if 'relay' in name_lower or 'pfc' in name_lower or 'enable' in name_lower or 'power' in name_lower or 'fault' in name_lower or 'applied' in name_lower or 'digital' in name_lower or 'fan_enabled' in name_lower or 'fan_fault' in name_lower:
+            return 'digital'
+        
+        # Generic numeric values
+        return 'generic'
+    
+    @QtCore.Slot(str, float)
+    def track_sent_command_value(self, signal_key: str, value: Any) -> None:
+        """Track a sent command value for display in monitoring.
+        
+        Args:
+            signal_key: Internal signal key (e.g., 'applied_input', 'set_id', 'set_iq', 'output_current_reference')
+            value: The value that was sent
+        """
+        if signal_key in self._monitor_labels:
+            self._monitor_sent_values[signal_key] = value
+            # Update the display immediately
+            signal_type = self._get_signal_type(signal_key)
+            formatted_value = self._format_signal_value(value, signal_type)
+            display_name = self._monitor_display_names.get(signal_key, signal_key)
+            label = self._monitor_labels[signal_key]
+            if hasattr(label, 'setText'):
+                label.setText(f'{display_name} : {formatted_value}')
+    
+    def update_monitor_signal_by_name(self, signal_key: str, value: Optional[float], 
+                                     threshold_good: Optional[Tuple[float, float]] = None,
+                                     threshold_warn: Optional[Tuple[float, float]] = None) -> None:
+        """Update a monitor signal by its internal key name.
+        
+        This is a wrapper that maps various signal names to the internal monitoring system.
+        
+        Args:
+            signal_key: Internal signal key (e.g., 'feedback_signal', 'dut_temperature', 'fan_enabled')
+            value: Signal value to display
+            threshold_good: Optional tuple (min, max) for good range (green)
+            threshold_warn: Optional tuple (min, max) for warning range (orange)
+        """
+        if signal_key in self._monitor_labels:
+            self._update_signal_with_status(signal_key, value, threshold_good, threshold_warn)
+    
+    def update_feedback_signal_for_test(self, value: Optional[float], signal_name: Optional[str] = None) -> None:
+        """Update feedback signal monitoring based on current test configuration.
+        
+        This method automatically maps feedback signals to the correct monitoring label
+        based on what's currently configured for the active test.
+        
+        Args:
+            value: Feedback signal value
+            signal_name: Optional specific signal name to update (if None, uses configured feedback signal)
+        """
+        # Try to find the appropriate feedback signal label based on current configuration
+        if 'feedback_signal' in self._monitor_labels:
+            self._update_signal_with_status('feedback_signal', value)
+        elif 'dut_feedback_signal' in self._monitor_labels:
+            self._update_signal_with_status('dut_feedback_signal', value)
+        elif 'digital_input' in self._monitor_labels:
+            self._update_signal_with_status('digital_input', value)
+        elif 'dut_temperature' in self._monitor_labels:
+            self._update_signal_with_status('dut_temperature', value)
+        elif 'dut_measurement' in self._monitor_labels:
+            self._update_signal_with_status('dut_measurement', value)
+        elif 'dut_dc_bus_voltage' in self._monitor_labels:
+            self._update_signal_with_status('dut_dc_bus_voltage', value)
+        elif 'dut_output_current' in self._monitor_labels:
+            self._update_signal_with_status('dut_output_current', value)
+    
+    def _update_signal_with_status(self, signal_name: str, value: Any, 
+                                   threshold_good: Optional[Tuple[float, float]] = None,
+                                   threshold_warn: Optional[Tuple[float, float]] = None) -> None:
+        """Update signal label with value, formatting, and color coding.
+        
+        Args:
+            signal_name: Name of the signal ('current_signal', 'feedback_signal', etc.)
+            value: The signal value to display
+            threshold_good: Optional tuple (min, max) for good range (green)
+            threshold_warn: Optional tuple (min, max) for warning range (orange)
+        """
+        import time
+        from datetime import datetime
+        
+        # Get signal type and format value
+        signal_type = self._get_signal_type(signal_name)
+        formatted_value = self._format_signal_value(value, signal_type)
+        
+        # Get label and timestamp items (can be QTableWidgetItem or QLabel for backward compatibility)
+        label = self._monitor_labels.get(signal_name)
+        timestamp_item = self._monitor_timestamps.get(signal_name)
+        
+        if label is None:
+            return
+        
+        # Get display name for this signal
+        display_name = self._monitor_display_names.get(signal_name, signal_name)
+        
+        # Update label text with format: "Display Name : formatted_value"
+        if isinstance(label, QtWidgets.QTableWidgetItem):
+            label.setText(f'{display_name} : {formatted_value}')
+        elif hasattr(label, 'setText'):
+            label.setText(f'{display_name} : {formatted_value}')
+        
+        # Update timestamp
+        if timestamp_item is not None:
+            timestamp_str = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            if isinstance(timestamp_item, QtWidgets.QTableWidgetItem):
+                timestamp_item.setText(timestamp_str)
+            elif hasattr(timestamp_item, 'setText'):
+                timestamp_item.setText(timestamp_str)  # Compact: just show time, no "Updated:" prefix
+        
+        # Color coding based on thresholds
+        if value is None:
+            # Gray for N/A
+            if isinstance(label, QtWidgets.QTableWidgetItem):
+                label.setForeground(QtGui.QColor('gray'))
+                label.setBackground(QtGui.QColor('#f5f5f5'))
+            elif hasattr(label, 'setStyleSheet'):
+                label.setStyleSheet('color: gray; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+        else:
+            try:
+                float_val = float(value)
+                
+                # Determine colors based on thresholds
+                if threshold_good is not None and threshold_warn is not None:
+                    if threshold_good[0] <= float_val <= threshold_good[1]:
+                        text_color = QtGui.QColor('green')
+                        bg_color = QtGui.QColor('#e8f5e9')
+                    elif threshold_warn[0] <= float_val <= threshold_warn[1]:
+                        text_color = QtGui.QColor('orange')
+                        bg_color = QtGui.QColor('#fff3e0')
+                    else:
+                        text_color = QtGui.QColor('red')
+                        bg_color = QtGui.QColor('#ffebee')
+                elif signal_type == 'digital':
+                    # Digital signals: 1 = green, 0 = red
+                    if float_val >= 0.5:
+                        text_color = QtGui.QColor('green')
+                        bg_color = QtGui.QColor('#e8f5e9')
+                    else:
+                        text_color = QtGui.QColor('red')
+                        bg_color = QtGui.QColor('#ffebee')
+                else:
+                    # Default: blue for analog values
+                    text_color = QtGui.QColor('blue')
+                    bg_color = QtGui.QColor('#e3f2fd')
+                
+                # Apply colors
+                if isinstance(label, QtWidgets.QTableWidgetItem):
+                    label.setForeground(text_color)
+                    label.setBackground(bg_color)
+                elif hasattr(label, 'setStyleSheet'):
+                    style = f'color: {text_color.name()}; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: {bg_color.name()}; border: 1px solid #ddd; border-radius: 1px;'
+                    label.setStyleSheet(style)
+            except (ValueError, TypeError):
+                # Default blue for non-numeric values
+                if isinstance(label, QtWidgets.QTableWidgetItem):
+                    label.setForeground(QtGui.QColor('blue'))
+                    label.setBackground(QtGui.QColor('#e3f2fd'))
+                elif hasattr(label, 'setStyleSheet'):
+                    label.setStyleSheet('color: blue; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: #e3f2fd; border: 1px solid #ddd; border-radius: 1px;')
+        
+        # Update value history and sparkline
+        if signal_name in self._monitor_data:
+            data_entry = self._monitor_data[signal_name]
+            data_entry['value'] = value
+            data_entry['timestamp'] = time.time()
+            
+            # Add to history
+            if value is not None:
+                try:
+                    float_val = float(value)
+                    data_entry['history'].append(float_val)
+                    # Keep only last N values
+                    max_size = data_entry.get('history_max_size', 50)
+                    if len(data_entry['history']) > max_size:
+                        data_entry['history'] = data_entry['history'][-max_size:]
+                except (ValueError, TypeError):
+                    pass
+            
+            # Update sparkline
+            if signal_name in self._monitor_sparklines and matplotlib_available:
+                sparkline = self._monitor_sparklines[signal_name]
+                if sparkline and len(data_entry['history']) > 1:
+                    try:
+                        ax = sparkline['axes']
+                        ax.clear()
+                        history = data_entry['history']
+                        if len(history) > 0:
+                            ax.plot(history, 'b-', linewidth=1.5, alpha=0.7)
+                            ax.set_ylim(min(history) * 0.95 if min(history) > 0 else min(history) * 1.05,
+                                       max(history) * 1.05 if max(history) > 0 else max(history) * 0.95)
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ax.spines['top'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                        ax.spines['bottom'].set_visible(False)
+                        ax.spines['left'].set_visible(False)
+                        sparkline['figure'].tight_layout(pad=0.1)
+                        sparkline['widget'].draw()
+                    except Exception as e:
+                        logger.debug(f"Failed to update sparkline for {signal_name}: {e}")
+        
+        # Update refresh rate
+        now = time.time()
+        if signal_name in self._monitor_last_update_times:
+            dt = now - self._monitor_last_update_times[signal_name]
+            if dt > 0:
+                rate = 1.0 / dt
+                if hasattr(self, 'update_rate_label'):
+                    self.update_rate_label.setText(f"Update Rate: {rate:.1f} Hz")
+        self._monitor_last_update_times[signal_name] = now
+    
+    def update_monitor_signal(self, key: str, value: Optional[float]) -> None:
+        """Update real-time monitoring labels for charger-related signals.
+        
+        This method uses the dynamic monitoring system with formatting and color coding.
+        """
+        # Map old keys to new signal names
+        key_map = {
+            'enable_relay': 'enable_relay',
+            'enable_pfc': 'enable_pfc',
+            'pfc_power_good': 'pfc_power_good',
+            'output_current': 'output_current',
+        }
+        
+        signal_name = key_map.get(key)
+        if signal_name is None:
+            return
+        
+        # Determine thresholds based on signal type
+        threshold_good = None
+        threshold_warn = None
+        
+        if key == 'output_current':
+            # Current: good if > 0, warn if very low
+            threshold_good = (0.1, float('inf'))
+            threshold_warn = (0.01, 0.1)
+        elif key in ['enable_relay', 'enable_pfc', 'pfc_power_good']:
+            # Digital signals: 1 = good, 0 = bad
+            threshold_good = (0.5, 1.5)
+            threshold_warn = (0.0, 0.5)
+        
+        self._update_signal_with_status(signal_name, value, threshold_good, threshold_warn)
+
+    def reset_monitor_signals(self, test: Optional[Dict[str, Any]] = None) -> None:
+        """Reset real-time monitoring labels and configure for test type.
+        
+        Args:
+            test: Optional test configuration dictionary. If provided, configures labels based on test type.
+                  If None, clears all labels.
+        """
+        # Clear all label slots
+        for label in self._monitor_label_slots:
+            label.setText('')
+            label.setStyleSheet('padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+        
+        # Clear all monitoring data
+        self._monitor_labels.clear()
+        self._monitor_display_names.clear()
+        self._monitor_sent_values.clear()
+        self._monitor_static_values.clear()
+        
+        # Clear history
+        for signal_name in self._monitor_data.keys():
+            self._monitor_data[signal_name]['history'] = []
+            self._monitor_data[signal_name]['value'] = None
+            self._monitor_data[signal_name]['timestamp'] = None
+        
+        # Clear sparklines
+        for signal_name, sparkline in self._monitor_sparklines.items():
+            if sparkline and matplotlib_available:
+                try:
+                    ax = sparkline['axes']
+                    ax.clear()
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    sparkline['widget'].draw()
+                except Exception:
+                    pass
+        
+        # Reset refresh rate
+        if hasattr(self, 'update_rate_label'):
+            self.update_rate_label.setText('Update Rate: -- Hz')
+        
+        # Stop update timer if no test is provided (thread-safe)
+        if test is None:
+            if hasattr(self, '_monitor_update_timer'):
+                try:
+                    # Check if we're in the main thread
+                    current_thread = QtCore.QThread.currentThread()
+                    main_thread = QtCore.QCoreApplication.instance().thread()
+                    
+                    if current_thread == main_thread:
+                        # We're in the main thread, stop directly
+                        self._monitor_update_timer.stop()
+                    else:
+                        # We're in a background thread, use QueuedConnection for thread safety
+                        QtCore.QMetaObject.invokeMethod(
+                            self._monitor_update_timer,
+                            'stop',
+                            QtCore.Qt.ConnectionType.QueuedConnection
+                        )
+                except Exception:
+                    pass
+        
+        # Configure labels based on test type if test provided
+        if test is not None:
+            self._configure_monitor_signals_for_test(test)
+    
+    def _configure_monitor_signals_for_test(self, test: Dict[str, Any]) -> None:
+        """Configure real-time monitoring labels based on test type.
+        
+        Args:
+            test: Test configuration dictionary with 'actuation' field containing test type and parameters.
+        """
+        actuation = test.get('actuation', {})
+        test_type = actuation.get('type', '')
+        slot_idx = 0
+        
+        # Initialize signal data structures for all signals we'll use
+        def _setup_signal(signal_key: str, display_name: str, initial_value: Any = None) -> None:
+            """Helper to set up a signal in the next available slot."""
+            nonlocal slot_idx
+            if slot_idx >= len(self._monitor_label_slots):
+                return  # No more slots available
+            
+            label = self._monitor_label_slots[slot_idx]
+            self._monitor_labels[signal_key] = label
+            self._monitor_display_names[signal_key] = display_name
+            
+            # Initialize data structure
+            if signal_key not in self._monitor_data:
+                self._monitor_data[signal_key] = {
+                    'value': initial_value,
+                    'timestamp': None,
+                    'history': [],
+                    'history_max_size': 50
+                }
+            
+            # Set initial display
+            if initial_value is not None:
+                signal_type = self._get_signal_type(signal_key)
+                formatted = self._format_signal_value(initial_value, signal_type)
+                label.setText(f'{display_name} : {formatted}')
+            else:
+                label.setText(f'{display_name} : N/A')
+            
+            slot_idx += 1
+        
+        # Configure based on test type
+        if test_type == 'Digital Logic Test':
+            # Applied Input: Track last sent command (value_high or value_low)
+            value_high = actuation.get('value_high', '1')
+            value_low = actuation.get('value_low', '0')
+            # Initialize with empty, will be updated when command is sent
+            _setup_signal('applied_input', 'Applied Input', None)
+            self._monitor_sent_values['applied_input'] = None
+            self._monitor_sent_values['value_high'] = value_high
+            self._monitor_sent_values['value_low'] = value_low
+            
+            # Digital Input: feedback_signal
+            _setup_signal('digital_input', 'Digital Input', None)
+            
+        elif test_type == 'Analog Sweep Test':
+            _setup_signal('current_signal', 'Current Signal', None)
+            _setup_signal('feedback_signal', 'Feedback Signal', None)
+            
+        elif test_type == 'Phase Current Test':
+            # Set Id: Track latest id_ref_signal value sent
+            _setup_signal('set_id', 'Set Id', None)
+            self._monitor_sent_values['set_id'] = None
+            
+            # Set Iq: Track latest iq_ref_signal value sent
+            _setup_signal('set_iq', 'Set Iq', None)
+            self._monitor_sent_values['set_iq'] = None
+            
+            # DUT Phase V Current: phase_v_signal from data_collection
+            data_collection = actuation.get('data_collection', {})
+            phase_v_signal = data_collection.get('phase_v_signal', 'Phase_V_Current')
+            _setup_signal('dut_phase_v_current', 'DUT Phase V Current', None)
+            self._monitor_sent_values['phase_v_signal_name'] = phase_v_signal
+            
+            # DUT Phase W Current: phase_w_signal from data_collection
+            phase_w_signal = data_collection.get('phase_w_signal', 'Phase_W_Current')
+            _setup_signal('dut_phase_w_current', 'DUT Phase W Current', None)
+            self._monitor_sent_values['phase_w_signal_name'] = phase_w_signal
+            
+        elif test_type == 'Analog Static Test':
+            _setup_signal('eol_measured_signal', 'EOL Measured Signal', None)
+            _setup_signal('dut_feedback_signal', 'DUT Feedback Signal', None)
+            # Store signal names for reading from CAN
+            self._monitor_sent_values['eol_signal_name'] = actuation.get('eol_signal')
+            self._monitor_sent_values['eol_msg_id'] = actuation.get('eol_signal_source')
+            self._monitor_sent_values['feedback_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['feedback_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Analog PWM Sensor':
+            # Reference PWM Frequency: Static value from config
+            ref_freq = actuation.get('reference_pwm_frequency', 0)
+            _setup_signal('ref_pwm_frequency', 'Reference PWM Frequency', ref_freq)
+            self._monitor_static_values['ref_pwm_frequency'] = ref_freq
+            
+            # DUT PWM Frequency: feedback_pwm_frequency_signal
+            _setup_signal('dut_pwm_frequency', 'DUT PWM Frequency', None)
+            self._monitor_sent_values['pwm_freq_signal_name'] = actuation.get('feedback_pwm_frequency_signal')
+            self._monitor_sent_values['pwm_freq_msg_id'] = actuation.get('feedback_signal_source')
+            
+            # Reference Duty: Static value from config
+            ref_duty = actuation.get('reference_duty', 0)
+            _setup_signal('ref_duty', 'Reference Duty', ref_duty)
+            self._monitor_static_values['ref_duty'] = ref_duty
+            
+            # DUT Duty: feedback_duty_signal
+            _setup_signal('dut_duty', 'DUT Duty', None)
+            self._monitor_sent_values['duty_signal_name'] = actuation.get('feedback_duty_signal')
+            self._monitor_sent_values['duty_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Temperature Validation Test':
+            # Reference Temperature: Static value from config
+            ref_temp = actuation.get('reference_temperature_c', 0)
+            _setup_signal('ref_temperature', 'Reference Temperature', ref_temp)
+            self._monitor_static_values['ref_temperature'] = ref_temp
+            
+            # DUT Temperature: feedback_signal
+            _setup_signal('dut_temperature', 'DUT Temperature', None)
+            self._monitor_sent_values['temp_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['temp_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Fan Control Test':
+            _setup_signal('fan_enabled', 'Fan Enabled', None)
+            self._monitor_sent_values['fan_enabled_signal_name'] = actuation.get('fan_enabled_signal')
+            self._monitor_sent_values['fan_enabled_msg_id'] = actuation.get('fan_control_feedback_source')
+            
+            _setup_signal('fan_tach_signal', 'Fan Tach Signal', None)
+            self._monitor_sent_values['fan_tach_signal_name'] = actuation.get('fan_tach_feedback_signal')
+            self._monitor_sent_values['fan_tach_msg_id'] = actuation.get('fan_control_feedback_source')
+            
+            _setup_signal('fan_fault', 'Fan Fault', None)
+            self._monitor_sent_values['fan_fault_signal_name'] = actuation.get('fan_fault_feedback_signal')
+            self._monitor_sent_values['fan_fault_msg_id'] = actuation.get('fan_control_feedback_source')
+            
+        elif test_type == 'External 5V Test':
+            _setup_signal('eol_measurement', 'EOL Measurement', None)
+            self._monitor_sent_values['eol_ext_5v_signal_name'] = actuation.get('eol_ext_5v_measurement_signal')
+            self._monitor_sent_values['eol_ext_5v_msg_id'] = actuation.get('eol_ext_5v_measurement_source')
+            
+            _setup_signal('dut_measurement', 'DUT Measurement', None)
+            self._monitor_sent_values['dut_measurement_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['dut_measurement_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'DC Bus Sensing':
+            _setup_signal('dut_dc_bus_voltage', 'DUT DC Bus Voltage', None)
+            self._monitor_sent_values['dc_bus_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['dc_bus_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Output Current Calibration':
+            # Output Current Reference: Track latest current_setpoint_signal value sent
+            _setup_signal('output_current_reference', 'Output Current Reference', None)
+            self._monitor_sent_values['output_current_reference'] = None
+            
+            # DUT Output Current: feedback_signal
+            _setup_signal('dut_output_current', 'DUT Output Current', None)
+            self._monitor_sent_values['output_current_signal_name'] = actuation.get('feedback_signal')
+            self._monitor_sent_values['output_current_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Charged HV Bus Test':
+            _setup_signal('enable_relay', 'Enable Relay', None)
+            self._monitor_sent_values['enable_relay_signal_name'] = actuation.get('enable_relay_signal')
+            self._monitor_sent_values['enable_relay_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('enable_pfc', 'Enable PFC', None)
+            self._monitor_sent_values['enable_pfc_signal_name'] = actuation.get('enable_pfc_signal')
+            self._monitor_sent_values['enable_pfc_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('pfc_power_good', 'PFC Power Good', None)
+            self._monitor_sent_values['pfc_power_good_signal_name'] = actuation.get('pfc_power_good_signal')
+            self._monitor_sent_values['pfc_power_good_msg_id'] = actuation.get('feedback_signal_source')
+            
+        elif test_type == 'Charger Functional Test':
+            _setup_signal('enable_relay', 'Enable Relay', None)
+            self._monitor_sent_values['enable_relay_signal_name'] = actuation.get('enable_relay_signal')
+            self._monitor_sent_values['enable_relay_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('enable_pfc', 'Enable PFC', None)
+            self._monitor_sent_values['enable_pfc_signal_name'] = actuation.get('enable_pfc_signal')
+            self._monitor_sent_values['enable_pfc_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('pfc_power_good', 'PFC Power Good', None)
+            self._monitor_sent_values['pfc_power_good_signal_name'] = actuation.get('pfc_power_good_signal')
+            self._monitor_sent_values['pfc_power_good_msg_id'] = actuation.get('feedback_signal_source')
+            
+            _setup_signal('output_current', 'Output Current', None)
+            self._monitor_sent_values['output_current_signal_name'] = actuation.get('output_current_signal')
+            self._monitor_sent_values['output_current_msg_id'] = actuation.get('feedback_signal_source')
+        
+        # Update backward compatibility references
+        self.current_signal_label = self._monitor_labels.get('current_signal')
+        self.feedback_signal_label = self._monitor_labels.get('feedback_signal')
+        self.enable_relay_monitor_label = self._monitor_labels.get('enable_relay')
+        self.enable_pfc_monitor_label = self._monitor_labels.get('enable_pfc')
+        self.pfc_power_good_monitor_label = self._monitor_labels.get('pfc_power_good')
+        self.output_current_monitor_label = self._monitor_labels.get('output_current')
+        
+        # Start periodic update timer for monitored signals if any are configured
+        if self._monitor_labels:
+            self._start_monitor_update_timer()
+    
+    def _start_monitor_update_timer(self) -> None:
+        """Start a timer to periodically update monitored signals from CAN (thread-safe)."""
+        # Stop existing timer if any (thread-safe)
+        if hasattr(self, '_monitor_update_timer'):
+            try:
+                # Check if we're in the main thread
+                current_thread = QtCore.QThread.currentThread()
+                main_thread = QtCore.QCoreApplication.instance().thread()
+                
+                if current_thread == main_thread:
+                    # We're in the main thread, stop directly
+                    self._monitor_update_timer.stop()
+                else:
+                    # We're in a background thread, use QueuedConnection for thread safety
+                    QtCore.QMetaObject.invokeMethod(
+                        self._monitor_update_timer,
+                        'stop',
+                        QtCore.Qt.ConnectionType.QueuedConnection
+                    )
+            except Exception as e:
+                logger.debug(f"Error stopping monitor update timer: {e}")
+        
+        # Create new timer to update signals every 100ms (must be done in main thread)
+        # Note: This method should only be called from main thread, but we check anyway
+        current_thread = QtCore.QThread.currentThread()
+        main_thread = QtCore.QCoreApplication.instance().thread()
+        
+        if current_thread == main_thread:
+            # We're in the main thread, create timer directly
+            self._monitor_update_timer = QtCore.QTimer(self)
+            self._monitor_update_timer.timeout.connect(self._update_monitored_signals_from_can)
+            self._monitor_update_timer.start(100)  # Update every 100ms
+        else:
+            # We're in a background thread - schedule timer creation in main thread
+            # Use a lambda to capture self and create timer when invoked
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                '_create_monitor_timer',
+                QtCore.Qt.ConnectionType.QueuedConnection
+            )
+    
+    def _create_monitor_timer(self) -> None:
+        """Create and start monitor update timer (called from main thread via invokeMethod)."""
+        if not hasattr(self, '_monitor_update_timer') or self._monitor_update_timer is None:
+            self._monitor_update_timer = QtCore.QTimer(self)
+        self._monitor_update_timer.timeout.connect(self._update_monitored_signals_from_can)
+        self._monitor_update_timer.start(100)  # Update every 100ms
+    
+    def _update_monitored_signals_from_can(self) -> None:
+        """Periodically update monitored signals by reading from CAN cache."""
+        if not self._monitor_labels:
+            return
+        
+        # Create a copy of items to avoid "dictionary changed size during iteration" error
+        # This can happen if reset_monitor_signals() is called from another thread during iteration
+        try:
+            monitor_items = list(self._monitor_labels.items())
+        except RuntimeError:
+            # Dictionary was modified during copy - skip this update cycle
+            return
+        
+        # Update signals based on stored signal names and message IDs
+        for signal_key, label in monitor_items:
+            try:
+                # Get signal name and message ID from stored values
+                signal_name_key = f'{signal_key}_signal_name'
+                msg_id_key = f'{signal_key}_msg_id'
+                
+                signal_name = self._monitor_sent_values.get(signal_name_key)
+                msg_id = self._monitor_sent_values.get(msg_id_key)
+                
+                if signal_name and msg_id is not None:
+                    # Get latest signal value from cache
+                    ts, val = self.get_latest_signal(msg_id, signal_name)
+                    if val is not None:
+                        self._update_signal_with_status(signal_key, val)
+                
+                # Special handling for Digital Logic Test feedback
+                if signal_key == 'digital_input':
+                    # Get feedback signal from current test config if available
+                    if hasattr(self, '_current_test_index') and self._current_test_index is not None:
+                        try:
+                            if self._current_test_index < len(self._tests):
+                                test = self._tests[self._current_test_index]
+                                fb_signal = test.get('feedback_signal')
+                                fb_msg_id = test.get('feedback_message_id')
+                                if fb_signal and fb_msg_id is not None:
+                                    ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                                    if val is not None:
+                                        self._update_signal_with_status('digital_input', val)
+                        except Exception:
+                            pass
+                
+                # Special handling for Analog Static Test - both signals
+                if signal_key == 'eol_measured_signal':
+                    eol_signal = self._monitor_sent_values.get('eol_signal_name')
+                    eol_msg_id = self._monitor_sent_values.get('eol_msg_id')
+                    if eol_signal and eol_msg_id is not None:
+                        ts, val = self.get_latest_signal(eol_msg_id, eol_signal)
+                        if val is not None:
+                            self._update_signal_with_status('eol_measured_signal', val)
+                
+                if signal_key == 'dut_feedback_signal':
+                    fb_signal = self._monitor_sent_values.get('feedback_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('feedback_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_feedback_signal', val)
+                
+                # Special handling for External 5V Test
+                if signal_key == 'eol_measurement':
+                    eol_signal = self._monitor_sent_values.get('eol_ext_5v_signal_name')
+                    eol_msg_id = self._monitor_sent_values.get('eol_ext_5v_msg_id')
+                    if eol_signal and eol_msg_id is not None:
+                        ts, val = self.get_latest_signal(eol_msg_id, eol_signal)
+                        if val is not None:
+                            self._update_signal_with_status('eol_measurement', val)
+                
+                if signal_key == 'dut_measurement':
+                    fb_signal = self._monitor_sent_values.get('dut_measurement_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('dut_measurement_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_measurement', val)
+                
+                # Special handling for DC Bus Sensing
+                if signal_key == 'dut_dc_bus_voltage':
+                    fb_signal = self._monitor_sent_values.get('dc_bus_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('dc_bus_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_dc_bus_voltage', val)
+                
+                # Special handling for Output Current Calibration
+                if signal_key == 'dut_output_current':
+                    fb_signal = self._monitor_sent_values.get('output_current_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('output_current_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_output_current', val)
+                
+                # Special handling for Fan Control Test
+                if signal_key == 'fan_enabled':
+                    fb_signal = self._monitor_sent_values.get('fan_enabled_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('fan_enabled_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('fan_enabled', val)
+                
+                if signal_key == 'fan_tach_signal':
+                    fb_signal = self._monitor_sent_values.get('fan_tach_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('fan_tach_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('fan_tach_signal', val)
+                
+                if signal_key == 'fan_fault':
+                    fb_signal = self._monitor_sent_values.get('fan_fault_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('fan_fault_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('fan_fault', val)
+                
+                # Special handling for Analog PWM Sensor Test
+                if signal_key == 'dut_pwm_frequency':
+                    fb_signal = self._monitor_sent_values.get('pwm_freq_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('pwm_freq_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_pwm_frequency', val)
+                
+                if signal_key == 'dut_duty':
+                    fb_signal = self._monitor_sent_values.get('duty_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('duty_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_duty', val)
+                
+                # Special handling for Temperature Validation Test
+                if signal_key == 'dut_temperature':
+                    fb_signal = self._monitor_sent_values.get('temp_signal_name')
+                    fb_msg_id = self._monitor_sent_values.get('temp_msg_id')
+                    if fb_signal and fb_msg_id is not None:
+                        ts, val = self.get_latest_signal(fb_msg_id, fb_signal)
+                        if val is not None:
+                            self._update_signal_with_status('dut_temperature', val)
+                
+                # Charger tests are handled through update_monitor_signal which already works
+            except Exception as e:
+                logger.debug(f"Error updating monitored signal {signal_key}: {e}")
+
+    @QtCore.Slot(float, float, str)
+    def _update_plot(self, dac_voltage: float, feedback_value: float, test_name: str = '') -> None:
+        """Update the plot with a new data point (DAC voltage, feedback value).
+        
+        Also updates real-time monitoring for Analog Sweep Test.
+        
+        This method is thread-safe and can be called from background threads via QMetaObject.invokeMethod.
+        
+        Args:
+            dac_voltage: DAC output voltage in millivolts (or oscilloscope value for Output Current Calibration)
+            feedback_value: IPC feedback signal value (or CAN value for Output Current Calibration)
             test_name: Optional test name for plot title
         """
         if not matplotlib_available:
@@ -1980,34 +3959,147 @@ Data Points Used: {data_points}"""
             logger.debug("Plot canvas not initialized, skipping plot update")
             return
         try:
+            # Convert empty string to None for test_name (Qt slot requires str, but we want Optional[str] internally)
+            if test_name == '':
+                test_name = None
+            
+            # Detect test type by checking current test type
+            is_output_current_calibration = False
+            is_analog_sweep = False
+            if hasattr(self, '_current_test_index') and self._current_test_index is not None:
+                if self._current_test_index < len(self._tests):
+                    current_test = self._tests[self._current_test_index]
+                    test_type = current_test.get('type', '')
+                    is_output_current_calibration = test_type == 'Output Current Calibration'
+                    is_analog_sweep = test_type == 'Analog Sweep Test'
+            
             # Add new data point
             if dac_voltage is not None and feedback_value is not None:
-                self.plot_dac_voltages.append(float(dac_voltage))
-                self.plot_feedback_values.append(float(feedback_value))
+                if is_output_current_calibration:
+                    # For Output Current Calibration: X = oscilloscope (dac_voltage param), Y = CAN (feedback_value param)
+                    # Initialize plot for Output Current Calibration if not already done
+                    if not hasattr(self, '_output_current_plot_initialized') or not self._output_current_plot_initialized:
+                        self._initialize_output_current_plot(test_name)
+                    
+                    # Store data points (oscilloscope as X, CAN as Y)
+                    if not hasattr(self, 'plot_osc_values'):
+                        self.plot_osc_values = []
+                    if not hasattr(self, 'plot_can_values'):
+                        self.plot_can_values = []
+                    
+                    self.plot_osc_values.append(float(dac_voltage))
+                    self.plot_can_values.append(float(feedback_value))
+                    
+                    logger.debug(
+                        f"Plot update (Output Current): Added point (Osc={dac_voltage}A, CAN={feedback_value}A), "
+                        f"total points: {len(self.plot_osc_values)}"
+                    )
+                    
+                    # Update plot line
+                    self.plot_line.set_data(self.plot_osc_values, self.plot_can_values)
+                elif is_analog_sweep:
+                    # For Analog Sweep Test: X = DAC voltage, Y = feedback value (scatter plot)
+                    # Initialize plot for Analog Sweep Test if not already done
+                    if not hasattr(self, '_analog_sweep_plot_initialized') or not self._analog_sweep_plot_initialized:
+                        self._initialize_analog_sweep_plot(test_name)
+                    
+                    # Ensure data arrays exist (safety check)
+                    if not hasattr(self, 'plot_dac_voltages'):
+                        self.plot_dac_voltages = []
+                    if not hasattr(self, 'plot_feedback_values'):
+                        self.plot_feedback_values = []
+                    
+                    # Store data points atomically to prevent length mismatch on errors
+                    try:
+                        dac_val = float(dac_voltage)
+                        fb_val = float(feedback_value)
+                        self.plot_dac_voltages.append(dac_val)
+                        self.plot_feedback_values.append(fb_val)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid plot data point: dac={dac_voltage}, fb={feedback_value}, error={e}")
+                        return  # Skip this point if conversion fails
+                    
+                    logger.debug(
+                        f"Plot update (Analog Sweep): Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
+                        f"total points: {len(self.plot_dac_voltages)}"
+                    )
+                    
+                    # Update plot line (scatter plot)
+                    # Note: In batched mode, this will be updated once after all points are added
+                    self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
+                    
+                    # Update real-time monitoring for Analog Sweep Test (always update, not batched)
+                    if 'current_signal' in self._monitor_labels:
+                        # Display DAC voltage in mV (no scale factor)
+                        self._update_signal_with_status('current_signal', dac_voltage)
+                    
+                    if 'feedback_signal' in self._monitor_labels:
+                        # Display feedback signal in mV (no scale factor)
+                        self._update_signal_with_status('feedback_signal', feedback_value)
+                else:
+                    # For other tests: X = DAC voltage, Y = feedback value
+                    # Store data points atomically to prevent length mismatch on errors
+                    try:
+                        dac_val = float(dac_voltage)
+                        fb_val = float(feedback_value)
+                        self.plot_dac_voltages.append(dac_val)
+                        self.plot_feedback_values.append(fb_val)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid plot data point: dac={dac_voltage}, fb={feedback_value}, error={e}")
+                        return  # Skip this point if conversion fails
+                    
+                    logger.debug(
+                        f"Plot update: Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
+                        f"total points: {len(self.plot_dac_voltages)}"
+                    )
+                    
+                    # Update plot line
+                    # Note: In batched mode, this will be updated once after all points are added
+                    self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
                 
-                logger.debug(
-                    f"Plot update: Added point (DAC={dac_voltage}mV, Feedback={feedback_value}), "
-                    f"total points: {len(self.plot_dac_voltages)}"
-                )
-                
-                # Update plot line
-                self.plot_line.set_data(self.plot_dac_voltages, self.plot_feedback_values)
-                
-                # Auto-scale axes to fit all data
+                # Auto-scale axes and redraw only if not in batch mode
+                # Batch mode will handle this once after all points are added
+                # Auto-scale axes and redraw
+                # Use draw() instead of draw_idle() to force immediate update during test execution
+                # This ensures plots update in real-time, not just after test completion
                 self.plot_axes.relim()
                 self.plot_axes.autoscale()
-                
-                # Update title if test name provided
-                if test_name and not self.plot_axes.get_title():
-                    self.plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
-                
-                # Force immediate redraw (draw_idle may not refresh fast enough)
                 self.plot_canvas.draw()
-                
-                # Also trigger draw_idle for Qt event processing
-                self.plot_canvas.draw_idle()
         except Exception as e:
             logger.error(f"Error updating plot: {e}", exc_info=True)
+    
+    def _add_regression_line_to_plot(self, slope: float, intercept: float) -> None:
+        """Add regression line to the current plot after test completion.
+        
+        Args:
+            slope: Slope of the regression line
+            intercept: Intercept of the regression line
+        """
+        if not matplotlib_available or not hasattr(self, 'plot_axes') or self.plot_axes is None:
+            return
+        
+        try:
+            # Remove existing regression line if present
+            if hasattr(self, '_analog_sweep_regression_line') and self._analog_sweep_regression_line is not None:
+                try:
+                    self._analog_sweep_regression_line.remove()
+                except Exception:
+                    pass
+            
+            # Get current data range
+            if hasattr(self, 'plot_dac_voltages') and self.plot_dac_voltages:
+                x_min = min(self.plot_dac_voltages)
+                x_max = max(self.plot_dac_voltages)
+                x_reg = [x_min, x_max]
+                y_reg = [slope * x + intercept for x in x_reg]
+                self._analog_sweep_regression_line, = self.plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                self.plot_axes.legend()
+                self.plot_figure.tight_layout()
+                # Use draw() for immediate update after regression line is added
+                self.plot_canvas.draw()
+                logger.debug(f"Added regression line: slope={slope:.4f}, intercept={intercept:.4f}")
+        except Exception as e:
+            logger.error(f"Failed to add regression line to plot: {e}", exc_info=True)
 
     def _build_test_report(self):
         """Builds the Test Report tab widget with interactive UI and export capabilities."""
@@ -2068,7 +4160,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Analog PWM Sensor', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -2172,9 +4264,15 @@ Data Points Used: {data_points}"""
                     continue
                 elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
                     continue
+                elif type_filter == 'Analog PWM Sensor' and test_type != 'Analog PWM Sensor':
+                    continue
                 elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                     continue
                 elif type_filter == 'Fan Control Test' and test_type != 'Fan Control Test':
+                    continue
+                elif type_filter == 'Charged HV Bus Test' and test_type != 'Charged HV Bus Test':
+                    continue
+                elif type_filter == 'Charger Functional Test' and test_type != 'Charger Functional Test':
                     continue
             
             test_items.append((test_name, test_config, exec_data))
@@ -2198,6 +4296,8 @@ Data Points Used: {data_points}"""
                         elif type_filter == 'Analog Static Test' and test_type != 'Analog Static Test':
                             continue
                         elif type_filter == 'Phase Current Test' and test_type != 'Phase Current Test':
+                            continue
+                        elif type_filter == 'Analog PWM Sensor' and test_type != 'Analog PWM Sensor':
                             continue
                         elif type_filter == 'Temperature Validation Test' and test_type != 'Temperature Validation Test':
                             continue
@@ -2338,10 +4438,32 @@ Data Points Used: {data_points}"""
                             plot_canvas = FigureCanvasQTAgg(plot_figure)
                             plot_axes = plot_figure.add_subplot(111)
                             
-                            plot_axes.plot(dac_voltages, feedback_values, 'bo-', markersize=4, linewidth=1)
-                            plot_axes.set_xlabel('DAC Output Voltage (mV)')
-                            plot_axes.set_ylabel('Feedback Signal Value')
-                            plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
+                            # Check if this is Analog Sweep Test
+                            is_analog_sweep = test_config and test_config.get('type') == 'Analog Sweep Test'
+                            if is_analog_sweep:
+                                # Scatter plot for Analog Sweep Test
+                                plot_axes.plot(dac_voltages, feedback_values, 'bo', markersize=4, label='Data Points')
+                                # Add ideal line (y=x)
+                                plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                # Add regression line if available
+                                slope = plot_data.get('slope')
+                                intercept = plot_data.get('intercept')
+                                if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                                    x_min = min(dac_voltages)
+                                    x_max = max(dac_voltages)
+                                    x_reg = [x_min, x_max]
+                                    y_reg = [slope * x + intercept for x in x_reg]
+                                    plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                plot_axes.set_xlabel('DAC Voltage')
+                                plot_axes.set_ylabel('DUT Calculated Voltage')
+                                plot_axes.set_title(f'DUT Calculated Voltage vs DAC Voltage Plot: {test_name}')
+                                plot_axes.legend()
+                            else:
+                                # Other analog tests (backward compatibility)
+                                plot_axes.plot(dac_voltages, feedback_values, 'bo-', markersize=4, linewidth=1)
+                                plot_axes.set_xlabel('DAC Output Voltage (mV)')
+                                plot_axes.set_ylabel('Feedback Signal Value')
+                                plot_axes.set_title(f'Feedback vs DAC Output: {test_name}')
                             plot_axes.grid(True, alpha=0.3)
                             
                             plot_figure.tight_layout()
@@ -2382,6 +4504,108 @@ Data Points Used: {data_points}"""
                             gain_item.addChild(QtWidgets.QTreeWidgetItem(['Avg Gain Correction W', f"{avg_gain_correction_w:.6f}", '', '']))
                         
                         test_item.addChild(gain_item)
+                    
+                    # Add data table - always show table for Phase Current Test if plot_data exists
+                    try:
+                        if not isinstance(plot_data, dict):
+                            logger.warning(f"plot_data is not a dict for Phase Current Test in report: {type(plot_data)}")
+                            plot_data = {}
+                        
+                        plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                        plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                        plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                        plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                        plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                        plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                        
+                        # Always create table for Phase Current Test, even if data is empty
+                        # This ensures the table structure is visible in the report
+                        logger.debug(f"Creating Test Data Table for Phase Current Test: iq_refs={len(plot_iq_refs)}, id_refs={len(plot_id_refs)}, can_v={len(plot_can_v)}, osc_v={len(plot_osc_v)}, can_w={len(plot_can_w)}, osc_w={len(plot_osc_w)}")
+                        
+                        table_item = QtWidgets.QTreeWidgetItem(['Test Data Table', '', '', ''])
+                        table_item.setExpanded(False)
+                        
+                        # Create table widget
+                        table_widget = QtWidgets.QTableWidget()
+                        table_widget.setColumnCount(6)
+                        table_widget.setHorizontalHeaderLabels([
+                            'Iq_ref (A)',
+                            'Id_ref (A)',
+                            'DUT Phase V Current (A)',
+                            'Measured Phase V Current (A)',
+                            'DUT Phase W Current (A)',
+                            'Measured Phase W Current (A)'
+                        ])
+                        
+                        # Determine number of rows (at least 1 to show headers even if no data)
+                        max_rows = max(
+                            len(plot_iq_refs) if plot_iq_refs else 0,
+                            len(plot_id_refs) if plot_id_refs else 0,
+                            len(plot_can_v) if plot_can_v else 0,
+                            len(plot_osc_v) if plot_osc_v else 0,
+                            len(plot_can_w) if plot_can_w else 0,
+                            len(plot_osc_w) if plot_osc_w else 0,
+                            1  # At least 1 row to show table structure
+                        )
+                        
+                        table_widget.setRowCount(max_rows)
+                        
+                        # Populate table
+                        for i in range(max_rows):
+                            # Iq_ref
+                            iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                            if iq_val is not None:
+                                table_widget.setItem(i, 0, QtWidgets.QTableWidgetItem(f'{iq_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 0, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Id_ref
+                            id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                            if id_val is not None:
+                                table_widget.setItem(i, 1, QtWidgets.QTableWidgetItem(f'{id_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 1, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase V Current
+                            can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                            if can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val):
+                                table_widget.setItem(i, 2, QtWidgets.QTableWidgetItem(f'{can_v_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 2, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase V Current
+                            osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                            if osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val):
+                                table_widget.setItem(i, 3, QtWidgets.QTableWidgetItem(f'{osc_v_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 3, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # DUT Phase W Current
+                            can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                            if can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val):
+                                table_widget.setItem(i, 4, QtWidgets.QTableWidgetItem(f'{can_w_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 4, QtWidgets.QTableWidgetItem('N/A'))
+                            
+                            # Measured Phase W Current
+                            osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                            if osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val):
+                                table_widget.setItem(i, 5, QtWidgets.QTableWidgetItem(f'{osc_w_val:.4f}'))
+                            else:
+                                table_widget.setItem(i, 5, QtWidgets.QTableWidgetItem('N/A'))
+                        
+                        # Resize columns to fit content
+                        table_widget.resizeColumnsToContents()
+                        table_widget.setMaximumHeight(300)
+                        table_widget.setAlternatingRowColors(True)
+                        
+                        # Set widget as item widget
+                        self.report_tree.setItemWidget(table_item, 1, table_widget)
+                        
+                        test_item.addChild(table_item)
+                    except Exception as e:
+                        logger.error(f"Error creating data table in report tree: {e}", exc_info=True)
+                        # Don't add table if there's an error, but continue with the rest of the report
                     
                     # Add plot widget if plot data is available
                     if matplotlib_available:
@@ -2467,6 +4691,233 @@ Data Points Used: {data_points}"""
                                 plot_item.setText(1, f"Plot error: {e}")
                         
                         test_item.addChild(plot_item)
+            
+            # For Output Current Calibration tests, add calibration results and plot sections
+            is_output_current_calibration = (test_type == 'Output Current Calibration' or 
+                                           (test_config and test_config.get('type') == 'Output Current Calibration'))
+            if is_output_current_calibration and test_config:
+                exec_data_full = self._test_execution_data.get(test_name, exec_data)
+                plot_data = exec_data_full.get('plot_data')
+                
+                if plot_data:
+                    # Check if we have dual sweep data (new format) or single plot data (old format)
+                    first_sweep_data = plot_data.get('first_sweep')
+                    second_sweep_data = plot_data.get('second_sweep')
+                    
+                    if first_sweep_data and second_sweep_data:
+                        # New format: Dual sweep results
+                        calib_item = QtWidgets.QTreeWidgetItem(['Calibration Results', '', '', ''])
+                        calib_item.setExpanded(False)
+                        
+                        # First sweep results
+                        first_slope = first_sweep_data.get('slope')
+                        first_intercept = first_sweep_data.get('intercept')
+                        first_gain_error = first_sweep_data.get('gain_error')
+                        first_adjustment = first_sweep_data.get('adjustment_factor')
+                        first_trim = first_sweep_data.get('trim_value')
+                        if first_slope is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep (Trim Value)', f"{first_trim}%", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Slope', f"{first_slope:.6f} (ideal: 1.0)", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Intercept', f"{first_intercept:.6f} A", '', '']))
+                        if first_gain_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Gain Error (%)', f"{first_gain_error:.4f}%", '', '']))
+                        if first_adjustment is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['First Sweep Adjustment Factor', f"{first_adjustment:.6f}", '', '']))
+                        
+                        # Calculated trim value
+                        calculated_trim = plot_data.get('calculated_trim_value')
+                        if calculated_trim is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Calculated Trim Value (%)', f"{calculated_trim:.4f}%", '', '']))
+                        
+                        # Second sweep results
+                        second_slope = second_sweep_data.get('slope')
+                        second_intercept = second_sweep_data.get('intercept')
+                        second_gain_error = second_sweep_data.get('gain_error')
+                        second_trim = second_sweep_data.get('trim_value')
+                        tolerance_percent = plot_data.get('tolerance_percent')
+                        if second_slope is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep (Trim Value)', f"{second_trim:.4f}%", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Slope', f"{second_slope:.6f} (ideal: 1.0)", '', '']))
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Intercept', f"{second_intercept:.6f} A", '', '']))
+                        if second_gain_error is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Second Sweep Gain Error (%)', f"{second_gain_error:.4f}%", '', '']))
+                        if tolerance_percent is not None:
+                            calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance (%)', f"{tolerance_percent:.4f}%", '', '']))
+                            if second_gain_error is not None:
+                                passed = abs(second_gain_error) <= tolerance_percent
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Result', 'PASS' if passed else 'FAIL', '', '']))
+                        
+                        test_item.addChild(calib_item)
+                        
+                        # Add dual plot widgets
+                        if matplotlib_available:
+                            # Helper function to create a plot
+                            def create_plot_for_report(plot_data_dict, plot_title):
+                                plot_figure = Figure(figsize=(8, 6))
+                                plot_axes = plot_figure.add_subplot(111)
+                                
+                                plot_osc_averages = plot_data_dict.get('osc_averages', [])
+                                plot_can_averages = plot_data_dict.get('can_averages', [])
+                                slope = plot_data_dict.get('slope')
+                                intercept = plot_data_dict.get('intercept')
+                                
+                                if plot_osc_averages and plot_can_averages:
+                                    # Filter out NaN values
+                                    osc_clean = []
+                                    can_clean = []
+                                    min_len = min(len(plot_osc_averages), len(plot_can_averages))
+                                    for i in range(min_len):
+                                        osc_val = plot_osc_averages[i]
+                                        can_val = plot_can_averages[i]
+                                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                            not (isinstance(can_val, float) and can_val != can_val)):
+                                            osc_clean.append(osc_val)
+                                            can_clean.append(can_val)
+                                    
+                                    if osc_clean and can_clean:
+                                        plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+                                        plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                        
+                                        # Add regression line if slope and intercept are available
+                                        if slope is not None and intercept is not None and isinstance(slope, (int, float)) and isinstance(intercept, (int, float)):
+                                            x_min = min(osc_clean)
+                                            x_max = max(osc_clean)
+                                            x_reg = [x_min, x_max]
+                                            y_reg = [slope * x + intercept for x in x_reg]
+                                            plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                        
+                                        plot_axes.set_xlabel('Measured Output Current (A)')
+                                        plot_axes.set_ylabel('DUT Output Current (A)')
+                                        plot_axes.set_title(plot_title)
+                                        plot_axes.grid(True, alpha=0.3)
+                                        plot_axes.legend()
+                                        plot_axes.relim()
+                                        plot_axes.autoscale()
+                                
+                                plot_figure.tight_layout()
+                                return plot_figure
+                            
+                            # First sweep plot
+                            first_plot_item = QtWidgets.QTreeWidgetItem([f'Plot: {first_sweep_data.get("plot_label", "First Sweep")}', '', '', ''])
+                            first_plot_item.setExpanded(False)
+                            try:
+                                plot_figure = create_plot_for_report(first_sweep_data, first_sweep_data.get("plot_label", "First Sweep"))
+                                plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                plot_widget = QtWidgets.QWidget()
+                                plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                plot_layout.setContentsMargins(0, 0, 0, 0)
+                                plot_layout.addWidget(plot_canvas)
+                                self.report_tree.setItemWidget(first_plot_item, 1, plot_widget)
+                            except Exception as e:
+                                logger.error(f"Error creating first sweep plot in report: {e}", exc_info=True)
+                                first_plot_item.setText(1, f"Plot error: {e}")
+                            test_item.addChild(first_plot_item)
+                            
+                            # Second sweep plot
+                            second_plot_item = QtWidgets.QTreeWidgetItem([f'Plot: {second_sweep_data.get("plot_label", "Second Sweep")}', '', '', ''])
+                            second_plot_item.setExpanded(False)
+                            try:
+                                plot_figure = create_plot_for_report(second_sweep_data, second_sweep_data.get("plot_label", "Second Sweep"))
+                                plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                plot_widget = QtWidgets.QWidget()
+                                plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                plot_layout.setContentsMargins(0, 0, 0, 0)
+                                plot_layout.addWidget(plot_canvas)
+                                self.report_tree.setItemWidget(second_plot_item, 1, plot_widget)
+                            except Exception as e:
+                                logger.error(f"Error creating second sweep plot in report: {e}", exc_info=True)
+                                second_plot_item.setText(1, f"Plot error: {e}")
+                            test_item.addChild(second_plot_item)
+                    else:
+                        # Old format: Single plot (backward compatibility)
+                        slope = plot_data.get('slope')
+                        intercept = plot_data.get('intercept')
+                        gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
+                        adjustment_factor = plot_data.get('adjustment_factor')
+                        tolerance_percent = plot_data.get('tolerance_percent')
+                        
+                        if (slope is not None or intercept is not None or gain_error is not None or 
+                            adjustment_factor is not None or tolerance_percent is not None):
+                            calib_item = QtWidgets.QTreeWidgetItem(['Calibration Results', '', '', ''])
+                            calib_item.setExpanded(False)
+                            
+                            if slope is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Slope', f"{slope:.6f} (ideal: 1.0)", '', '']))
+                            if intercept is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Intercept (A)', f"{intercept:.6f}", '', '']))
+                            if gain_error is not None:
+                                if plot_data.get('avg_gain_error') is not None:
+                                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Average Gain Error (%)', f"{gain_error:.4f}%", '', '']))
+                                else:
+                                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Gain Error (%)', f"{gain_error:+.4f}%", '', '']))
+                            if adjustment_factor is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Adjustment Factor', f"{adjustment_factor:.6f}", '', '']))
+                            if tolerance_percent is not None:
+                                calib_item.addChild(QtWidgets.QTreeWidgetItem(['Tolerance (%)', f"{tolerance_percent:.4f}%", '', '']))
+                                if gain_error is not None:
+                                    passed = abs(gain_error) <= tolerance_percent
+                                    calib_item.addChild(QtWidgets.QTreeWidgetItem(['Result', 'PASS' if passed else 'FAIL', '', '']))
+                            
+                            test_item.addChild(calib_item)
+                        
+                        # Add plot widget if plot data is available
+                        if matplotlib_available:
+                            plot_item = QtWidgets.QTreeWidgetItem(['Plot: DUT vs Oscilloscope', '', '', ''])
+                            plot_item.setExpanded(False)
+                            
+                            osc_averages = plot_data.get('osc_averages', [])
+                            can_averages = plot_data.get('can_averages', [])
+                            
+                            if osc_averages and can_averages:
+                                try:
+                                    plot_widget = QtWidgets.QWidget()
+                                    plot_layout = QtWidgets.QVBoxLayout(plot_widget)
+                                    plot_layout.setContentsMargins(0, 0, 0, 0)
+                                    
+                                    plot_figure = Figure(figsize=(8, 6))
+                                    plot_canvas = FigureCanvasQTAgg(plot_figure)
+                                    plot_axes = plot_figure.add_subplot(111)
+                                    
+                                    osc_clean = []
+                                    can_clean = []
+                                    min_len = min(len(osc_averages), len(can_averages))
+                                    for i in range(min_len):
+                                        osc_val = osc_averages[i]
+                                        can_val = can_averages[i]
+                                        if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                                            not (isinstance(osc_val, float) and osc_val != osc_val) and
+                                            not (isinstance(can_val, float) and can_val != can_val)):
+                                            osc_clean.append(osc_val)
+                                            can_clean.append(can_val)
+                                    
+                                    if osc_clean and can_clean:
+                                        plot_axes.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+                                        plot_axes.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+                                        
+                                        if slope is not None and intercept is not None:
+                                            x_min = min(osc_clean)
+                                            x_max = max(osc_clean)
+                                            x_reg = [x_min, x_max]
+                                            y_reg = [slope * x + intercept for x in x_reg]
+                                            plot_axes.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+                                        
+                                        plot_axes.set_xlabel('Oscilloscope Measurement (A)')
+                                        plot_axes.set_ylabel('DUT Measurement (A)')
+                                        plot_axes.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+                                        plot_axes.grid(True, alpha=0.3)
+                                        plot_axes.legend()
+                                        plot_axes.relim()
+                                        plot_axes.autoscale()
+                                    
+                                    plot_figure.tight_layout()
+                                    plot_layout.addWidget(plot_canvas)
+                                    self.report_tree.setItemWidget(plot_item, 1, plot_widget)
+                                except Exception as e:
+                                    logger.error(f"Error creating Output Current Calibration plot in report: {e}", exc_info=True)
+                                    plot_item.setText(1, f"Plot error: {e}")
+                            
+                            test_item.addChild(plot_item)
             
             self.report_tree.addTopLevelItem(test_item)
         
@@ -2643,6 +5094,108 @@ Data Points Used: {data_points}"""
             Base64-encoded image string if successful, None otherwise
         """
         image_bytes = self._generate_phase_current_plot_image(test_name, osc_v, can_v, osc_w, can_w, 'png')
+        if image_bytes:
+            return base64.b64encode(image_bytes).decode('utf-8')
+        return None
+    
+    def _generate_output_current_calibration_plot_image(self, test_name: str, osc_averages: list, 
+                                                        can_averages: list, slope: Optional[float] = None,
+                                                        intercept: Optional[float] = None,
+                                                        output_format: str = 'png') -> Optional[bytes]:
+        """Generate an Output Current Calibration plot image for export (DUT vs Oscilloscope).
+        
+        Args:
+            test_name: Name of the test
+            osc_averages: List of oscilloscope average current values
+            can_averages: List of CAN average current values
+            slope: Optional regression slope
+            intercept: Optional regression intercept
+            output_format: Image format ('png', 'svg', etc.)
+            
+        Returns:
+            Image bytes if successful, None otherwise
+        """
+        if not matplotlib_available:
+            return None
+        
+        # Filter out NaN values
+        osc_clean = []
+        can_clean = []
+        if osc_averages and can_averages:
+            min_len = min(len(osc_averages), len(can_averages))
+            for i in range(min_len):
+                osc_val = osc_averages[i]
+                can_val = can_averages[i]
+                if (isinstance(osc_val, (int, float)) and isinstance(can_val, (int, float)) and
+                    not (isinstance(osc_val, float) and osc_val != osc_val) and
+                    not (isinstance(can_val, float) and can_val != can_val)):
+                    osc_clean.append(osc_val)
+                    can_clean.append(can_val)
+        
+        if not (osc_clean and can_clean):
+            return None
+        
+        try:
+            import io
+            from matplotlib.figure import Figure
+            
+            fig = Figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            
+            # Plot data points
+            ax.plot(osc_clean, can_clean, 'bo', markersize=6, label='Data Points')
+            
+            # Add diagonal reference line (y=x) for ideal line
+            ax.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            
+            # Add regression line if available
+            if slope is not None and intercept is not None:
+                x_min = min(osc_clean)
+                x_max = max(osc_clean)
+                x_reg = [x_min, x_max]
+                y_reg = [slope * x + intercept for x in x_reg]
+                ax.plot(x_reg, y_reg, 'r-', linewidth=2, alpha=0.7, label=f'Regression (slope={slope:.4f})')
+            
+            ax.set_xlabel('Oscilloscope Measurement (A)')
+            ax.set_ylabel('DUT Measurement (A)')
+            ax.set_title(f'Output Current Calibration: DUT vs Oscilloscope{(": " + test_name) if test_name else ""}')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            
+            # Auto-scale axes to fit all data
+            ax.relim()
+            ax.autoscale()
+            
+            fig.tight_layout()
+            
+            # Save to bytes buffer
+            buf = io.BytesIO()
+            fig.savefig(buf, format=output_format, dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            image_bytes = buf.read()
+            buf.close()
+            
+            return image_bytes
+        except Exception as e:
+            logger.error(f"Error generating Output Current Calibration plot image: {e}", exc_info=True)
+            return None
+    
+    def _generate_output_current_calibration_plot_base64(self, test_name: str, osc_averages: list,
+                                                          can_averages: list, slope: Optional[float] = None,
+                                                          intercept: Optional[float] = None) -> Optional[str]:
+        """Generate a base64-encoded Output Current Calibration plot image for HTML embedding.
+        
+        Args:
+            test_name: Name of the test
+            osc_averages: List of oscilloscope average current values
+            can_averages: List of CAN average current values
+            slope: Optional regression slope
+            intercept: Optional regression intercept
+            
+        Returns:
+            Base64-encoded image string if successful, None otherwise
+        """
+        image_bytes = self._generate_output_current_calibration_plot_image(test_name, osc_averages, can_averages, slope, intercept, 'png')
         if image_bytes:
             return base64.b64encode(image_bytes).decode('utf-8')
         return None
@@ -2999,6 +5552,65 @@ Data Points Used: {data_points}"""
                             
                             html_parts.append('</table>')
                         
+                        # Test data table
+                        try:
+                            if not isinstance(plot_data, dict):
+                                logger.warning(f"plot_data is not a dict for Phase Current Test in HTML export: {type(plot_data)}")
+                                plot_data = {}
+                            
+                            plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                            plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                            plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                            plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                            plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                            plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                            
+                            if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plot_osc_w:
+                                html_parts.append('<h3>Test Data Table</h3>')
+                                html_parts.append('<table class="calibration-table">')
+                                html_parts.append('<tr><th>Iq_ref (A)</th><th>Id_ref (A)</th><th>DUT Phase V Current (A)</th><th>Measured Phase V Current (A)</th><th>DUT Phase W Current (A)</th><th>Measured Phase W Current (A)</th></tr>')
+                                
+                                max_rows = max(
+                                    len(plot_iq_refs) if plot_iq_refs else 0,
+                                    len(plot_id_refs) if plot_id_refs else 0,
+                                    len(plot_can_v) if plot_can_v else 0,
+                                    len(plot_osc_v) if plot_osc_v else 0,
+                                    len(plot_can_w) if plot_can_w else 0,
+                                    len(plot_osc_w) if plot_osc_w else 0
+                                )
+                                
+                                for i in range(max_rows):
+                                    # Iq_ref
+                                    iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                                    iq_str = f'{iq_val:.4f}' if iq_val is not None else 'N/A'
+                                    
+                                    # Id_ref
+                                    id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                                    id_str = f'{id_val:.4f}' if id_val is not None else 'N/A'
+                                    
+                                    # DUT Phase V Current
+                                    can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                                    can_v_str = f'{can_v_val:.4f}' if (can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val)) else 'N/A'
+                                    
+                                    # Measured Phase V Current
+                                    osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                                    osc_v_str = f'{osc_v_val:.4f}' if (osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val)) else 'N/A'
+                                    
+                                    # DUT Phase W Current
+                                    can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                                    can_w_str = f'{can_w_val:.4f}' if (can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val)) else 'N/A'
+                                    
+                                    # Measured Phase W Current
+                                    osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                                    osc_w_str = f'{osc_w_val:.4f}' if (osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val)) else 'N/A'
+                                    
+                                    html_parts.append(f'<tr><td>{iq_str}</td><td>{id_str}</td><td>{can_v_str}</td><td>{osc_v_str}</td><td>{can_w_str}</td><td>{osc_w_str}</td></tr>')
+                                
+                                html_parts.append('</table>')
+                        except Exception as e:
+                            logger.error(f"Error creating data table in HTML export: {e}", exc_info=True)
+                            html_parts.append(f'<p><i>Error creating data table: {escape(str(e))}</i></p>')
+                        
                         # Plot image (CAN vs Oscilloscope)
                         osc_ch1 = plot_data.get('osc_ch1', [])
                         osc_ch2 = plot_data.get('osc_ch2', [])
@@ -3010,6 +5622,136 @@ Data Points Used: {data_points}"""
                             if plot_base64:
                                 html_parts.append('<h3>Plot: Average Phase Current (CAN vs Oscilloscope)</h3>')
                                 html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Phase Current Plot for {test_name}" class="plot-image">')
+                
+                # Output Current Calibration test results
+                elif test_type == 'Output Current Calibration' or (test_config and test_config.get('type') == 'Output Current Calibration'):
+                    plot_data = exec_data.get('plot_data')
+                    if plot_data:
+                        # Check for dual sweep data (new format) or single plot data (old format)
+                        first_sweep_data = plot_data.get('first_sweep')
+                        second_sweep_data = plot_data.get('second_sweep')
+                        
+                        if first_sweep_data and second_sweep_data:
+                            # New format: Dual sweep results
+                            html_parts.append('<h3>Calibration Results</h3>')
+                            html_parts.append('<table class="calibration-table">')
+                            html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
+                            
+                            # First sweep results
+                            first_slope = first_sweep_data.get('slope')
+                            first_intercept = first_sweep_data.get('intercept')
+                            first_gain_error = first_sweep_data.get('gain_error')
+                            first_adjustment = first_sweep_data.get('adjustment_factor')
+                            first_trim = first_sweep_data.get('trim_value')
+                            
+                            if first_trim is not None:
+                                html_parts.append(f'<tr><td>First Sweep (Trim Value)</td><td>{first_trim}%</td></tr>')
+                            if first_slope is not None:
+                                html_parts.append(f'<tr><td>First Sweep Slope</td><td>{first_slope:.6f} (ideal: 1.0)</td></tr>')
+                            if first_intercept is not None:
+                                html_parts.append(f'<tr><td>First Sweep Intercept</td><td>{first_intercept:.6f} A</td></tr>')
+                            if first_gain_error is not None:
+                                html_parts.append(f'<tr><td>First Sweep Gain Error (%)</td><td>{first_gain_error:.4f}%</td></tr>')
+                            if first_adjustment is not None:
+                                html_parts.append(f'<tr><td>First Sweep Adjustment Factor</td><td>{first_adjustment:.6f}</td></tr>')
+                            
+                            # Calculated trim value
+                            calculated_trim = plot_data.get('calculated_trim_value')
+                            if calculated_trim is not None:
+                                html_parts.append(f'<tr><td>Calculated Trim Value (%)</td><td>{calculated_trim:.4f}%</td></tr>')
+                            
+                            # Second sweep results
+                            second_slope = second_sweep_data.get('slope')
+                            second_intercept = second_sweep_data.get('intercept')
+                            second_gain_error = second_sweep_data.get('gain_error')
+                            second_trim = second_sweep_data.get('trim_value')
+                            tolerance_percent = plot_data.get('tolerance_percent')
+                            
+                            if second_trim is not None:
+                                html_parts.append(f'<tr><td>Second Sweep (Trim Value)</td><td>{second_trim:.4f}%</td></tr>')
+                            if second_slope is not None:
+                                html_parts.append(f'<tr><td>Second Sweep Slope</td><td>{second_slope:.6f} (ideal: 1.0)</td></tr>')
+                            if second_intercept is not None:
+                                html_parts.append(f'<tr><td>Second Sweep Intercept</td><td>{second_intercept:.6f} A</td></tr>')
+                            if second_gain_error is not None:
+                                html_parts.append(f'<tr><td>Second Sweep Gain Error (%)</td><td>{second_gain_error:.4f}%</td></tr>')
+                            if tolerance_percent is not None:
+                                html_parts.append(f'<tr><td>Tolerance (%)</td><td>{tolerance_percent:.4f}%</td></tr>')
+                                if second_gain_error is not None:
+                                    passed = abs(second_gain_error) <= tolerance_percent
+                                    result_class = 'status-pass' if passed else 'status-fail'
+                                    html_parts.append(f'<tr><td>Result</td><td class="{result_class}">{"PASS" if passed else "FAIL"}</td></tr>')
+                            
+                            html_parts.append('</table>')
+                            
+                            # First sweep plot
+                            first_osc_averages = first_sweep_data.get('osc_averages', [])
+                            first_can_averages = first_sweep_data.get('can_averages', [])
+                            if first_osc_averages and first_can_averages:
+                                first_plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                    test_name, first_osc_averages, first_can_averages, first_slope, first_intercept)
+                                if first_plot_base64:
+                                    first_plot_label = first_sweep_data.get('plot_label', 'First Sweep')
+                                    html_parts.append(f'<h3>Plot: {first_plot_label}</h3>')
+                                    html_parts.append(f'<img src="data:image/png;base64,{first_plot_base64}" alt="{first_plot_label} for {test_name}" class="plot-image">')
+                            
+                            # Second sweep plot
+                            second_osc_averages = second_sweep_data.get('osc_averages', [])
+                            second_can_averages = second_sweep_data.get('can_averages', [])
+                            if second_osc_averages and second_can_averages:
+                                second_plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                    test_name, second_osc_averages, second_can_averages, second_slope, second_intercept)
+                                if second_plot_base64:
+                                    second_plot_label = second_sweep_data.get('plot_label', 'Second Sweep')
+                                    html_parts.append(f'<h3>Plot: {second_plot_label}</h3>')
+                                    html_parts.append(f'<img src="data:image/png;base64,{second_plot_base64}" alt="{second_plot_label} for {test_name}" class="plot-image">')
+                        else:
+                            # Old format: Single plot (backward compatibility)
+                            # Calibration results data
+                            # Support both old format (gain_error) and new format (avg_gain_error)
+                            slope = plot_data.get('slope')
+                            intercept = plot_data.get('intercept')
+                            gain_error = plot_data.get('gain_error') or plot_data.get('avg_gain_error')
+                            adjustment_factor = plot_data.get('adjustment_factor')
+                            tolerance_percent = plot_data.get('tolerance_percent')
+                            
+                            if (slope is not None or intercept is not None or gain_error is not None or 
+                                adjustment_factor is not None or tolerance_percent is not None):
+                                html_parts.append('<h3>Calibration Results</h3>')
+                                html_parts.append('<table class="calibration-table">')
+                                html_parts.append('<tr><th>Parameter</th><th>Value</th></tr>')
+                                
+                                if slope is not None:
+                                    html_parts.append(f'<tr><td>Slope</td><td>{slope:.6f} (ideal: 1.0)</td></tr>')
+                                if intercept is not None:
+                                    html_parts.append(f'<tr><td>Intercept (A)</td><td>{intercept:.6f}</td></tr>')
+                                if gain_error is not None:
+                                    # Use appropriate label based on format
+                                    if plot_data.get('avg_gain_error') is not None:
+                                        html_parts.append(f'<tr><td>Average Gain Error (%)</td><td>{gain_error:.4f}%</td></tr>')
+                                    else:
+                                        html_parts.append(f'<tr><td>Gain Error (%)</td><td>{gain_error:+.4f}%</td></tr>')
+                                if adjustment_factor is not None:
+                                    html_parts.append(f'<tr><td>Adjustment Factor</td><td>{adjustment_factor:.6f}</td></tr>')
+                                if tolerance_percent is not None:
+                                    html_parts.append(f'<tr><td>Tolerance (%)</td><td>{tolerance_percent:.4f}%</td></tr>')
+                                    if gain_error is not None:
+                                        passed = abs(gain_error) <= tolerance_percent
+                                        result_class = 'status-pass' if passed else 'status-fail'
+                                        html_parts.append(f'<tr><td>Result</td><td class="{result_class}">{"PASS" if passed else "FAIL"}</td></tr>')
+                                
+                                html_parts.append('</table>')
+                            
+                            # Plot image (DUT vs Oscilloscope)
+                            osc_averages = plot_data.get('osc_averages', [])
+                            can_averages = plot_data.get('can_averages', [])
+                            
+                            if osc_averages and can_averages:
+                                plot_base64 = self._generate_output_current_calibration_plot_base64(
+                                    test_name, osc_averages, can_averages, slope, intercept)
+                                if plot_base64:
+                                    html_parts.append('<h3>Plot: Output Current Calibration (DUT vs Oscilloscope)</h3>')
+                                    html_parts.append(f'<img src="data:image/png;base64,{plot_base64}" alt="Output Current Calibration Plot for {test_name}" class="plot-image">')
                 
                 html_parts.append('</div>')
             
@@ -3035,7 +5777,7 @@ Data Points Used: {data_points}"""
             from reportlab.lib.pagesizes import letter, A4
             from reportlab.lib import colors
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, KeepTogether
             from reportlab.lib.units import inch
             reportlab_available = True
         except ImportError:
@@ -3063,9 +5805,37 @@ Data Points Used: {data_points}"""
         try:
             if reportlab_available:
                 # Use reportlab for professional PDF generation
-                doc = SimpleDocTemplate(fname, pagesize=letter)
+                doc = SimpleDocTemplate(
+                    fname,
+                    pagesize=letter,
+                    leftMargin=0.75*inch,
+                    rightMargin=0.75*inch,
+                    topMargin=0.75*inch,
+                    bottomMargin=0.75*inch,
+                )
                 story = []
                 styles = getSampleStyleSheet()
+                body_style = ParagraphStyle(
+                    'Body',
+                    parent=styles['Normal'],
+                    fontSize=10,
+                    leading=13,
+                )
+                value_style = ParagraphStyle(
+                    'Value',
+                    parent=body_style,
+                    spaceAfter=4,
+                )
+                # Track temporary files for cleanup after PDF is built
+                temp_files = []
+                
+                def make_paragraph(text):
+                    if text is None:
+                        text = 'N/A'
+                    elif not isinstance(text, str):
+                        text = str(text)
+                    text = text.replace('\n', '<br/>')
+                    return Paragraph(text, value_style)
                 
                 # Extract DUT UID from execution data using helper method
                 dut_uid = self._get_dut_uid_from_execution_data()
@@ -3125,7 +5895,11 @@ Data Points Used: {data_points}"""
                     ['Total Execution Time', f'{total_time:.2f}s']
                 ])
                 
-                summary_table = Table(summary_data)
+                summary_table = Table(
+                    summary_data,
+                    colWidths=[2.6*inch, 3.6*inch],
+                    repeatRows=1,
+                )
                 summary_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -3158,18 +5932,22 @@ Data Points Used: {data_points}"""
                             break
                     
                     story.append(Paragraph(f'<b>{test_name}</b>', styles['Heading2']))
-                    story.append(Spacer(1, 0.1*inch))
+                    story.append(Spacer(1, 0.05*inch))
                     
                     test_details = [
                         ['Field', 'Value'],
-                        ['Type', test_type],
-                        ['Status', status],
-                        ['Execution Time', exec_time],
-                        ['Parameters', params],
-                        ['Notes', notes.replace('\n', ' ')]
+                        ['Type', make_paragraph(test_type)],
+                        ['Status', make_paragraph(status)],
+                        ['Execution Time', make_paragraph(exec_time)],
+                        ['Parameters', make_paragraph(params)],
+                        ['Notes', make_paragraph(notes)],
                     ]
                     
-                    test_table = Table(test_details)
+                    test_table = Table(
+                        test_details,
+                        colWidths=[1.8*inch, 4.4*inch],
+                        repeatRows=1,
+                    )
                     test_table.setStyle(TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -3178,14 +5956,17 @@ Data Points Used: {data_points}"""
                         ('FONTSIZE', (0, 0), (-1, 0), 10),
                         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                         ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
                         ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                     ]))
                     
                     story.append(test_table)
+                    story.append(Spacer(1, 0.15*inch))
                     
-                    # Calibration for analog tests
-                    if test_type == 'Analog':
+                    # Calibration for analog tests (check if test type contains "Analog")
+                    is_analog_test = 'Analog' in test_type or (test_config and 'Analog' in test_config.get('type', ''))
+                    if is_analog_test:
                         calibration = exec_data.get('calibration')
                         if calibration:
                             story.append(Spacer(1, 0.1*inch))
@@ -3223,7 +6004,11 @@ Data Points Used: {data_points}"""
                                     adjustment_factor = expected_gain / gain
                                     calib_data.append(['Gain Adjustment Factor', f'{adjustment_factor:.6f}'])
                             
-                            calib_table = Table(calib_data)
+                            calib_table = Table(
+                                calib_data,
+                                colWidths=[2.3*inch, 3.9*inch],
+                                repeatRows=1,
+                            )
                             calib_table.setStyle(TableStyle([
                                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -3232,38 +6017,50 @@ Data Points Used: {data_points}"""
                                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                                 ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
                                 ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                             ]))
                             
                             story.append(calib_table)
                         
-                        # Plot image
+                        # Plot image - generate plot even if calibration data is missing
                         plot_data = exec_data.get('plot_data')
                         if plot_data:
                             dac_voltages = plot_data.get('dac_voltages', [])
                             feedback_values = plot_data.get('feedback_values', [])
                             
                             if dac_voltages and feedback_values:
-                                # Save plot to temporary file
-                                import tempfile
-                                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
-                                    tmp_path = tmp_file.name
-                                
-                                plot_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
-                                if plot_bytes:
-                                    with open(tmp_path, 'wb') as f:
-                                        f.write(plot_bytes)
+                                try:
+                                    # Save plot to temporary file
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
                                     
-                                    story.append(Spacer(1, 0.1*inch))
-                                    story.append(Paragraph('<b>Plot</b>', styles['Heading3']))
-                                    img = Image(tmp_path, width=5*inch, height=3*inch)
-                                    story.append(img)
-                                    
-                                    # Clean up temp file
-                                    try:
-                                        os.unlink(tmp_path)
-                                    except Exception:
-                                        pass
+                                    plot_bytes = self._generate_test_plot_image(test_name, dac_voltages, feedback_values, 'png')
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        # Use KeepTogether to ensure plot title and image stay on same page
+                                        plot_block = [
+                                            Spacer(1, 0.1*inch),
+                                            Paragraph('<b>Plot: Feedback vs DAC Output</b>', styles['Heading3']),
+                                            Image(tmp_path, width=5*inch, height=3*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                        logger.debug(f"Added plot image to PDF for {test_name}")
+                                    else:
+                                        logger.warning(f"Failed to generate plot image for {test_name} - plot_bytes is None")
+                                except Exception as plot_error:
+                                    logger.error(f"Error generating plot for {test_name} in PDF: {plot_error}", exc_info=True)
+                                    # Continue without plot rather than failing entire PDF generation
+                            else:
+                                logger.debug(f"No plot data (dac_voltages or feedback_values) for {test_name} in PDF export")
+                        else:
+                            logger.debug(f"No plot_data found for {test_name} in PDF export")
                     
                     # Phase current calibration test results
                     elif test_type == 'Phase Current Test' or (test_config and test_config.get('type') == 'Phase Current Test'):
@@ -3282,11 +6079,23 @@ Data Points Used: {data_points}"""
                                 
                                 gain_data = [['Parameter', 'Phase V', 'Phase W']]
                                 if avg_gain_error_v is not None:
-                                    gain_data.append(['Average Gain Error (%)', f'{avg_gain_error_v:+.4f}%', f'{avg_gain_error_w:+.4f}%'])
+                                    gain_data.append([
+                                        'Average Gain Error (%)',
+                                        f'{avg_gain_error_v:+.4f}%',
+                                        f'{avg_gain_error_w:+.4f}%' if avg_gain_error_w is not None else 'N/A'
+                                    ])
                                 if avg_gain_correction_v is not None:
-                                    gain_data.append(['Average Gain Correction Factor', f'{avg_gain_correction_v:.6f}', f'{avg_gain_correction_w:.6f}'])
+                                    gain_data.append([
+                                        'Average Gain Correction Factor',
+                                        f'{avg_gain_correction_v:.6f}',
+                                        f'{avg_gain_correction_w:.6f}' if avg_gain_correction_w is not None else 'N/A'
+                                    ])
                                 
-                                gain_table = Table(gain_data)
+                                gain_table = Table(
+                                    gain_data,
+                                    colWidths=[2.8*inch, 1.7*inch, 1.7*inch],
+                                    repeatRows=1,
+                                )
                                 gain_table.setStyle(TableStyle([
                                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
                                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -3295,10 +6104,89 @@ Data Points Used: {data_points}"""
                                     ('FONTSIZE', (0, 0), (-1, 0), 10),
                                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                                     ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
                                     ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                                 ]))
                                 
                                 story.append(gain_table)
+                            
+                            # Test data table
+                            try:
+                                if not isinstance(plot_data, dict):
+                                    logger.warning(f"plot_data is not a dict for Phase Current Test in PDF export: {type(plot_data)}")
+                                    plot_data = {}
+                                
+                                plot_iq_refs = plot_data.get('iq_refs', []) if isinstance(plot_data, dict) else []
+                                plot_id_refs = plot_data.get('id_refs', []) if isinstance(plot_data, dict) else []
+                                plot_can_v = plot_data.get('can_v', []) if isinstance(plot_data, dict) else []
+                                plot_osc_v = plot_data.get('osc_ch1', []) if isinstance(plot_data, dict) else []
+                                plot_can_w = plot_data.get('can_w', []) if isinstance(plot_data, dict) else []
+                                plot_osc_w = plot_data.get('osc_ch2', []) if isinstance(plot_data, dict) else []
+                                
+                                if plot_iq_refs or plot_id_refs or plot_can_v or plot_osc_v or plot_can_w or plot_osc_w:
+                                    story.append(Spacer(1, 0.1*inch))
+                                    story.append(Paragraph('<b>Test Data Table</b>', styles['Heading3']))
+                                    
+                                    table_data = [['Iq_ref (A)', 'Id_ref (A)', 'DUT Phase V Current (A)', 'Measured Phase V Current (A)', 'DUT Phase W Current (A)', 'Measured Phase W Current (A)']]
+                                    
+                                    max_rows = max(
+                                        len(plot_iq_refs) if plot_iq_refs else 0,
+                                        len(plot_id_refs) if plot_id_refs else 0,
+                                        len(plot_can_v) if plot_can_v else 0,
+                                        len(plot_osc_v) if plot_osc_v else 0,
+                                        len(plot_can_w) if plot_can_w else 0,
+                                        len(plot_osc_w) if plot_osc_w else 0
+                                    )
+                                    
+                                    for i in range(max_rows):
+                                        # Iq_ref
+                                        iq_val = plot_iq_refs[i] if i < len(plot_iq_refs) else None
+                                        iq_str = f'{iq_val:.4f}' if iq_val is not None else 'N/A'
+                                        
+                                        # Id_ref
+                                        id_val = plot_id_refs[i] if i < len(plot_id_refs) else None
+                                        id_str = f'{id_val:.4f}' if id_val is not None else 'N/A'
+                                        
+                                        # DUT Phase V Current
+                                        can_v_val = plot_can_v[i] if i < len(plot_can_v) else None
+                                        can_v_str = f'{can_v_val:.4f}' if (can_v_val is not None and not (isinstance(can_v_val, float) and can_v_val != can_v_val)) else 'N/A'
+                                        
+                                        # Measured Phase V Current
+                                        osc_v_val = plot_osc_v[i] if i < len(plot_osc_v) else None
+                                        osc_v_str = f'{osc_v_val:.4f}' if (osc_v_val is not None and not (isinstance(osc_v_val, float) and osc_v_val != osc_v_val)) else 'N/A'
+                                        
+                                        # DUT Phase W Current
+                                        can_w_val = plot_can_w[i] if i < len(plot_can_w) else None
+                                        can_w_str = f'{can_w_val:.4f}' if (can_w_val is not None and not (isinstance(can_w_val, float) and can_w_val != can_w_val)) else 'N/A'
+                                        
+                                        # Measured Phase W Current
+                                        osc_w_val = plot_osc_w[i] if i < len(plot_osc_w) else None
+                                        osc_w_str = f'{osc_w_val:.4f}' if (osc_w_val is not None and not (isinstance(osc_w_val, float) and osc_w_val != osc_w_val)) else 'N/A'
+                                        
+                                        table_data.append([iq_str, id_str, can_v_str, osc_v_str, can_w_str, osc_w_str])
+                                    
+                                    data_table = Table(
+                                        table_data,
+                                        colWidths=[1.1*inch]*6,
+                                        repeatRows=1,
+                                    )
+                                    data_table.setStyle(TableStyle([
+                                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                        ('FONTSIZE', (0, 0), (-1, 0), 8),
+                                        ('FONTSIZE', (0, 1), (-1, -1), 7),
+                                        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                                    ]))
+                                    
+                                    story.append(data_table)
+                            except Exception as e:
+                                logger.error(f"Error creating data table in PDF export: {e}", exc_info=True)
+                                story.append(Paragraph(f'<i>Error creating data table: {str(e)}</i>', styles['Normal']))
                             
                             # Plot image (CAN vs Oscilloscope)
                             osc_ch1 = plot_data.get('osc_ch1', [])
@@ -3316,21 +6204,207 @@ Data Points Used: {data_points}"""
                                     with open(tmp_path, 'wb') as f:
                                         f.write(plot_bytes)
                                     
-                                    story.append(Spacer(1, 0.1*inch))
-                                    story.append(Paragraph('<b>Plot: Average Phase Current (CAN vs Oscilloscope)</b>', styles['Heading3']))
-                                    img = Image(tmp_path, width=6*inch, height=2.5*inch)
-                                    story.append(img)
+                                    # Use KeepTogether to ensure plot title and image stay on same page
+                                    plot_block = [
+                                        Spacer(1, 0.1*inch),
+                                        Paragraph('<b>Plot: Average Phase Current (CAN vs Oscilloscope)</b>', styles['Heading3']),
+                                        Image(tmp_path, width=6*inch, height=2.5*inch)
+                                    ]
+                                    story.append(KeepTogether(plot_block))
                                     
-                                    # Clean up temp file
-                                    try:
-                                        os.unlink(tmp_path)
-                                    except Exception:
-                                        pass
+                                    # Track temp file for cleanup after PDF is built
+                                    temp_files.append(tmp_path)
+                    
+                    # Output Current Calibration test results
+                    elif test_type == 'Output Current Calibration' or (test_config and test_config.get('type') == 'Output Current Calibration'):
+                        plot_data = exec_data.get('plot_data')
+                        if plot_data:
+                            # Check if we have dual sweep data (new format) or single plot data (old format)
+                            first_sweep_data = plot_data.get('first_sweep')
+                            second_sweep_data = plot_data.get('second_sweep')
+                            
+                            if first_sweep_data and second_sweep_data:
+                                # New format: Dual sweep data
+                                story.append(Spacer(1, 0.1*inch))
+                                story.append(Paragraph('<b>Output Current Calibration: Dual Sweep Results</b>', styles['Heading3']))
+                                
+                                # First sweep plot
+                                first_osc_averages = first_sweep_data.get('osc_averages', [])
+                                first_can_averages = first_sweep_data.get('can_averages', [])
+                                first_slope = first_sweep_data.get('slope')
+                                first_intercept = first_sweep_data.get('intercept')
+                                
+                                if first_osc_averages and first_can_averages:
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
+                                    
+                                    plot_bytes = self._generate_output_current_calibration_plot_image(
+                                        f"{test_name} - First Sweep", first_osc_averages, first_can_averages,
+                                        first_slope, first_intercept, 'png'
+                                    )
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        # Use KeepTogether to ensure plot title and image stay on same page
+                                        plot_block = [
+                                            Paragraph(f'<b>{first_sweep_data.get("plot_label", "First Sweep")}</b>', styles['Heading4']),
+                                            Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                
+                                # Second sweep plot
+                                second_osc_averages = second_sweep_data.get('osc_averages', [])
+                                second_can_averages = second_sweep_data.get('can_averages', [])
+                                second_slope = second_sweep_data.get('slope')
+                                second_intercept = second_sweep_data.get('intercept')
+                                
+                                if second_osc_averages and second_can_averages:
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
+                                    
+                                    plot_bytes = self._generate_output_current_calibration_plot_image(
+                                        f"{test_name} - Second Sweep", second_osc_averages, second_can_averages,
+                                        second_slope, second_intercept, 'png'
+                                    )
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        # Use KeepTogether to ensure plot title and image stay on same page
+                                        plot_block = [
+                                            Spacer(1, 0.1*inch),
+                                            Paragraph(f'<b>{second_sweep_data.get("plot_label", "Second Sweep")}</b>', styles['Heading4']),
+                                            Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                
+                                # Calibration results
+                                story.append(Spacer(1, 0.1*inch))
+                                story.append(Paragraph('<b>Calibration Results</b>', styles['Heading3']))
+                                
+                                calib_results = []
+                                
+                                # First sweep results
+                                first_trim = first_sweep_data.get('trim_value')
+                                first_gain_error = first_sweep_data.get('gain_error')
+                                first_adjustment = first_sweep_data.get('adjustment_factor')
+                                
+                                if first_slope is not None and first_intercept is not None:
+                                    trim_str = f"{first_trim}%" if first_trim is not None else "N/A"
+                                    calib_results.append(f"First Sweep (Trim: {trim_str}):")
+                                    calib_results.append(f"  Linear Regression: Slope={first_slope:.6f}, Intercept={first_intercept:.6f}A")
+                                if first_gain_error is not None:
+                                    calib_results.append(f"  Gain Error: {first_gain_error:+.4f}%")
+                                if first_adjustment is not None:
+                                    calib_results.append(f"  Adjustment Factor: {first_adjustment:.6f}")
+                                
+                                # Second sweep results
+                                second_trim = second_sweep_data.get('trim_value')
+                                second_gain_error = second_sweep_data.get('gain_error')
+                                second_adjustment = second_sweep_data.get('adjustment_factor')
+                                
+                                if second_slope is not None and second_intercept is not None:
+                                    trim_str = f"{second_trim}%" if second_trim is not None else "N/A"
+                                    calib_results.append(f"Second Sweep (Trim: {trim_str}):")
+                                    calib_results.append(f"  Linear Regression: Slope={second_slope:.6f}, Intercept={second_intercept:.6f}A")
+                                if second_gain_error is not None:
+                                    calib_results.append(f"  Gain Error: {second_gain_error:+.4f}%")
+                                if second_adjustment is not None:
+                                    calib_results.append(f"  Adjustment Factor: {second_adjustment:.6f}")
+                                
+                                # Calculated trim value
+                                calculated_trim = plot_data.get('calculated_trim_value')
+                                tolerance_percent = plot_data.get('tolerance_percent')
+                                
+                                if calculated_trim is not None:
+                                    calib_results.append(f"Calculated Trim Value: {calculated_trim:.2f}%")
+                                if tolerance_percent is not None:
+                                    calib_results.append(f"Tolerance: ±{tolerance_percent:.2f}%")
+                                
+                                # Add results as paragraphs
+                                for result in calib_results:
+                                    story.append(Paragraph(result, styles['Normal']))
+                            
+                            else:
+                                # Old format: Single plot data
+                                osc_averages = plot_data.get('osc_averages', [])
+                                can_averages = plot_data.get('can_averages', [])
+                                slope = plot_data.get('slope')
+                                intercept = plot_data.get('intercept')
+                                
+                                if osc_averages and can_averages:
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                                        tmp_path = tmp_file.name
+                                    
+                                    plot_bytes = self._generate_output_current_calibration_plot_image(
+                                        test_name, osc_averages, can_averages, slope, intercept, 'png'
+                                    )
+                                    if plot_bytes:
+                                        with open(tmp_path, 'wb') as f:
+                                            f.write(plot_bytes)
+                                        
+                                        plot_block = [
+                                            Spacer(1, 0.1*inch),
+                                            Paragraph('<b>Plot: Output Current Calibration (DUT vs Oscilloscope)</b>', styles['Heading3']),
+                                            Image(tmp_path, width=5*inch, height=3.75*inch)
+                                        ]
+                                        story.append(KeepTogether(plot_block))
+                                        
+                                        # Track temp file for cleanup after PDF is built
+                                        temp_files.append(tmp_path)
+                                    
+                                    # Calibration parameters if available
+                                    if slope is not None and intercept is not None:
+                                        story.append(Spacer(1, 0.1*inch))
+                                        story.append(Paragraph('<b>Calibration Parameters</b>', styles['Heading3']))
+                                        
+                                        calib_data = [['Parameter', 'Value']]
+                                        calib_data.append(['Slope', f'{slope:.6f}'])
+                                        calib_data.append(['Intercept', f'{intercept:.6f} A'])
+                                        
+                                        gain_error = plot_data.get('gain_error')
+                                        adjustment_factor = plot_data.get('adjustment_factor')
+                                        if gain_error is not None:
+                                            calib_data.append(['Gain Error', f'{gain_error:+.4f}%'])
+                                        if adjustment_factor is not None:
+                                            calib_data.append(['Adjustment Factor', f'{adjustment_factor:.6f}'])
+                                        
+                                        calib_table = Table(calib_data)
+                                        calib_table.setStyle(TableStyle([
+                                            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+                                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                                            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                                            ('FONTSIZE', (0, 0), (-1, 0), 10),
+                                            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                                            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                                            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                                        ]))
+                                        
+                                        story.append(calib_table)
                     
                     story.append(PageBreak())
                 
                 # Build PDF
                 doc.build(story)
+                
+                # Clean up temporary files after PDF is successfully built
+                for tmp_path in temp_files:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temporary file {tmp_path}: {e}")
                 
             else:
                 # Fallback: Use matplotlib backend for simple PDF
@@ -3405,6 +6479,14 @@ Data Points Used: {data_points}"""
                 f'Test report exported to:\n{os.path.basename(fname)}')
         except Exception as e:
             logger.error(f"Failed to export PDF report: {e}", exc_info=True)
+            # Clean up temporary files even if PDF generation failed
+            if 'temp_files' in locals():
+                for tmp_path in temp_files:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to delete temporary file {tmp_path} during error cleanup: {cleanup_error}")
             QtWidgets.QMessageBox.critical(self, 'Export Error', 
                 f'Failed to export PDF report:\n{e}')
     
@@ -3415,158 +6497,12 @@ Data Points Used: {data_points}"""
         tb.addWidget(self.status_label)
 
     def _build_central(self):
-        # Central layout: left persistent device controls, right main tabs
+        # Central layout: just main tabs (no left panel - moved to dialog)
         central = QtWidgets.QWidget()
         main_h = QtWidgets.QHBoxLayout(central)
+        main_h.setContentsMargins(0, 0, 0, 0)
 
-        # Left: persistent device controls (top-left corner, global)
-        left_panel = QtWidgets.QWidget()
-        left_panel.setMinimumWidth(LEFT_PANEL_MIN_WIDTH)
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
-
-        # Logo and welcome buttons at top of left panel
-        logo_label = QtWidgets.QLabel()
-        logo_pix = self._generate_logo_pixmap(LOGO_WIDTH, LOGO_HEIGHT)
-        logo_label.setPixmap(logo_pix)
-        logo_label.setAlignment(QtCore.Qt.AlignCenter)
-        left_layout.addWidget(logo_label)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        test_menu_btn = QtWidgets.QPushButton('Test Menu')
-        test_menu_btn.clicked.connect(self._open_test_menu)
-        cfg_btn = QtWidgets.QPushButton('Test Configurator')
-        cfg_btn.clicked.connect(self._open_test_configurator)
-        help_btn = QtWidgets.QPushButton('Help')
-        help_btn.clicked.connect(self._open_help)
-        btn_row.addWidget(test_menu_btn)
-        btn_row.addWidget(cfg_btn)
-        btn_row.addWidget(help_btn)
-        left_layout.addLayout(btn_row)
-
-        left_layout.addSpacing(8)
-
-        # Device controls (global)
-        dev_group = QtWidgets.QGroupBox('CAN Interface')
-        dg = QtWidgets.QVBoxLayout(dev_group)
-        self.device_combo = QtWidgets.QComboBox()
-        dg.addWidget(self.device_combo)
-        hb = QtWidgets.QHBoxLayout()
-        self.refresh_btn = QtWidgets.QPushButton('Refresh')
-        self.refresh_btn.clicked.connect(self._refresh_can_devices)
-        self.connect_btn = QtWidgets.QPushButton('Connect')
-        self.connect_btn.clicked.connect(self._connect_selected_device)
-        hb.addWidget(self.refresh_btn)
-        hb.addWidget(self.connect_btn)
-        dg.addLayout(hb)
-        left_layout.addWidget(dev_group)
-
-        # General CAN settings (generic)
-        can_settings = QtWidgets.QGroupBox('CAN Settings')
-        cs_layout = QtWidgets.QFormLayout(can_settings)
-        # channel dropdown will be populated based on selected adapter
-        self.can_channel_combo = QtWidgets.QComboBox()
-        cs_layout.addRow('Channel:', self.can_channel_combo)
-        # bitrate dropdown (kbps)
-        self.can_bitrate_combo = QtWidgets.QComboBox()
-        bitrate_choices = ['10 kbps','20 kbps','50 kbps','125 kbps','250 kbps','500 kbps','800 kbps','1000 kbps']
-        self.can_bitrate_combo.addItems(bitrate_choices)
-        # tooltip to clarify units; Canalystii backend expects bitrate in bits-per-second,
-        # the GUI accepts kbps and will auto-convert when Canalystii is selected.
-        self.can_bitrate_combo.setToolTip('Bitrate in kbps (e.g. 500). Canalystii backend will be converted to bps automatically.')
-        # set default if present
-        try:
-            if self._can_bitrate:
-                kb = str(int(self._can_bitrate))
-                # prefer matching choice
-                for i in range(self.can_bitrate_combo.count()):
-                    if self.can_bitrate_combo.itemText(i).startswith(kb):
-                        self.can_bitrate_combo.setCurrentIndex(i)
-                        break
-        except Exception as e:
-            logger.debug(f"Failed to load CAN settings: {e}")
-        cs_layout.addRow('Bitrate (kbps):', self.can_bitrate_combo)
-        apply_btn = QtWidgets.QPushButton('Apply')
-        def _apply_settings():
-            self._can_channel = self.can_channel_combo.currentText().strip() or self._can_channel
-            # parse kbps value
-            try:
-                txt = self.can_bitrate_combo.currentText().strip()
-                if txt:
-                    self._can_bitrate = int(txt.split()[0])
-            except Exception as e:
-                logger.warning(f"Failed to save CAN settings: {e}", exc_info=True)
-            QtWidgets.QMessageBox.information(self, 'Settings', 'CAN settings applied')
-        apply_btn.clicked.connect(_apply_settings)
-        cs_layout.addRow(apply_btn)
-        left_layout.addWidget(can_settings)
-
-        # Oscilloscope Connection section
-        osc_group = QtWidgets.QGroupBox('Oscilloscope Connection')
-        osc_layout = QtWidgets.QVBoxLayout(osc_group)
-        
-        # Oscilloscope dropdown
-        self.oscilloscope_combo = QtWidgets.QComboBox()
-        self.oscilloscope_combo.setToolTip('Select an available USBTMC oscilloscope')
-        # Initialize with placeholder if service not available
-        if self.oscilloscope_service is None:
-            self.oscilloscope_combo.addItem('PyVISA not available')
-            self.oscilloscope_combo.setEnabled(False)
-        osc_layout.addWidget(self.oscilloscope_combo)
-        
-        # Buttons layout
-        osc_btn_layout = QtWidgets.QHBoxLayout()
-        
-        # Refresh button
-        self.osc_refresh_btn = QtWidgets.QPushButton('Refresh')
-        self.osc_refresh_btn.clicked.connect(self._refresh_oscilloscopes)
-        if self.oscilloscope_service is None:
-            self.osc_refresh_btn.setEnabled(False)
-        osc_btn_layout.addWidget(self.osc_refresh_btn)
-        
-        # Connect/Disconnect button (will toggle)
-        self.osc_connect_btn = QtWidgets.QPushButton('Connect')
-        self.osc_connect_btn.clicked.connect(self._toggle_oscilloscope_connection)
-        if self.oscilloscope_service is None:
-            self.osc_connect_btn.setEnabled(False)
-        osc_btn_layout.addWidget(self.osc_connect_btn)
-        
-        osc_layout.addLayout(osc_btn_layout)
-        
-        # Status label
-        self.osc_status_label = QtWidgets.QLabel('Status: Disconnected')
-        self.osc_status_label.setStyleSheet('color: gray;')
-        osc_layout.addWidget(self.osc_status_label)
-        
-        left_layout.addWidget(osc_group)
-
-        # when adapter selection changes, update available channels
-        def _on_device_changed(text: str):
-            text = (text or '').strip()
-            channels = []
-            if text.lower().startswith('pcan'):
-                channels = ['PCAN_USBBUS1','PCAN_USBBUS2','PCAN_USBBUS3','PCAN_USBBUS4']
-            elif text.lower().startswith('socketcan'):
-                channels = ['can0','can1','can2']
-            elif text.lower().startswith('canalystii') or text.lower() == 'canalystii':
-                channels = ['0','1']
-            elif text.lower().startswith('sim'):
-                channels = ['sim']
-            else:
-                # default to previous or current
-                channels = [self._can_channel]
-            self.can_channel_combo.clear()
-            self.can_channel_combo.addItems(channels)
-            # select first
-            try:
-                self.can_channel_combo.setCurrentIndex(0)
-            except Exception:
-                pass
-
-        self.device_combo.currentTextChanged.connect(_on_device_changed)
-
-        left_layout.addStretch()
-
-        # Right: main tab widget
+        # Main tab widget (full width now)
         main_tabs = QtWidgets.QTabWidget()
         self.tabs_main = main_tabs
 
@@ -3654,18 +6590,15 @@ Data Points Used: {data_points}"""
         can_layout.addWidget(inner)
         main_tabs.addTab(can_tab, 'CAN Data View')
 
-        # assemble central layout
-        main_h.addWidget(left_panel)
+        # assemble central layout (no left panel)
         main_h.addWidget(main_tabs, 1)
         self.setCentralWidget(central)
 
         # keep references for switching and controls
         self.tabs_main = main_tabs
-        self._refresh_can_devices()
-        try:
-            self.start_btn = self.connect_btn
-        except Exception:
-            self.start_btn = None
+        # Note: _refresh_can_devices() will be called when dialog opens
+        # Store reference to connect_btn for start_btn (will be set when dialog is created)
+        self.start_btn = None
 
         # build EOL H/W Configuration tab and wire into main_tabs
         try:
@@ -3707,6 +6640,10 @@ Data Points Used: {data_points}"""
         - Canalystii: Canalystii hardware via python-can
         - SocketCAN: Linux SocketCAN interfaces
         """
+        # Check if widget exists (dialog may not be created yet)
+        if not hasattr(self, 'device_combo') or self.device_combo is None:
+            return
+        
         # Probe available adapters
         devices = []
         # SimAdapter always available as a software option
@@ -3748,8 +6685,14 @@ Data Points Used: {data_points}"""
     def _refresh_oscilloscopes(self) -> None:
         """Refresh the list of available oscilloscopes."""
         if self.oscilloscope_service is None:
-            QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
-                'Oscilloscope service not available. Please install PyVISA.')
+            # Only show warning if dialog is open (widget exists)
+            if hasattr(self, 'oscilloscope_combo') and self.oscilloscope_combo is not None:
+                QtWidgets.QMessageBox.warning(self, 'Oscilloscope', 
+                    'Oscilloscope service not available. Please install PyVISA.')
+            return
+        
+        # Check if widget exists (dialog may not be created yet)
+        if not hasattr(self, 'oscilloscope_combo') or self.oscilloscope_combo is None:
             return
         
         try:
@@ -3762,7 +6705,7 @@ Data Points Used: {data_points}"""
             if not devices:
                 self.oscilloscope_combo.addItem('No devices found')
                 self.oscilloscope_combo.setEnabled(False)
-                logger.info("No USBTMC oscilloscopes found")
+                logger.info("No oscilloscopes found (USB or LAN)")
             else:
                 for device in devices:
                     # Try to get device info for display
@@ -3899,8 +6842,14 @@ Data Points Used: {data_points}"""
 
     def _build_statusbar(self):
         sb = self.statusBar()
+        
+        # Test execution status label (on the left)
+        self.status_label = QtWidgets.QLabel('Test Status : Ready')
+        sb.addWidget(self.status_label)  # addWidget adds to the left
+        
+        # Adapter connection indicator (on the right)
         self.conn_indicator = QtWidgets.QLabel('Adapter: stopped')
-        sb.addPermanentWidget(self.conn_indicator)
+        sb.addPermanentWidget(self.conn_indicator)  # addPermanentWidget adds to the right
 
     def _find_message_by_id(self, can_id: int) -> Optional[Any]:
         """Find message by CAN ID in loaded DBC. Uses cache for performance.
@@ -4154,6 +7103,50 @@ Data Points Used: {data_points}"""
         sig_details.setStyleSheet('color: gray; font-size: 10px;')
         layout.addWidget(sig_details)
         
+        # Separator
+        separator1 = QtWidgets.QFrame()
+        separator1.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        separator1.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        layout.addWidget(separator1)
+        
+        # EOL Command Message ID
+        eol_cmd_msg_label = QtWidgets.QLabel('<b>EOL Command Message ID:</b>')
+        layout.addWidget(eol_cmd_msg_label)
+        eol_cmd_msg_combo = QtWidgets.QComboBox()
+        eol_cmd_msg_combo.addItem('-- Select Message --', None)
+        for msg in messages:
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            eol_cmd_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+        layout.addWidget(eol_cmd_msg_combo)
+        
+        # Set DUT Test Mode Signal (updates when EOL Command Message changes)
+        dut_test_mode_sig_label = QtWidgets.QLabel('<b>Set DUT Test Mode Signal:</b>')
+        layout.addWidget(dut_test_mode_sig_label)
+        dut_test_mode_sig_combo = QtWidgets.QComboBox()
+        dut_test_mode_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_mode_sig_combo)
+        
+        # DUT Feedback Message ID
+        dut_fb_msg_label = QtWidgets.QLabel('<b>DUT Feedback Message ID:</b>')
+        layout.addWidget(dut_fb_msg_label)
+        dut_fb_msg_combo = QtWidgets.QComboBox()
+        dut_fb_msg_combo.addItem('-- Select Message --', None)
+        for msg in messages:
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            dut_fb_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+        layout.addWidget(dut_fb_msg_combo)
+        
+        # DUT Test Status Signal (updates when DUT Feedback Message changes)
+        dut_test_status_sig_label = QtWidgets.QLabel('<b>DUT Test Status Signal:</b>')
+        layout.addWidget(dut_test_status_sig_label)
+        dut_test_status_sig_combo = QtWidgets.QComboBox()
+        dut_test_status_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_status_sig_combo)
+        
         def on_message_changed(index):
             """Update signal combo when message selection changes."""
             sig_combo.clear()
@@ -4181,7 +7174,57 @@ Data Points Used: {data_points}"""
                     display_text += f" ({sig_units})"
                 sig_combo.addItem(display_text, sig)
         
+        def on_eol_cmd_message_changed(index):
+            """Update DUT Test Mode Signal combo when EOL Command Message changes."""
+            dut_test_mode_sig_combo.clear()
+            msg = eol_cmd_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_mode_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_mode_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_mode_sig_combo.addItem('-- Select Signal --', None)
+            for sig in signals:
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_mode_sig_combo.addItem(display_text, sig)
+        
+        def on_dut_fb_message_changed(index):
+            """Update DUT Test Status Signal combo when DUT Feedback Message changes."""
+            dut_test_status_sig_combo.clear()
+            msg = dut_fb_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_status_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_status_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_status_sig_combo.addItem('-- Select Signal --', None)
+            for sig in signals:
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_status_sig_combo.addItem(display_text, sig)
+        
         msg_combo.currentIndexChanged.connect(on_message_changed)
+        eol_cmd_msg_combo.currentIndexChanged.connect(on_eol_cmd_message_changed)
+        dut_fb_msg_combo.currentIndexChanged.connect(on_dut_fb_message_changed)
         
         def on_signal_changed(index):
             """Update signal details when signal selection changes."""
@@ -4227,8 +7270,14 @@ Data Points Used: {data_points}"""
             sig = sig_combo.currentData()
             if not msg or not sig:
                 QtWidgets.QMessageBox.warning(dialog, 'Invalid Configuration', 
-                    'Please select both message and signal.')
+                    'Please select both EOL Feedback Message and Measured DAC Output Voltage Signal.')
                 return
+            
+            # Get new field values (optional)
+            eol_cmd_msg = eol_cmd_msg_combo.currentData()
+            dut_test_mode_sig = dut_test_mode_sig_combo.currentData()
+            dut_fb_msg = dut_fb_msg_combo.currentData()
+            dut_test_status_sig = dut_test_status_sig_combo.currentData()
             
             # Save configuration
             self._eol_hw_config = {
@@ -4236,6 +7285,12 @@ Data Points Used: {data_points}"""
                 'feedback_message_id': getattr(msg, 'frame_id', 0),
                 'feedback_message_name': getattr(msg, 'name', ''),
                 'measured_dac_signal': getattr(sig, 'name', ''),
+                'eol_command_message_id': getattr(eol_cmd_msg, 'frame_id', None) if eol_cmd_msg else None,
+                'eol_command_message_name': getattr(eol_cmd_msg, 'name', None) if eol_cmd_msg else None,
+                'set_dut_test_mode_signal': getattr(dut_test_mode_sig, 'name', None) if dut_test_mode_sig else None,
+                'dut_feedback_message_id': getattr(dut_fb_msg, 'frame_id', None) if dut_fb_msg else None,
+                'dut_feedback_message_name': getattr(dut_fb_msg, 'name', None) if dut_fb_msg else None,
+                'dut_test_status_signal': getattr(dut_test_status_sig, 'name', None) if dut_test_status_sig else None,
                 'created_at': datetime.utcnow().isoformat() + 'Z',
                 'updated_at': datetime.utcnow().isoformat() + 'Z'
             }
@@ -4325,6 +7380,58 @@ Data Points Used: {data_points}"""
         sig_details.setStyleSheet('color: gray; font-size: 10px;')
         layout.addWidget(sig_details)
         
+        # Separator
+        separator1 = QtWidgets.QFrame()
+        separator1.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        separator1.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        layout.addWidget(separator1)
+        
+        # EOL Command Message ID
+        eol_cmd_msg_label = QtWidgets.QLabel('<b>EOL Command Message ID:</b>')
+        layout.addWidget(eol_cmd_msg_label)
+        eol_cmd_msg_combo = QtWidgets.QComboBox()
+        eol_cmd_msg_combo.addItem('-- Select Message --', None)
+        current_eol_cmd_msg_id = self._eol_hw_config.get('eol_command_message_id')
+        current_eol_cmd_msg_index = 0
+        for idx, msg in enumerate(messages, start=1):
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            eol_cmd_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+            if current_eol_cmd_msg_id and msg_id == current_eol_cmd_msg_id:
+                current_eol_cmd_msg_index = idx
+        layout.addWidget(eol_cmd_msg_combo)
+        
+        # Set DUT Test Mode Signal (updates when EOL Command Message changes)
+        dut_test_mode_sig_label = QtWidgets.QLabel('<b>Set DUT Test Mode Signal:</b>')
+        layout.addWidget(dut_test_mode_sig_label)
+        dut_test_mode_sig_combo = QtWidgets.QComboBox()
+        dut_test_mode_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_mode_sig_combo)
+        
+        # DUT Feedback Message ID
+        dut_fb_msg_label = QtWidgets.QLabel('<b>DUT Feedback Message ID:</b>')
+        layout.addWidget(dut_fb_msg_label)
+        dut_fb_msg_combo = QtWidgets.QComboBox()
+        dut_fb_msg_combo.addItem('-- Select Message --', None)
+        current_dut_fb_msg_id = self._eol_hw_config.get('dut_feedback_message_id')
+        current_dut_fb_msg_index = 0
+        for idx, msg in enumerate(messages, start=1):
+            msg_name = getattr(msg, 'name', 'Unknown')
+            msg_id = getattr(msg, 'frame_id', 0)
+            msg_length = getattr(msg, 'length', 0)
+            dut_fb_msg_combo.addItem(f"{msg_name} (ID: 0x{msg_id:X}, Length: {msg_length})", msg)
+            if current_dut_fb_msg_id and msg_id == current_dut_fb_msg_id:
+                current_dut_fb_msg_index = idx
+        layout.addWidget(dut_fb_msg_combo)
+        
+        # DUT Test Status Signal (updates when DUT Feedback Message changes)
+        dut_test_status_sig_label = QtWidgets.QLabel('<b>DUT Test Status Signal:</b>')
+        layout.addWidget(dut_test_status_sig_label)
+        dut_test_status_sig_combo = QtWidgets.QComboBox()
+        dut_test_status_sig_combo.setEnabled(False)
+        layout.addWidget(dut_test_status_sig_combo)
+        
         def on_message_changed(index):
             sig_combo.clear()
             sig_details.setText('')
@@ -4357,6 +7464,68 @@ Data Points Used: {data_points}"""
                 sig_combo.setCurrentIndex(current_sig_index)
                 on_signal_changed(current_sig_index)
         
+        def on_eol_cmd_message_changed(index):
+            """Update DUT Test Mode Signal combo when EOL Command Message changes."""
+            dut_test_mode_sig_combo.clear()
+            msg = eol_cmd_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_mode_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_mode_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_mode_sig_combo.addItem('-- Select Signal --', None)
+            current_dut_test_mode_sig_name = self._eol_hw_config.get('set_dut_test_mode_signal')
+            current_dut_test_mode_sig_index = 0
+            for idx, sig in enumerate(signals, start=1):
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_mode_sig_combo.addItem(display_text, sig)
+                if sig_name == current_dut_test_mode_sig_name:
+                    current_dut_test_mode_sig_index = idx
+            
+            if current_dut_test_mode_sig_index > 0:
+                dut_test_mode_sig_combo.setCurrentIndex(current_dut_test_mode_sig_index)
+        
+        def on_dut_fb_message_changed(index):
+            """Update DUT Test Status Signal combo when DUT Feedback Message changes."""
+            dut_test_status_sig_combo.clear()
+            msg = dut_fb_msg_combo.currentData()
+            if msg is None or index == 0:
+                dut_test_status_sig_combo.setEnabled(False)
+                return
+            
+            dut_test_status_sig_combo.setEnabled(True)
+            signals = []
+            if self.dbc_service and self.dbc_service.is_loaded():
+                signals = self.dbc_service.get_message_signals(msg)
+            else:
+                signals = getattr(msg, 'signals', [])
+            
+            dut_test_status_sig_combo.addItem('-- Select Signal --', None)
+            current_dut_test_status_sig_name = self._eol_hw_config.get('dut_test_status_signal')
+            current_dut_test_status_sig_index = 0
+            for idx, sig in enumerate(signals, start=1):
+                sig_name = getattr(sig, 'name', '')
+                sig_units = getattr(sig, 'unit', '')
+                display_text = sig_name
+                if sig_units:
+                    display_text += f" ({sig_units})"
+                dut_test_status_sig_combo.addItem(display_text, sig)
+                if sig_name == current_dut_test_status_sig_name:
+                    current_dut_test_status_sig_index = idx
+            
+            if current_dut_test_status_sig_index > 0:
+                dut_test_status_sig_combo.setCurrentIndex(current_dut_test_status_sig_index)
+        
         def on_signal_changed(index):
             sig = sig_combo.currentData()
             if sig is None or index == 0:
@@ -4380,11 +7549,21 @@ Data Points Used: {data_points}"""
         
         msg_combo.currentIndexChanged.connect(on_message_changed)
         sig_combo.currentIndexChanged.connect(on_signal_changed)
+        eol_cmd_msg_combo.currentIndexChanged.connect(on_eol_cmd_message_changed)
+        dut_fb_msg_combo.currentIndexChanged.connect(on_dut_fb_message_changed)
         
         # Set current selections
         if current_msg_index > 0:
             msg_combo.setCurrentIndex(current_msg_index)
             on_message_changed(current_msg_index)
+        
+        if current_eol_cmd_msg_index > 0:
+            eol_cmd_msg_combo.setCurrentIndex(current_eol_cmd_msg_index)
+            on_eol_cmd_message_changed(current_eol_cmd_msg_index)
+        
+        if current_dut_fb_msg_index > 0:
+            dut_fb_msg_combo.setCurrentIndex(current_dut_fb_msg_index)
+            on_dut_fb_message_changed(current_dut_fb_msg_index)
         
         # Buttons
         button_layout = QtWidgets.QHBoxLayout()
@@ -4406,14 +7585,26 @@ Data Points Used: {data_points}"""
             sig = sig_combo.currentData()
             if not msg or not sig:
                 QtWidgets.QMessageBox.warning(dialog, 'Invalid Configuration', 
-                    'Please select both message and signal.')
+                    'Please select both EOL Feedback Message and Measured DAC Output Voltage Signal.')
                 return
+            
+            # Get new field values (optional)
+            eol_cmd_msg = eol_cmd_msg_combo.currentData()
+            dut_test_mode_sig = dut_test_mode_sig_combo.currentData()
+            dut_fb_msg = dut_fb_msg_combo.currentData()
+            dut_test_status_sig = dut_test_status_sig_combo.currentData()
             
             self._eol_hw_config.update({
                 'name': config_name,
                 'feedback_message_id': getattr(msg, 'frame_id', 0),
                 'feedback_message_name': getattr(msg, 'name', ''),
                 'measured_dac_signal': getattr(sig, 'name', ''),
+                'eol_command_message_id': getattr(eol_cmd_msg, 'frame_id', None) if eol_cmd_msg else None,
+                'eol_command_message_name': getattr(eol_cmd_msg, 'name', None) if eol_cmd_msg else None,
+                'set_dut_test_mode_signal': getattr(dut_test_mode_sig, 'name', None) if dut_test_mode_sig else None,
+                'dut_feedback_message_id': getattr(dut_fb_msg, 'frame_id', None) if dut_fb_msg else None,
+                'dut_feedback_message_name': getattr(dut_fb_msg, 'name', None) if dut_fb_msg else None,
+                'dut_test_status_signal': getattr(dut_test_status_sig, 'name', None) if dut_test_status_sig else None,
                 'updated_at': datetime.utcnow().isoformat() + 'Z'
             })
             
@@ -4576,6 +7767,41 @@ Data Points Used: {data_points}"""
             self.eol_feedback_msg_label.setStyleSheet('')
             self.eol_dac_signal_label.setText(signal_name)
             self.eol_dac_signal_label.setStyleSheet('')
+            
+            # Display new fields
+            eol_cmd_msg_id = config.get('eol_command_message_id')
+            eol_cmd_msg_name = config.get('eol_command_message_name', '')
+            if eol_cmd_msg_id:
+                self.eol_command_msg_label.setText(f"{eol_cmd_msg_name} (0x{eol_cmd_msg_id:X})" if eol_cmd_msg_name else f"0x{eol_cmd_msg_id:X}")
+                self.eol_command_msg_label.setStyleSheet('')
+            else:
+                self.eol_command_msg_label.setText('Not configured')
+                self.eol_command_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            
+            dut_test_mode_sig = config.get('set_dut_test_mode_signal')
+            if dut_test_mode_sig:
+                self.eol_dut_test_mode_signal_label.setText(dut_test_mode_sig)
+                self.eol_dut_test_mode_signal_label.setStyleSheet('')
+            else:
+                self.eol_dut_test_mode_signal_label.setText('Not configured')
+                self.eol_dut_test_mode_signal_label.setStyleSheet('color: gray; font-style: italic;')
+            
+            dut_fb_msg_id = config.get('dut_feedback_message_id')
+            dut_fb_msg_name = config.get('dut_feedback_message_name', '')
+            if dut_fb_msg_id:
+                self.eol_dut_feedback_msg_label.setText(f"{dut_fb_msg_name} (0x{dut_fb_msg_id:X})" if dut_fb_msg_name else f"0x{dut_fb_msg_id:X}")
+                self.eol_dut_feedback_msg_label.setStyleSheet('')
+            else:
+                self.eol_dut_feedback_msg_label.setText('Not configured')
+                self.eol_dut_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            
+            dut_test_status_sig = config.get('dut_test_status_signal')
+            if dut_test_status_sig:
+                self.eol_dut_test_status_signal_label.setText(dut_test_status_sig)
+                self.eol_dut_test_status_signal_label.setStyleSheet('')
+            else:
+                self.eol_dut_test_status_signal_label.setText('Not configured')
+                self.eol_dut_test_status_signal_label.setStyleSheet('color: gray; font-style: italic;')
         else:
             self.eol_config_name_label.setText('No configuration loaded')
             self.eol_config_name_label.setStyleSheet('color: gray; font-style: italic;')
@@ -4583,6 +7809,14 @@ Data Points Used: {data_points}"""
             self.eol_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
             self.eol_dac_signal_label.setText('Not configured')
             self.eol_dac_signal_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_command_msg_label.setText('Not configured')
+            self.eol_command_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dut_test_mode_signal_label.setText('Not configured')
+            self.eol_dut_test_mode_signal_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dut_feedback_msg_label.setText('Not configured')
+            self.eol_dut_feedback_msg_label.setStyleSheet('color: gray; font-style: italic;')
+            self.eol_dut_test_status_signal_label.setText('Not configured')
+            self.eol_dut_test_status_signal_label.setStyleSheet('color: gray; font-style: italic;')
     
     def _refresh_eol_config_list(self):
         """Refresh the list of saved EOL configurations."""
@@ -5354,7 +8588,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -5369,6 +8603,8 @@ Data Points Used: {data_points}"""
         analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
         temperature_validation_widget = QtWidgets.QWidget()
         temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
+        analog_pwm_sensor_widget = QtWidgets.QWidget()
+        analog_pwm_sensor_layout = QtWidgets.QFormLayout(analog_pwm_sensor_widget)
         fan_control_widget = QtWidgets.QWidget()
         fan_control_layout = QtWidgets.QFormLayout(fan_control_widget)
         ext_5v_test_widget = QtWidgets.QWidget()
@@ -5376,6 +8612,7 @@ Data Points Used: {data_points}"""
         
         # Initialize analog_static variables to None (will be set in if/else blocks)
         # Initialize temperature_validation variables to None (will be set in if/else blocks)
+        # Initialize analog_pwm_sensor variables to None (will be set in if/else blocks)
         # Initialize fan_control variables to None (will be set in if/else blocks)
         temp_val_fb_msg_combo = None
         temp_val_fb_signal_combo = None
@@ -5387,6 +8624,22 @@ Data Points Used: {data_points}"""
         temp_val_reference_edit_fallback = None
         temp_val_tolerance_edit_fallback = None
         temp_val_dwell_time_edit_fallback = None
+        analog_pwm_fb_msg_combo = None
+        analog_pwm_frequency_signal_combo = None
+        analog_pwm_duty_signal_combo = None
+        analog_pwm_reference_frequency_edit = None
+        analog_pwm_reference_duty_edit = None
+        analog_pwm_frequency_tolerance_edit = None
+        analog_pwm_duty_tolerance_edit = None
+        analog_pwm_acquisition_time_edit = None
+        analog_pwm_fb_msg_edit = None
+        analog_pwm_frequency_signal_edit = None
+        analog_pwm_duty_signal_edit = None
+        analog_pwm_reference_frequency_edit_fallback = None
+        analog_pwm_reference_duty_edit_fallback = None
+        analog_pwm_frequency_tolerance_edit_fallback = None
+        analog_pwm_duty_tolerance_edit_fallback = None
+        analog_pwm_acquisition_time_edit_fallback = None
         fan_control_trigger_msg_combo = None
         fan_control_trigger_signal_combo = None
         fan_control_feedback_msg_combo = None
@@ -5799,6 +9052,78 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit)
             
+            # Analog PWM Sensor Test fields (DBC mode)
+            # Feedback Signal Source: dropdown of CAN Messages
+            analog_pwm_fb_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_pwm_fb_msg_combo.addItem(label, fid)
+            
+            # PWM Frequency Signal: dropdown based on selected message
+            analog_pwm_frequency_signal_combo = QtWidgets.QComboBox()
+            # Duty Signal: dropdown based on selected message
+            analog_pwm_duty_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_analog_pwm_signals(idx=0):
+                """Update both signal dropdowns based on selected message."""
+                analog_pwm_frequency_signal_combo.clear()
+                analog_pwm_duty_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_pwm_frequency_signal_combo.addItems(sigs)
+                    analog_pwm_duty_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_analog_pwm_signals(0)
+            analog_pwm_fb_msg_combo.currentIndexChanged.connect(_update_analog_pwm_signals)
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit = QtWidgets.QLineEdit()
+            analog_pwm_reference_frequency_edit.setValidator(pwm_freq_reference_validator)
+            analog_pwm_reference_frequency_edit.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit = QtWidgets.QLineEdit()
+            analog_pwm_reference_duty_edit.setValidator(duty_reference_validator)
+            analog_pwm_reference_duty_edit.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit = QtWidgets.QLineEdit()
+            analog_pwm_frequency_tolerance_edit.setValidator(pwm_freq_tolerance_validator)
+            analog_pwm_frequency_tolerance_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit = QtWidgets.QLineEdit()
+            analog_pwm_duty_tolerance_edit.setValidator(duty_tolerance_validator)
+            analog_pwm_duty_tolerance_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit = QtWidgets.QLineEdit()
+            analog_pwm_acquisition_time_edit.setValidator(pwm_acquisition_time_validator)
+            analog_pwm_acquisition_time_edit.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor sub-widget
+            analog_pwm_sensor_layout.addRow('Feedback Signal Source:', analog_pwm_fb_msg_combo)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_combo)
+            analog_pwm_sensor_layout.addRow('Duty Signal:', analog_pwm_duty_signal_combo)
+            analog_pwm_sensor_layout.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit)
+            analog_pwm_sensor_layout.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit)
+            analog_pwm_sensor_layout.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit)
+            analog_pwm_sensor_layout.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit)
+            
             # Fan Control Test fields (DBC mode)
             # Fan Test Trigger Source: dropdown of CAN Messages
             fan_control_trigger_msg_combo = QtWidgets.QComboBox()
@@ -6031,6 +9356,600 @@ Data Points Used: {data_points}"""
             dc_bus_sensing_layout.addRow('Feedback Signal:', dc_bus_feedback_signal_combo)
             dc_bus_sensing_layout.addRow('Dwell Time (ms):', dc_bus_dwell_time_edit)
             dc_bus_sensing_layout.addRow('Tolerance (V):', dc_bus_tolerance_edit)
+            
+            # Output Current Calibration Test fields (DBC mode)
+            output_current_calibration_widget = QtWidgets.QWidget()
+            output_current_calibration_layout = QtWidgets.QFormLayout(output_current_calibration_widget)
+            
+            # Test Trigger Source: dropdown of CAN Messages
+            output_current_trigger_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_trigger_msg_combo.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            output_current_trigger_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_trigger_signals(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                output_current_trigger_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trigger_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trigger_signals(0)
+            output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_trigger_signals)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            output_current_trigger_value_validator = QtGui.QIntValidator(0, 255, self)
+            output_current_trigger_value_edit = QtWidgets.QLineEdit()
+            output_current_trigger_value_edit.setValidator(output_current_trigger_value_validator)
+            output_current_trigger_value_edit.setPlaceholderText('e.g., 1 (to enable)')
+            
+            # Current Setpoint Signal: dropdown based on same message as trigger
+            output_current_setpoint_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_setpoint_signals():
+                """Update setpoint signal dropdown based on trigger message selection."""
+                output_current_setpoint_signal_combo.clear()
+                try:
+                    idx = output_current_trigger_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_setpoint_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_setpoint_signals()
+            output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_setpoint_signals)
+            
+            # Output Current Trim Signal: dropdown based on same message as trigger
+            output_current_trim_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_trim_signals():
+                """Update trim signal dropdown based on trigger message selection."""
+                output_current_trim_signal_combo.clear()
+                try:
+                    idx = output_current_trigger_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trim_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trim_signals()
+            output_current_trigger_msg_combo.currentIndexChanged.connect(_update_output_current_trim_signals)
+            
+            # Initial Trim Value: double input (0.0000-200.0000, default 100.0000)
+            output_current_initial_trim_validator = QtGui.QDoubleValidator(0.0, 200.0, 4, self)
+            output_current_initial_trim_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_initial_trim_edit = QtWidgets.QLineEdit()
+            output_current_initial_trim_edit.setValidator(output_current_initial_trim_validator)
+            output_current_initial_trim_edit.setPlaceholderText('e.g., 100.0000')
+            output_current_initial_trim_edit.setText('100.0000')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            output_current_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_feedback_msg_combo.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            output_current_feedback_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_output_current_feedback_signals(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                output_current_feedback_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_feedback_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_feedback_signals(0)
+            output_current_feedback_msg_combo.currentIndexChanged.connect(_update_output_current_feedback_signals)
+            
+            # Oscilloscope Channel: dropdown of enabled channel names
+            output_current_osc_channel_combo = QtWidgets.QComboBox()
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                output_current_osc_channel_combo.addItems(channel_names)
+            else:
+                output_current_osc_channel_combo.addItem('No oscilloscope config loaded', None)
+            
+            # Oscilloscope Timebase: dropdown
+            output_current_timebase_combo = QtWidgets.QComboBox()
+            output_current_timebase_combo.addItems(['10MS', '20MS', '100MS', '500MS'])
+            
+            # Minimum Test Current: double input (>= 0, default 5.0)
+            output_current_min_current_validator = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_min_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_min_current_edit = QtWidgets.QLineEdit()
+            output_current_min_current_edit.setValidator(output_current_min_current_validator)
+            output_current_min_current_edit.setPlaceholderText('e.g., 5.0')
+            output_current_min_current_edit.setText('5.0')
+            
+            # Maximum Test Current: double input (>= minimum, default 20.0)
+            output_current_max_current_validator = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_max_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_max_current_edit = QtWidgets.QLineEdit()
+            output_current_max_current_edit.setValidator(output_current_max_current_validator)
+            output_current_max_current_edit.setPlaceholderText('e.g., 20.0')
+            output_current_max_current_edit.setText('20.0')
+            
+            # Step Current: double input (>= 0.1, default 5.0)
+            output_current_step_current_validator = QtGui.QDoubleValidator(0.1, 1000.0, 3, self)
+            output_current_step_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_step_current_edit = QtWidgets.QLineEdit()
+            output_current_step_current_edit.setValidator(output_current_step_current_validator)
+            output_current_step_current_edit.setPlaceholderText('e.g., 5.0')
+            output_current_step_current_edit.setText('5.0')
+            
+            # Pre-Acquisition Time: integer input (>= 0, default 1000)
+            output_current_pre_acq_validator = QtGui.QIntValidator(0, 60000, self)
+            output_current_pre_acq_edit = QtWidgets.QLineEdit()
+            output_current_pre_acq_edit.setValidator(output_current_pre_acq_validator)
+            output_current_pre_acq_edit.setPlaceholderText('e.g., 1000')
+            output_current_pre_acq_edit.setText('1000')
+            
+            # Acquisition Time: integer input (>= 1, default 3000)
+            output_current_acq_validator = QtGui.QIntValidator(1, 60000, self)
+            output_current_acq_edit = QtWidgets.QLineEdit()
+            output_current_acq_edit.setValidator(output_current_acq_validator)
+            output_current_acq_edit.setPlaceholderText('e.g., 3000')
+            output_current_acq_edit.setText('3000')
+            
+            # Tolerance: double input (>= 0, default 1.0)
+            output_current_tolerance_validator = QtGui.QDoubleValidator(0.0, 100.0, 3, self)
+            output_current_tolerance_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_tolerance_edit = QtWidgets.QLineEdit()
+            output_current_tolerance_edit.setValidator(output_current_tolerance_validator)
+            output_current_tolerance_edit.setPlaceholderText('e.g., 1.0')
+            output_current_tolerance_edit.setText('1.0')
+            
+            # Populate Output Current Calibration Test sub-widget
+            output_current_calibration_layout.addRow('Test Trigger Source:', output_current_trigger_msg_combo)
+            output_current_calibration_layout.addRow('Test Trigger Signal:', output_current_trigger_signal_combo)
+            output_current_calibration_layout.addRow('Test Trigger Signal Value:', output_current_trigger_value_edit)
+            output_current_calibration_layout.addRow('Current Setpoint Signal:', output_current_setpoint_signal_combo)
+            output_current_calibration_layout.addRow('Output Current Trim Signal:', output_current_trim_signal_combo)
+            output_current_calibration_layout.addRow('Initial Trim Value (%):', output_current_initial_trim_edit)
+            output_current_calibration_layout.addRow('Feedback Signal Source:', output_current_feedback_msg_combo)
+            output_current_calibration_layout.addRow('Feedback Signal:', output_current_feedback_signal_combo)
+            output_current_calibration_layout.addRow('Oscilloscope Channel:', output_current_osc_channel_combo)
+            output_current_calibration_layout.addRow('Oscilloscope Timebase:', output_current_timebase_combo)
+            output_current_calibration_layout.addRow('Minimum Test Current (A):', output_current_min_current_edit)
+            output_current_calibration_layout.addRow('Maximum Test Current (A):', output_current_max_current_edit)
+            output_current_calibration_layout.addRow('Step Current (A):', output_current_step_current_edit)
+            output_current_calibration_layout.addRow('Pre-Acquisition Time (ms):', output_current_pre_acq_edit)
+            output_current_calibration_layout.addRow('Acquisition Time (ms):', output_current_acq_edit)
+            output_current_calibration_layout.addRow('Tolerance (%):', output_current_tolerance_edit)
+            
+            # Charged HV Bus Test fields (DBC mode)
+            charged_hv_bus_widget = QtWidgets.QWidget()
+            charged_hv_bus_layout = QtWidgets.QFormLayout(charged_hv_bus_widget)
+            
+            # Command Signal Source: dropdown of CAN Messages
+            charged_hv_bus_cmd_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_cmd_msg_combo.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            charged_hv_bus_trigger_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trigger_signals(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                charged_hv_bus_trigger_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trigger_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trigger_signals(0)
+            charged_hv_bus_cmd_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_trigger_signals)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            charged_hv_bus_trigger_value_validator = QtGui.QIntValidator(0, 255, self)
+            charged_hv_bus_trigger_value_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_trigger_value_edit.setValidator(charged_hv_bus_trigger_value_validator)
+            charged_hv_bus_trigger_value_edit.setPlaceholderText('e.g., 1')
+            
+            # Set Output Current Trim Value Signal: dropdown based on command message
+            charged_hv_bus_trim_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trim_signals():
+                """Update trim signal dropdown based on command message selection."""
+                charged_hv_bus_trim_signal_combo.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trim_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trim_signals()
+            charged_hv_bus_cmd_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_trim_signals)
+            
+            # Fallback Output Current Trim Value: double input (0-200)
+            charged_hv_bus_fallback_trim_validator = QtGui.QDoubleValidator(0.0, 200.0, 2, self)
+            charged_hv_bus_fallback_trim_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_fallback_trim_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_fallback_trim_edit.setValidator(charged_hv_bus_fallback_trim_validator)
+            charged_hv_bus_fallback_trim_edit.setPlaceholderText('e.g., 100.0')
+            charged_hv_bus_fallback_trim_edit.setText('100.0')
+            
+            # Set Output Current Setpoint Signal: dropdown based on command message
+            charged_hv_bus_setpoint_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_setpoint_signals():
+                """Update setpoint signal dropdown based on command message selection."""
+                charged_hv_bus_setpoint_signal_combo.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_setpoint_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_setpoint_signals()
+            charged_hv_bus_cmd_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_setpoint_signals)
+            
+            # Output Test Current: double input (0-40)
+            charged_hv_bus_output_current_validator = QtGui.QDoubleValidator(0.0, 40.0, 3, self)
+            charged_hv_bus_output_current_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_output_current_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_output_current_edit.setValidator(charged_hv_bus_output_current_validator)
+            charged_hv_bus_output_current_edit.setPlaceholderText('e.g., 10.0')
+            charged_hv_bus_output_current_edit.setText('10.0')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            charged_hv_bus_feedback_msg_combo = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_feedback_msg_combo.addItem(label, fid)
+            
+            # DUT Test State Signal: dropdown based on selected message
+            charged_hv_bus_dut_state_signal_combo = QtWidgets.QComboBox()
+            # Enable Relay Signal: dropdown based on selected message
+            charged_hv_bus_enable_relay_signal_combo = QtWidgets.QComboBox()
+            # Enable PFC Signal: dropdown based on selected message
+            charged_hv_bus_enable_pfc_signal_combo = QtWidgets.QComboBox()
+            # PFC Power Good Signal: dropdown based on selected message
+            charged_hv_bus_pfc_power_good_signal_combo = QtWidgets.QComboBox()
+            # PCMC Signal: dropdown based on selected message
+            charged_hv_bus_pcmc_signal_combo = QtWidgets.QComboBox()
+            # PSFB Fault Signal: dropdown based on selected message
+            charged_hv_bus_psfb_fault_signal_combo = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_feedback_signals(idx=0):
+                """Update all feedback signal dropdowns based on selected message."""
+                charged_hv_bus_dut_state_signal_combo.clear()
+                charged_hv_bus_enable_relay_signal_combo.clear()
+                charged_hv_bus_enable_pfc_signal_combo.clear()
+                charged_hv_bus_pfc_power_good_signal_combo.clear()
+                charged_hv_bus_pcmc_signal_combo.clear()
+                charged_hv_bus_psfb_fault_signal_combo.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_dut_state_signal_combo.addItems(sigs)
+                    charged_hv_bus_enable_relay_signal_combo.addItems(sigs)
+                    charged_hv_bus_enable_pfc_signal_combo.addItems(sigs)
+                    charged_hv_bus_pfc_power_good_signal_combo.addItems(sigs)
+                    charged_hv_bus_pcmc_signal_combo.addItems(sigs)
+                    charged_hv_bus_psfb_fault_signal_combo.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_feedback_signals(0)
+            charged_hv_bus_feedback_msg_combo.currentIndexChanged.connect(_update_charged_hv_bus_feedback_signals)
+            
+            # Test Time: integer input (>= 1000)
+            charged_hv_bus_test_time_validator = QtGui.QIntValidator(1000, 600000, self)
+            charged_hv_bus_test_time_edit = QtWidgets.QLineEdit()
+            charged_hv_bus_test_time_edit.setValidator(charged_hv_bus_test_time_validator)
+            charged_hv_bus_test_time_edit.setPlaceholderText('e.g., 30000')
+            charged_hv_bus_test_time_edit.setText('30000')
+            
+            # Populate Charged HV Bus Test sub-widget
+            charged_hv_bus_layout.addRow('Command Signal Source:', charged_hv_bus_cmd_msg_combo)
+            charged_hv_bus_layout.addRow('Test Trigger Signal:', charged_hv_bus_trigger_signal_combo)
+            charged_hv_bus_layout.addRow('Test Trigger Signal Value:', charged_hv_bus_trigger_value_edit)
+            charged_hv_bus_layout.addRow('Set Output Current Trim Value Signal:', charged_hv_bus_trim_signal_combo)
+            charged_hv_bus_layout.addRow('Fallback Output Current Trim Value (%):', charged_hv_bus_fallback_trim_edit)
+            charged_hv_bus_layout.addRow('Set Output Current Setpoint Signal:', charged_hv_bus_setpoint_signal_combo)
+            charged_hv_bus_layout.addRow('Output Test Current (A):', charged_hv_bus_output_current_edit)
+            charged_hv_bus_layout.addRow('Feedback Signal Source:', charged_hv_bus_feedback_msg_combo)
+            charged_hv_bus_layout.addRow('DUT Test State Signal:', charged_hv_bus_dut_state_signal_combo)
+            charged_hv_bus_layout.addRow('Enable Relay Signal:', charged_hv_bus_enable_relay_signal_combo)
+            charged_hv_bus_layout.addRow('Enable PFC Signal:', charged_hv_bus_enable_pfc_signal_combo)
+            charged_hv_bus_layout.addRow('PFC Power Good Signal:', charged_hv_bus_pfc_power_good_signal_combo)
+            charged_hv_bus_layout.addRow('PCMC Signal:', charged_hv_bus_pcmc_signal_combo)
+            charged_hv_bus_layout.addRow('PSFB Fault Signal:', charged_hv_bus_psfb_fault_signal_combo)
+            charged_hv_bus_layout.addRow('Test Time (ms):', charged_hv_bus_test_time_edit)
+            
+            # Charger Functional Test fields (DBC mode)
+            charger_functional_widget = QtWidgets.QWidget()
+            charger_functional_layout = QtWidgets.QFormLayout(charger_functional_widget)
+            
+            # Command Signal Source: dropdown of CAN Messages
+            charger_functional_cmd_msg_combo = QtWidgets.QComboBox()
+            charger_functional_cmd_msg_combo.setEditable(False)
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
+                db = self.dbc_service.database
+                if db:
+                    for msg in db.messages:
+                        charger_functional_cmd_msg_combo.addItem(f"{msg.name} (0x{msg.frame_id:X})", msg.frame_id)
+            
+            # Test Trigger Signal: dropdown based on Command Signal Source
+            charger_functional_trigger_signal_combo = QtWidgets.QComboBox()
+            charger_functional_trigger_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_trigger_signals():
+                charger_functional_trigger_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_cmd_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_trigger_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_cmd_msg_combo.currentIndexChanged.connect(_update_charger_functional_trigger_signals)
+            _update_charger_functional_trigger_signals()
+            
+            # Test Trigger Signal Value (int, 0-255)
+            charger_functional_trigger_value_validator = QtGui.QIntValidator(0, 255, self)
+            charger_functional_trigger_value_edit = QtWidgets.QLineEdit()
+            charger_functional_trigger_value_edit.setValidator(charger_functional_trigger_value_validator)
+            charger_functional_trigger_value_edit.setPlaceholderText('e.g., 1')
+            charger_functional_trigger_value_edit.setText('1')
+            
+            # Set Output Current Trim Value Signal: dropdown based on Command Signal Source
+            charger_functional_trim_signal_combo = QtWidgets.QComboBox()
+            charger_functional_trim_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_trim_signals():
+                charger_functional_trim_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_cmd_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_trim_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_cmd_msg_combo.currentIndexChanged.connect(_update_charger_functional_trim_signals)
+            _update_charger_functional_trim_signals()
+            
+            # Fallback Output Current Trim Value (float, 0-200)
+            charger_functional_fallback_trim_validator = QtGui.QDoubleValidator(0.0, 200.0, 2, self)
+            charger_functional_fallback_trim_edit = QtWidgets.QLineEdit()
+            charger_functional_fallback_trim_edit.setValidator(charger_functional_fallback_trim_validator)
+            charger_functional_fallback_trim_edit.setPlaceholderText('e.g., 100.0')
+            charger_functional_fallback_trim_edit.setText('100.0')
+            
+            # Set Output Current Setpoint Signal: dropdown based on Command Signal Source
+            charger_functional_setpoint_signal_combo = QtWidgets.QComboBox()
+            charger_functional_setpoint_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_setpoint_signals():
+                charger_functional_setpoint_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_cmd_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_setpoint_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_cmd_msg_combo.currentIndexChanged.connect(_update_charger_functional_setpoint_signals)
+            _update_charger_functional_setpoint_signals()
+            
+            # Output Test Current (float, 0-40)
+            charger_functional_output_current_validator = QtGui.QDoubleValidator(0.0, 40.0, 2, self)
+            charger_functional_output_current_edit = QtWidgets.QLineEdit()
+            charger_functional_output_current_edit.setValidator(charger_functional_output_current_validator)
+            charger_functional_output_current_edit.setPlaceholderText('e.g., 10.0')
+            charger_functional_output_current_edit.setText('10.0')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            charger_functional_feedback_msg_combo = QtWidgets.QComboBox()
+            charger_functional_feedback_msg_combo.setEditable(False)
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
+                db = self.dbc_service.database
+                if db:
+                    for msg in db.messages:
+                        charger_functional_feedback_msg_combo.addItem(f"{msg.name} (0x{msg.frame_id:X})", msg.frame_id)
+            
+            # DUT Test State Signal: dropdown based on Feedback Signal Source
+            charger_functional_dut_state_signal_combo = QtWidgets.QComboBox()
+            charger_functional_dut_state_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_dut_state_signals():
+                charger_functional_dut_state_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_dut_state_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_dut_state_signals)
+            _update_charger_functional_dut_state_signals()
+            
+            # Enable Relay Signal: dropdown based on Feedback Signal Source
+            charger_functional_enable_relay_signal_combo = QtWidgets.QComboBox()
+            charger_functional_enable_relay_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_enable_relay_signals():
+                charger_functional_enable_relay_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_enable_relay_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_enable_relay_signals)
+            _update_charger_functional_enable_relay_signals()
+            
+            # Enable PFC Signal: dropdown based on Feedback Signal Source
+            charger_functional_enable_pfc_signal_combo = QtWidgets.QComboBox()
+            charger_functional_enable_pfc_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_enable_pfc_signals():
+                charger_functional_enable_pfc_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_enable_pfc_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_enable_pfc_signals)
+            _update_charger_functional_enable_pfc_signals()
+            
+            # PFC Power Good Signal: dropdown based on Feedback Signal Source
+            charger_functional_pfc_power_good_signal_combo = QtWidgets.QComboBox()
+            charger_functional_pfc_power_good_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_pfc_power_good_signals():
+                charger_functional_pfc_power_good_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_pfc_power_good_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_pfc_power_good_signals)
+            _update_charger_functional_pfc_power_good_signals()
+            
+            # PCMC Signal: dropdown based on Feedback Signal Source
+            charger_functional_pcmc_signal_combo = QtWidgets.QComboBox()
+            charger_functional_pcmc_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_pcmc_signals():
+                charger_functional_pcmc_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_pcmc_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_pcmc_signals)
+            _update_charger_functional_pcmc_signals()
+            
+            # Output Current Signal: dropdown based on Feedback Signal Source
+            charger_functional_output_current_signal_combo = QtWidgets.QComboBox()
+            charger_functional_output_current_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_output_current_signals():
+                charger_functional_output_current_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_output_current_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_output_current_signals)
+            _update_charger_functional_output_current_signals()
+            
+            # PSFB Fault Signal: dropdown based on Feedback Signal Source
+            charger_functional_psfb_fault_signal_combo = QtWidgets.QComboBox()
+            charger_functional_psfb_fault_signal_combo.setEditable(False)
+            
+            def _update_charger_functional_psfb_fault_signals():
+                charger_functional_psfb_fault_signal_combo.clear()
+                try:
+                    msg_id = charger_functional_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                charger_functional_psfb_fault_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            charger_functional_feedback_msg_combo.currentIndexChanged.connect(_update_charger_functional_psfb_fault_signals)
+            _update_charger_functional_psfb_fault_signals()
+            
+            # Output Current Tolerance (float, >= 0)
+            charger_functional_output_current_tolerance_validator = QtGui.QDoubleValidator(0.0, 999.0, 2, self)
+            charger_functional_output_current_tolerance_edit = QtWidgets.QLineEdit()
+            charger_functional_output_current_tolerance_edit.setValidator(charger_functional_output_current_tolerance_validator)
+            charger_functional_output_current_tolerance_edit.setPlaceholderText('e.g., 0.5')
+            charger_functional_output_current_tolerance_edit.setText('0.5')
+            
+            # Test Time (int, >= 1000)
+            charger_functional_test_time_validator = QtGui.QIntValidator(1000, 600000, self)
+            charger_functional_test_time_edit = QtWidgets.QLineEdit()
+            charger_functional_test_time_edit.setValidator(charger_functional_test_time_validator)
+            charger_functional_test_time_edit.setPlaceholderText('e.g., 30000')
+            charger_functional_test_time_edit.setText('30000')
+            
+            # Populate Charger Functional Test sub-widget
+            charger_functional_layout.addRow('Command Signal Source:', charger_functional_cmd_msg_combo)
+            charger_functional_layout.addRow('Test Trigger Signal:', charger_functional_trigger_signal_combo)
+            charger_functional_layout.addRow('Test Trigger Signal Value:', charger_functional_trigger_value_edit)
+            charger_functional_layout.addRow('Set Output Current Trim Value Signal:', charger_functional_trim_signal_combo)
+            charger_functional_layout.addRow('Fallback Output Current Trim Value (%):', charger_functional_fallback_trim_edit)
+            charger_functional_layout.addRow('Set Output Current Setpoint Signal:', charger_functional_setpoint_signal_combo)
+            charger_functional_layout.addRow('Output Test Current (A):', charger_functional_output_current_edit)
+            charger_functional_layout.addRow('Feedback Signal Source:', charger_functional_feedback_msg_combo)
+            charger_functional_layout.addRow('DUT Test State Signal:', charger_functional_dut_state_signal_combo)
+            charger_functional_layout.addRow('Enable Relay Signal:', charger_functional_enable_relay_signal_combo)
+            charger_functional_layout.addRow('Enable PFC Signal:', charger_functional_enable_pfc_signal_combo)
+            charger_functional_layout.addRow('PFC Power Good Signal:', charger_functional_pfc_power_good_signal_combo)
+            charger_functional_layout.addRow('PCMC Signal:', charger_functional_pcmc_signal_combo)
+            charger_functional_layout.addRow('Output Current Signal:', charger_functional_output_current_signal_combo)
+            charger_functional_layout.addRow('PSFB Fault Signal:', charger_functional_psfb_fault_signal_combo)
+            charger_functional_layout.addRow('Output Current Tolerance (A):', charger_functional_output_current_tolerance_edit)
+            charger_functional_layout.addRow('Test Time (ms):', charger_functional_test_time_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -6193,6 +10112,55 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback)
             
+            # Analog PWM Sensor Test fields (fallback when no DBC)
+            analog_pwm_fb_msg_edit = QtWidgets.QLineEdit()
+            analog_pwm_frequency_signal_edit = QtWidgets.QLineEdit()
+            analog_pwm_duty_signal_edit = QtWidgets.QLineEdit()
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator_fallback = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_reference_frequency_edit_fallback.setValidator(pwm_freq_reference_validator_fallback)
+            analog_pwm_reference_frequency_edit_fallback.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator_fallback = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_reference_duty_edit_fallback.setValidator(duty_reference_validator_fallback)
+            analog_pwm_reference_duty_edit_fallback.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_frequency_tolerance_edit_fallback.setValidator(pwm_freq_tolerance_validator_fallback)
+            analog_pwm_frequency_tolerance_edit_fallback.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator_fallback = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator_fallback.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_duty_tolerance_edit_fallback.setValidator(duty_tolerance_validator_fallback)
+            analog_pwm_duty_tolerance_edit_fallback.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator_fallback = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit_fallback = QtWidgets.QLineEdit()
+            analog_pwm_acquisition_time_edit_fallback.setValidator(pwm_acquisition_time_validator_fallback)
+            analog_pwm_acquisition_time_edit_fallback.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor sub-widget (fallback)
+            analog_pwm_sensor_layout.addRow('Feedback Signal Source (CAN ID):', analog_pwm_fb_msg_edit)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_edit)
+            analog_pwm_sensor_layout.addRow('Duty Signal:', analog_pwm_duty_signal_edit)
+            analog_pwm_sensor_layout.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit_fallback)
+            analog_pwm_sensor_layout.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit_fallback)
+            analog_pwm_sensor_layout.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit_fallback)
+            analog_pwm_sensor_layout.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit_fallback)
+            analog_pwm_sensor_layout.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit_fallback)
+            
             # Fan Control Test fields (fallback when no DBC)
             fan_control_trigger_msg_edit = QtWidgets.QLineEdit()
             fan_control_trigger_signal_edit = QtWidgets.QLineEdit()
@@ -6277,6 +10245,12 @@ Data Points Used: {data_points}"""
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
+        # Test Mode field (0-3, default 0)
+        test_mode_spin = QtWidgets.QSpinBox()
+        test_mode_spin.setRange(0, 3)
+        test_mode_spin.setValue(0)
+        test_mode_spin.setToolTip('DUT must be in this test mode before test execution (0-3)')
+        form.addRow('Test Mode:', test_mode_spin)
         # Feedback source and signal (DBC-driven when available)
         if self.dbc_service is not None and self.dbc_service.is_loaded():
             # build feedback message combo and signal combo
@@ -6324,10 +10298,15 @@ Data Points Used: {data_points}"""
         test_type_to_index['Analog Sweep Test'] = act_stacked.addWidget(analog_widget)
         test_type_to_index['Phase Current Test'] = act_stacked.addWidget(phase_current_widget)
         test_type_to_index['Analog Static Test'] = act_stacked.addWidget(analog_static_widget)
+        test_type_to_index['Analog PWM Sensor'] = act_stacked.addWidget(analog_pwm_sensor_widget)
         test_type_to_index['Temperature Validation Test'] = act_stacked.addWidget(temperature_validation_widget)
         test_type_to_index['Fan Control Test'] = act_stacked.addWidget(fan_control_widget)
         test_type_to_index['External 5V Test'] = act_stacked.addWidget(ext_5v_test_widget)
         test_type_to_index['DC Bus Sensing'] = act_stacked.addWidget(dc_bus_sensing_widget)
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
+            test_type_to_index['Output Current Calibration'] = act_stacked.addWidget(output_current_calibration_widget)
+            test_type_to_index['Charged HV Bus Test'] = act_stacked.addWidget(charged_hv_bus_widget)
+            test_type_to_index['Charger Functional Test'] = act_stacked.addWidget(charger_functional_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -6349,7 +10328,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -6620,6 +10599,76 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = analog_pwm_fb_msg_combo.currentData()
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_combo.currentText().strip() if analog_pwm_frequency_signal_combo.count() else ''
+                    duty_signal = analog_pwm_duty_signal_combo.currentText().strip() if analog_pwm_duty_signal_combo.count() else ''
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference(analog_pwm_reference_frequency_edit)
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference(analog_pwm_reference_duty_edit)
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance(analog_pwm_frequency_tolerance_edit)
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance(analog_pwm_duty_tolerance_edit)
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition(analog_pwm_acquisition_time_edit)
+                    
+                    act = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
+                    }
                 elif t == 'Fan Control Test':
                     # Fan Control Test: read all fields (DBC mode)
                     try:
@@ -6757,6 +10806,301 @@ Data Points Used: {data_points}"""
                         'feedback_signal': feedback_signal,
                         'dwell_time_ms': dwell_time_val,
                         'tolerance_v': tolerance_val,
+                    }
+                elif t == 'Output Current Calibration':
+                    # Output Current Calibration: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = output_current_trigger_msg_combo.currentData()
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = output_current_trigger_signal_combo.currentText().strip() if output_current_trigger_signal_combo.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_output_current_trigger_value(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_output_current_trigger_value(output_current_trigger_value_edit)
+                    
+                    setpoint_signal = output_current_setpoint_signal_combo.currentText().strip() if output_current_setpoint_signal_combo.count() else ''
+                    
+                    trim_signal = output_current_trim_signal_combo.currentText().strip() if output_current_trim_signal_combo.count() else ''
+                    
+                    # Initial Trim Value (float, 0.0000-200.0000)
+                    def _to_float_or_none_output_current_initial_trim(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    initial_trim_value = _to_float_or_none_output_current_initial_trim(output_current_initial_trim_edit)
+                    
+                    try:
+                        feedback_msg_id = output_current_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = output_current_feedback_signal_combo.currentText().strip() if output_current_feedback_signal_combo.count() else ''
+                    
+                    osc_channel = output_current_osc_channel_combo.currentText().strip() if output_current_osc_channel_combo.count() else ''
+                    timebase = output_current_timebase_combo.currentText().strip() if output_current_timebase_combo.count() else ''
+                    
+                    # Minimum Test Current (float)
+                    def _to_float_or_none_output_current_min(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_current = _to_float_or_none_output_current_min(output_current_min_current_edit)
+                    
+                    # Maximum Test Current (float)
+                    def _to_float_or_none_output_current_max(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    max_current = _to_float_or_none_output_current_max(output_current_max_current_edit)
+                    
+                    # Step Current (float)
+                    def _to_float_or_none_output_current_step(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    step_current = _to_float_or_none_output_current_step(output_current_step_current_edit)
+                    
+                    # Pre-Acquisition Time (int)
+                    def _to_int_or_none_output_current_pre_acq(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_acq_time = _to_int_or_none_output_current_pre_acq(output_current_pre_acq_edit)
+                    
+                    # Acquisition Time (int)
+                    def _to_int_or_none_output_current_acq(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acq_time = _to_int_or_none_output_current_acq(output_current_acq_edit)
+                    
+                    # Tolerance (float, in %)
+                    def _to_float_or_none_output_current_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_percent = _to_float_or_none_output_current_tolerance(output_current_tolerance_edit)
+                    
+                    act = {
+                        'type': 'Output Current Calibration',
+                        'test_trigger_source': trigger_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'current_setpoint_signal': setpoint_signal,
+                        'output_current_trim_signal': trim_signal,
+                        'initial_trim_value': initial_trim_value,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'oscilloscope_channel': osc_channel,
+                        'oscilloscope_timebase': timebase,
+                        'minimum_test_current': min_current,
+                        'maximum_test_current': max_current,
+                        'step_current': step_current,
+                        'pre_acquisition_time_ms': pre_acq_time,
+                        'acquisition_time_ms': acq_time,
+                        'tolerance_percent': tolerance_percent,
+                    }
+                elif t == 'Charged HV Bus Test':
+                    # Charged HV Bus Test: read all fields (DBC mode)
+                    try:
+                        cmd_msg_id = charged_hv_bus_cmd_msg_combo.currentData()
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_signal = charged_hv_bus_trigger_signal_combo.currentText().strip() if charged_hv_bus_trigger_signal_combo.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_charged_hv_bus_trigger_value(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_charged_hv_bus_trigger_value(charged_hv_bus_trigger_value_edit)
+                    
+                    trim_signal = charged_hv_bus_trim_signal_combo.currentText().strip() if charged_hv_bus_trim_signal_combo.count() else ''
+                    
+                    # Fallback Output Current Trim Value (float, 0-200)
+                    def _to_float_or_none_charged_hv_bus_fallback_trim(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    fallback_trim = _to_float_or_none_charged_hv_bus_fallback_trim(charged_hv_bus_fallback_trim_edit)
+                    
+                    setpoint_signal = charged_hv_bus_setpoint_signal_combo.currentText().strip() if charged_hv_bus_setpoint_signal_combo.count() else ''
+                    
+                    # Output Test Current (float, 0-40)
+                    def _to_float_or_none_charged_hv_bus_output_current(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current = _to_float_or_none_charged_hv_bus_output_current(charged_hv_bus_output_current_edit)
+                    
+                    try:
+                        feedback_msg_id = charged_hv_bus_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    dut_state_signal = charged_hv_bus_dut_state_signal_combo.currentText().strip() if charged_hv_bus_dut_state_signal_combo.count() else ''
+                    enable_relay_signal = charged_hv_bus_enable_relay_signal_combo.currentText().strip() if charged_hv_bus_enable_relay_signal_combo.count() else ''
+                    enable_pfc_signal = charged_hv_bus_enable_pfc_signal_combo.currentText().strip() if charged_hv_bus_enable_pfc_signal_combo.count() else ''
+                    pfc_power_good_signal = charged_hv_bus_pfc_power_good_signal_combo.currentText().strip() if charged_hv_bus_pfc_power_good_signal_combo.count() else ''
+                    pcmc_signal = charged_hv_bus_pcmc_signal_combo.currentText().strip() if charged_hv_bus_pcmc_signal_combo.count() else ''
+                    psfb_fault_signal = charged_hv_bus_psfb_fault_signal_combo.currentText().strip() if charged_hv_bus_psfb_fault_signal_combo.count() else ''
+                    
+                    # Test Time (int, >= 1000)
+                    def _to_int_or_none_charged_hv_bus_test_time(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    test_time = _to_int_or_none_charged_hv_bus_test_time(charged_hv_bus_test_time_edit)
+                    
+                    act = {
+                        'type': 'Charged HV Bus Test',
+                        'command_signal_source': cmd_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'set_output_current_trim_signal': trim_signal,
+                        'fallback_output_current_trim_value': fallback_trim,
+                        'set_output_current_setpoint_signal': setpoint_signal,
+                        'output_test_current': output_current,
+                        'feedback_signal_source': feedback_msg_id,
+                        'dut_test_state_signal': dut_state_signal,
+                        'enable_relay_signal': enable_relay_signal,
+                        'enable_pfc_signal': enable_pfc_signal,
+                        'pfc_power_good_signal': pfc_power_good_signal,
+                        'pcmc_signal': pcmc_signal,
+                        'psfb_fault_signal': psfb_fault_signal,
+                        'test_time_ms': test_time,
+                    }
+                elif t == 'Charger Functional Test':
+                    # Charger Functional Test: read all fields (DBC mode)
+                    try:
+                        cmd_msg_id = charger_functional_cmd_msg_combo.currentData()
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_signal = charger_functional_trigger_signal_combo.currentText().strip() if charger_functional_trigger_signal_combo.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_charger_functional_trigger_value(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_charger_functional_trigger_value(charger_functional_trigger_value_edit)
+                    
+                    trim_signal = charger_functional_trim_signal_combo.currentText().strip() if charger_functional_trim_signal_combo.count() else ''
+                    
+                    # Fallback Output Current Trim Value (float, 0-200)
+                    def _to_float_or_none_charger_functional_fallback_trim(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    fallback_trim = _to_float_or_none_charger_functional_fallback_trim(charger_functional_fallback_trim_edit)
+                    
+                    setpoint_signal = charger_functional_setpoint_signal_combo.currentText().strip() if charger_functional_setpoint_signal_combo.count() else ''
+                    
+                    # Output Test Current (float, 0-40)
+                    def _to_float_or_none_charger_functional_output_current(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current = _to_float_or_none_charger_functional_output_current(charger_functional_output_current_edit)
+                    
+                    try:
+                        feedback_msg_id = charger_functional_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    dut_state_signal = charger_functional_dut_state_signal_combo.currentText().strip() if charger_functional_dut_state_signal_combo.count() else ''
+                    enable_relay_signal = charger_functional_enable_relay_signal_combo.currentText().strip() if charger_functional_enable_relay_signal_combo.count() else ''
+                    enable_pfc_signal = charger_functional_enable_pfc_signal_combo.currentText().strip() if charger_functional_enable_pfc_signal_combo.count() else ''
+                    pfc_power_good_signal = charger_functional_pfc_power_good_signal_combo.currentText().strip() if charger_functional_pfc_power_good_signal_combo.count() else ''
+                    pcmc_signal = charger_functional_pcmc_signal_combo.currentText().strip() if charger_functional_pcmc_signal_combo.count() else ''
+                    output_current_signal = charger_functional_output_current_signal_combo.currentText().strip() if charger_functional_output_current_signal_combo.count() else ''
+                    psfb_fault_signal = charger_functional_psfb_fault_signal_combo.currentText().strip() if charger_functional_psfb_fault_signal_combo.count() else ''
+                    
+                    # Output Current Tolerance (float, >= 0)
+                    def _to_float_or_none_charger_functional_tolerance(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current_tolerance = _to_float_or_none_charger_functional_tolerance(charger_functional_output_current_tolerance_edit)
+                    
+                    # Test Time (int, >= 1000)
+                    def _to_int_or_none_charger_functional_test_time(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    test_time = _to_int_or_none_charger_functional_test_time(charger_functional_test_time_edit)
+                    
+                    act = {
+                        'type': 'Charger Functional Test',
+                        'command_signal_source': cmd_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'set_output_current_trim_signal': trim_signal,
+                        'fallback_output_current_trim_value': fallback_trim,
+                        'set_output_current_setpoint_signal': setpoint_signal,
+                        'output_test_current': output_current,
+                        'feedback_signal_source': feedback_msg_id,
+                        'dut_test_state_signal': dut_state_signal,
+                        'enable_relay_signal': enable_relay_signal,
+                        'enable_pfc_signal': enable_pfc_signal,
+                        'pfc_power_good_signal': pfc_power_good_signal,
+                        'pcmc_signal': pcmc_signal,
+                        'output_current_signal': output_current_signal,
+                        'psfb_fault_signal': psfb_fault_signal,
+                        'output_current_tolerance': output_current_tolerance,
+                        'test_time_ms': test_time,
                     }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
@@ -6986,6 +11330,76 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif t == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(analog_pwm_fb_msg_edit.text().strip(), 0) if analog_pwm_fb_msg_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_edit.text().strip()
+                    duty_signal = analog_pwm_duty_signal_edit.text().strip()
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference_fallback(analog_pwm_reference_frequency_edit_fallback)
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference_fallback(analog_pwm_reference_duty_edit_fallback)
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance_fallback(analog_pwm_frequency_tolerance_edit_fallback)
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance_fallback(analog_pwm_duty_tolerance_edit_fallback)
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition_fallback(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition_fallback(analog_pwm_acquisition_time_edit_fallback)
+                    
+                    act = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
+                    }
                 elif t == 'Fan Control Test':
                     # Fan Control Test (no DBC): read from text fields
                     try:
@@ -7127,24 +11541,40 @@ Data Points Used: {data_points}"""
                         'tolerance_v': tolerance_val,
                     }
             # if using DBC-driven fields, read feedback from combo
+            # Only save feedback fields for test types that use them
+            # Test types that have their own feedback fields inside actuation don't need these
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
+                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test')
+            
             fb_msg_id = None
-            if self.dbc_service is not None and self.dbc_service.is_loaded():
-                try:
-                    feedback = fb_signal_combo.currentText().strip()
-                    fb_msg_id = fb_msg_combo.currentData()
-                except Exception:
-                    feedback = ''
-            else:
-                feedback = feedback_edit.text().strip()
+            feedback = None
+            if t not in test_types_with_own_feedback:
+                # Only read feedback fields for test types that use them
+                if self.dbc_service is not None and self.dbc_service.is_loaded():
+                    try:
+                        feedback = fb_signal_combo.currentText().strip()
+                        fb_msg_id = fb_msg_combo.currentData()
+                    except Exception:
+                        feedback = ''
+                else:
+                    feedback = feedback_edit.text().strip()
 
+            # Get test_mode value
+            test_mode_val = test_mode_spin.value()
+            
             entry = {
                 'name': nm,
                 'type': t,
-                'feedback_signal': feedback,
-                'feedback_message_id': fb_msg_id,
                 'actuation': act,
+                'test_mode': test_mode_val,
                 'created_at': datetime.utcnow().isoformat() + 'Z'
             }
+            
+            # Only add feedback fields if they were read (for test types that use them)
+            if feedback is not None:
+                entry['feedback_signal'] = feedback
+            if fb_msg_id is not None:
+                entry['feedback_message_id'] = fb_msg_id
             
             # Validate test before adding
             is_valid, error_msg = self._validate_test(entry)
@@ -7227,8 +11657,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', or 'DC Bus Sensing'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', or 'Charged HV Bus Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -7284,6 +11714,30 @@ Data Points Used: {data_points}"""
                 return False, "Analog Static test requires dwell time (ms)"
             if actuation.get('dwell_time_ms', 0) <= 0:
                 return False, "Dwell time must be positive"
+        elif test_type == 'Analog PWM Sensor':
+            # Validate required fields
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Analog PWM Sensor test requires feedback signal source (CAN ID)"
+            if not actuation.get('feedback_pwm_frequency_signal'):
+                return False, "Analog PWM Sensor test requires feedback PWM frequency signal name"
+            if not actuation.get('feedback_duty_signal'):
+                return False, "Analog PWM Sensor test requires feedback duty signal name"
+            if actuation.get('reference_pwm_frequency') is None:
+                return False, "Analog PWM Sensor test requires reference PWM frequency (Hz)"
+            if actuation.get('reference_duty') is None:
+                return False, "Analog PWM Sensor test requires reference duty (%)"
+            if actuation.get('pwm_frequency_tolerance') is None:
+                return False, "Analog PWM Sensor test requires PWM frequency tolerance (Hz)"
+            if actuation.get('pwm_frequency_tolerance', 0) < 0:
+                return False, "PWM frequency tolerance must be non-negative"
+            if actuation.get('duty_tolerance') is None:
+                return False, "Analog PWM Sensor test requires duty tolerance (%)"
+            if actuation.get('duty_tolerance', 0) < 0:
+                return False, "Duty tolerance must be non-negative"
+            if actuation.get('acquisition_time_ms') is None:
+                return False, "Analog PWM Sensor test requires acquisition time (ms)"
+            if actuation.get('acquisition_time_ms', 0) <= 0:
+                return False, "Acquisition time must be positive"
         elif test_type == 'Temperature Validation Test':
             # Validate required fields
             if actuation.get('feedback_signal_source') is None:
@@ -7364,6 +11818,182 @@ Data Points Used: {data_points}"""
                 return False, "DC Bus Sensing test requires tolerance (V)"
             if actuation.get('tolerance_v', 0) < 0:
                 return False, "Tolerance must be non-negative"
+        elif test_type == 'Output Current Calibration':
+            # Validate required fields
+            if actuation.get('test_trigger_source') is None:
+                return False, "Output Current Calibration test requires test trigger source (CAN ID)"
+            if not (0 <= actuation.get('test_trigger_source', -1) <= 0x1FFFFFFF):
+                return False, "Test trigger source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('test_trigger_signal'):
+                return False, "Output Current Calibration test requires test trigger signal name"
+            if actuation.get('test_trigger_signal_value') is None:
+                return False, "Output Current Calibration test requires test trigger signal value"
+            if not (0 <= actuation.get('test_trigger_signal_value', -1) <= 255):
+                return False, "Test trigger signal value must be in range 0-255"
+            if not actuation.get('current_setpoint_signal'):
+                return False, "Output Current Calibration test requires current setpoint signal name"
+            if not actuation.get('output_current_trim_signal'):
+                return False, "Output Current Calibration test requires output current trim signal name"
+            if actuation.get('initial_trim_value') is None:
+                return False, "Output Current Calibration test requires initial trim value (%)"
+            initial_trim = actuation.get('initial_trim_value')
+            if initial_trim is not None:
+                try:
+                    initial_trim_float = float(initial_trim)
+                    if not (0.0 <= initial_trim_float <= 200.0):
+                        return False, f"Initial trim value must be in range 0.0000-200.0000%, got {initial_trim_float}"
+                except (ValueError, TypeError):
+                    return False, f"Initial trim value must be a number, got {initial_trim}"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Output Current Calibration test requires feedback signal source (CAN ID)"
+            if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Feedback signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('feedback_signal'):
+                return False, "Output Current Calibration test requires feedback signal name"
+            if not actuation.get('oscilloscope_channel'):
+                return False, "Output Current Calibration test requires oscilloscope channel"
+            if actuation.get('oscilloscope_timebase') not in ('10MS', '20MS', '100MS', '500MS'):
+                return False, "Oscilloscope timebase must be one of: '10MS', '20MS', '100MS', '500MS'"
+            if actuation.get('minimum_test_current') is None:
+                return False, "Output Current Calibration test requires minimum test current (A)"
+            if actuation.get('minimum_test_current', -1) < 0:
+                return False, "Minimum test current must be non-negative"
+            if actuation.get('maximum_test_current') is None:
+                return False, "Output Current Calibration test requires maximum test current (A)"
+            if actuation.get('maximum_test_current', -1) < 0:
+                return False, "Maximum test current must be non-negative"
+            if actuation.get('minimum_test_current') is not None and actuation.get('maximum_test_current') is not None:
+                if actuation.get('maximum_test_current') < actuation.get('minimum_test_current'):
+                    return False, "Maximum test current must be >= minimum test current"
+            if actuation.get('step_current') is None:
+                return False, "Output Current Calibration test requires step current (A)"
+            if actuation.get('step_current', 0) < 0.1:
+                return False, "Step current must be >= 0.1 A"
+            if actuation.get('pre_acquisition_time_ms') is None:
+                return False, "Output Current Calibration test requires pre-acquisition time (ms)"
+            if actuation.get('pre_acquisition_time_ms', -1) < 0:
+                return False, "Pre-acquisition time must be non-negative"
+            if actuation.get('acquisition_time_ms') is None:
+                return False, "Output Current Calibration test requires acquisition time (ms)"
+            if actuation.get('acquisition_time_ms', 0) <= 0:
+                return False, "Acquisition time must be positive"
+            if actuation.get('tolerance_percent') is None:
+                return False, "Output Current Calibration test requires tolerance (%)"
+            if actuation.get('tolerance_percent', -1) < 0:
+                return False, "Tolerance must be non-negative"
+            # Check oscilloscope service availability
+            if self.oscilloscope_service is None or not self.oscilloscope_service.is_connected():
+                return False, "Output Current Calibration test requires oscilloscope to be connected"
+            # Check oscilloscope channel exists in profile
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                osc_channel = actuation.get('oscilloscope_channel', '')
+                if osc_channel:
+                    channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                    if osc_channel not in channel_names:
+                        return False, f"Oscilloscope channel '{osc_channel}' not found in oscilloscope configuration"
+            # Check DBC service is available (test requires DBC)
+            if self.dbc_service is None or not self.dbc_service.is_loaded():
+                return False, "Output Current Calibration test requires DBC file to be loaded"
+        elif test_type == 'Charged HV Bus Test':
+            # Validate required fields
+            if actuation.get('command_signal_source') is None:
+                return False, "Charged HV Bus Test requires command signal source (CAN ID)"
+            if not (0 <= actuation.get('command_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Command signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('test_trigger_signal'):
+                return False, "Charged HV Bus Test requires test trigger signal name"
+            if actuation.get('test_trigger_signal_value') is None:
+                return False, "Charged HV Bus Test requires test trigger signal value"
+            if not (0 <= actuation.get('test_trigger_signal_value', -1) <= 255):
+                return False, "Test trigger signal value must be in range 0-255"
+            if not actuation.get('set_output_current_trim_signal'):
+                return False, "Charged HV Bus Test requires set output current trim signal name"
+            if actuation.get('fallback_output_current_trim_value') is None:
+                return False, "Charged HV Bus Test requires fallback output current trim value"
+            if not (0 <= actuation.get('fallback_output_current_trim_value', -1) <= 200):
+                return False, "Fallback output current trim value must be in range 0-200"
+            if not actuation.get('set_output_current_setpoint_signal'):
+                return False, "Charged HV Bus Test requires set output current setpoint signal name"
+            if actuation.get('output_test_current') is None:
+                return False, "Charged HV Bus Test requires output test current (A)"
+            if not (0 <= actuation.get('output_test_current', -1) <= 40):
+                return False, "Output test current must be in range 0-40 A"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Charged HV Bus Test requires feedback signal source (CAN ID)"
+            if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Feedback signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('dut_test_state_signal'):
+                return False, "Charged HV Bus Test requires DUT test state signal name"
+            if not actuation.get('enable_relay_signal'):
+                return False, "Charged HV Bus Test requires enable relay signal name"
+            if not actuation.get('enable_pfc_signal'):
+                return False, "Charged HV Bus Test requires enable PFC signal name"
+            if not actuation.get('pfc_power_good_signal'):
+                return False, "Charged HV Bus Test requires PFC power good signal name"
+            if not actuation.get('pcmc_signal'):
+                return False, "Charged HV Bus Test requires PCMC signal name"
+            if not actuation.get('psfb_fault_signal'):
+                return False, "Charged HV Bus Test requires PSFB fault signal name"
+            if actuation.get('test_time_ms') is None:
+                return False, "Charged HV Bus Test requires test time (ms)"
+            if actuation.get('test_time_ms', 0) < 1000:
+                return False, "Test time must be >= 1000 ms"
+            # Check DBC service is available (test requires DBC)
+            if self.dbc_service is None or not self.dbc_service.is_loaded():
+                return False, "Charged HV Bus Test requires DBC file to be loaded"
+        elif test_type == 'Charger Functional Test':
+            # Validate required fields
+            if actuation.get('command_signal_source') is None:
+                return False, "Charger Functional Test requires command signal source (CAN ID)"
+            if not (0 <= actuation.get('command_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Command signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('test_trigger_signal'):
+                return False, "Charger Functional Test requires test trigger signal name"
+            if actuation.get('test_trigger_signal_value') is None:
+                return False, "Charger Functional Test requires test trigger signal value"
+            if not (0 <= actuation.get('test_trigger_signal_value', -1) <= 255):
+                return False, "Test trigger signal value must be in range 0-255"
+            if not actuation.get('set_output_current_trim_signal'):
+                return False, "Charger Functional Test requires set output current trim signal name"
+            if actuation.get('fallback_output_current_trim_value') is None:
+                return False, "Charger Functional Test requires fallback output current trim value"
+            if not (0 <= actuation.get('fallback_output_current_trim_value', -1) <= 200):
+                return False, "Fallback output current trim value must be in range 0-200"
+            if not actuation.get('set_output_current_setpoint_signal'):
+                return False, "Charger Functional Test requires set output current setpoint signal name"
+            if actuation.get('output_test_current') is None:
+                return False, "Charger Functional Test requires output test current (A)"
+            if not (0 <= actuation.get('output_test_current', -1) <= 40):
+                return False, "Output test current must be in range 0-40 A"
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Charger Functional Test requires feedback signal source (CAN ID)"
+            if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Feedback signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('dut_test_state_signal'):
+                return False, "Charger Functional Test requires DUT test state signal name"
+            if not actuation.get('enable_relay_signal'):
+                return False, "Charger Functional Test requires enable relay signal name"
+            if not actuation.get('enable_pfc_signal'):
+                return False, "Charger Functional Test requires enable PFC signal name"
+            if not actuation.get('pfc_power_good_signal'):
+                return False, "Charger Functional Test requires PFC power good signal name"
+            if not actuation.get('pcmc_signal'):
+                return False, "Charger Functional Test requires PCMC signal name"
+            if not actuation.get('output_current_signal'):
+                return False, "Charger Functional Test requires output current signal name"
+            if not actuation.get('psfb_fault_signal'):
+                return False, "Charger Functional Test requires PSFB fault signal name"
+            if actuation.get('output_current_tolerance') is None:
+                return False, "Charger Functional Test requires output current tolerance (A)"
+            if actuation.get('output_current_tolerance', -1) < 0:
+                return False, "Output current tolerance must be >= 0"
+            if actuation.get('test_time_ms') is None:
+                return False, "Charger Functional Test requires test time (ms)"
+            if actuation.get('test_time_ms', 0) < 1000:
+                return False, "Test time must be >= 1000 ms"
+            # Check DBC service is available (test requires DBC)
+            if self.dbc_service is None or not self.dbc_service.is_loaded():
+                return False, "Charger Functional Test requires DBC file to be loaded"
         
         return True, ""
     
@@ -7759,7 +12389,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -7817,6 +12447,7 @@ Data Points Used: {data_points}"""
         phase_current_widget = QtWidgets.QWidget(); phase_current_layout = QtWidgets.QFormLayout(phase_current_widget)
         analog_static_widget = QtWidgets.QWidget(); analog_static_layout = QtWidgets.QFormLayout(analog_static_widget)
         temperature_validation_widget = QtWidgets.QWidget(); temperature_validation_layout = QtWidgets.QFormLayout(temperature_validation_widget)
+        analog_pwm_sensor_widget_edit = QtWidgets.QWidget(); analog_pwm_sensor_layout_edit = QtWidgets.QFormLayout(analog_pwm_sensor_widget_edit)
 
         # populate actuation controls from stored data
         act = data.get('actuation', {}) or {}
@@ -8275,6 +12906,97 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_edit)
             
+            # Analog PWM Sensor Test fields (DBC mode) - for edit dialog
+            analog_pwm_fb_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                analog_pwm_fb_msg_combo_edit.addItem(label, fid)
+            
+            analog_pwm_frequency_signal_combo_edit = QtWidgets.QComboBox()
+            analog_pwm_duty_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_analog_pwm_signals_edit(idx=0):
+                """Update both signal dropdowns based on selected message."""
+                analog_pwm_frequency_signal_combo_edit.clear()
+                analog_pwm_duty_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    analog_pwm_frequency_signal_combo_edit.addItems(sigs)
+                    analog_pwm_duty_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_analog_pwm_signals_edit(0)
+            analog_pwm_fb_msg_combo_edit.currentIndexChanged.connect(_update_analog_pwm_signals_edit)
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit_edit = QtWidgets.QLineEdit(str(act.get('reference_pwm_frequency', '')))
+            analog_pwm_reference_frequency_edit_edit.setValidator(pwm_freq_reference_validator_edit)
+            analog_pwm_reference_frequency_edit_edit.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit_edit = QtWidgets.QLineEdit(str(act.get('reference_duty', '')))
+            analog_pwm_reference_duty_edit_edit.setValidator(duty_reference_validator_edit)
+            analog_pwm_reference_duty_edit_edit.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('pwm_frequency_tolerance', '')))
+            analog_pwm_frequency_tolerance_edit_edit.setValidator(pwm_freq_tolerance_validator_edit)
+            analog_pwm_frequency_tolerance_edit_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('duty_tolerance', '')))
+            analog_pwm_duty_tolerance_edit_edit.setValidator(duty_tolerance_validator_edit)
+            analog_pwm_duty_tolerance_edit_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit_edit = QtWidgets.QLineEdit(str(act.get('acquisition_time_ms', '')))
+            analog_pwm_acquisition_time_edit_edit.setValidator(pwm_acquisition_time_validator_edit)
+            analog_pwm_acquisition_time_edit_edit.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor fields from stored data
+            try:
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(analog_pwm_fb_msg_combo_edit.count()):
+                        if analog_pwm_fb_msg_combo_edit.itemData(i) == fb_msg_id:
+                            analog_pwm_fb_msg_combo_edit.setCurrentIndex(i)
+                            _update_analog_pwm_signals_edit(i)
+                            break
+                if act.get('feedback_pwm_frequency_signal') and analog_pwm_frequency_signal_combo_edit.count():
+                    try:
+                        analog_pwm_frequency_signal_combo_edit.setCurrentText(str(act.get('feedback_pwm_frequency_signal')))
+                    except Exception:
+                        pass
+                if act.get('feedback_duty_signal') and analog_pwm_duty_signal_combo_edit.count():
+                    try:
+                        analog_pwm_duty_signal_combo_edit.setCurrentText(str(act.get('feedback_duty_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Analog PWM Sensor sub-widget
+            analog_pwm_sensor_layout_edit.addRow('Feedback Signal Source:', analog_pwm_fb_msg_combo_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_combo_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Signal:', analog_pwm_duty_signal_combo_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit_edit)
+            
             # Fan Control Test fields (DBC mode) - for edit dialog
             # Create container for Fan Control Test (edit)
             fan_control_widget_edit = QtWidgets.QWidget()
@@ -8615,6 +13337,675 @@ Data Points Used: {data_points}"""
             dc_bus_sensing_layout_edit.addRow('Feedback Signal:', dc_bus_feedback_signal_combo_edit)
             dc_bus_sensing_layout_edit.addRow('Dwell Time (ms):', dc_bus_dwell_time_edit_edit)
             dc_bus_sensing_layout_edit.addRow('Tolerance (V):', dc_bus_tolerance_edit_edit)
+            
+            # Output Current Calibration Test fields (DBC mode) - for edit dialog
+            output_current_calibration_widget_edit = QtWidgets.QWidget()
+            output_current_calibration_layout_edit = QtWidgets.QFormLayout(output_current_calibration_widget_edit)
+            
+            # Test Trigger Source: dropdown of CAN Messages
+            output_current_trigger_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_trigger_msg_combo_edit.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            output_current_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_trigger_signals_edit(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                output_current_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trigger_signals_edit(0)
+            output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_trigger_signals_edit)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            output_current_trigger_value_validator_edit = QtGui.QIntValidator(0, 255, self)
+            output_current_trigger_value_edit_edit = QtWidgets.QLineEdit(str(act.get('test_trigger_signal_value', '')))
+            output_current_trigger_value_edit_edit.setValidator(output_current_trigger_value_validator_edit)
+            output_current_trigger_value_edit_edit.setPlaceholderText('e.g., 1 (to enable)')
+            
+            # Current Setpoint Signal: dropdown based on same message as trigger
+            output_current_setpoint_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_setpoint_signals_edit():
+                """Update setpoint signal dropdown based on trigger message selection."""
+                output_current_setpoint_signal_combo_edit.clear()
+                try:
+                    idx = output_current_trigger_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_setpoint_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_setpoint_signals_edit()
+            output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_setpoint_signals_edit)
+            
+            # Output Current Trim Signal: dropdown based on same message as trigger
+            output_current_trim_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_trim_signals_edit():
+                """Update trim signal dropdown based on trigger message selection."""
+                output_current_trim_signal_combo_edit.clear()
+                try:
+                    idx = output_current_trigger_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_trim_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_trim_signals_edit()
+            output_current_trigger_msg_combo_edit.currentIndexChanged.connect(_update_output_current_trim_signals_edit)
+            
+            # Initial Trim Value: double input (0.0000-200.0000, default 100.0000)
+            output_current_initial_trim_validator_edit = QtGui.QDoubleValidator(0.0, 200.0, 4, self)
+            output_current_initial_trim_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_initial_trim_edit_edit = QtWidgets.QLineEdit(str(act.get('initial_trim_value', '100.0000')))
+            output_current_initial_trim_edit_edit.setValidator(output_current_initial_trim_validator_edit)
+            output_current_initial_trim_edit_edit.setPlaceholderText('e.g., 100.0000')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            output_current_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                output_current_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # Feedback Signal: dropdown based on selected message
+            output_current_feedback_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_output_current_feedback_signals_edit(idx=0):
+                """Update feedback signal dropdown based on selected message."""
+                output_current_feedback_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    output_current_feedback_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_output_current_feedback_signals_edit(0)
+            output_current_feedback_msg_combo_edit.currentIndexChanged.connect(_update_output_current_feedback_signals_edit)
+            
+            # Oscilloscope Channel: dropdown of enabled channel names
+            output_current_osc_channel_combo_edit = QtWidgets.QComboBox()
+            if hasattr(self, '_oscilloscope_config') and self._oscilloscope_config:
+                channel_names = self.oscilloscope_service.get_channel_names(self._oscilloscope_config) if self.oscilloscope_service else []
+                output_current_osc_channel_combo_edit.addItems(channel_names)
+            else:
+                output_current_osc_channel_combo_edit.addItem('No oscilloscope config loaded', None)
+            
+            # Oscilloscope Timebase: dropdown
+            output_current_timebase_combo_edit = QtWidgets.QComboBox()
+            output_current_timebase_combo_edit.addItems(['10MS', '20MS', '100MS', '500MS'])
+            
+            # Minimum Test Current: double input (>= 0, default 5.0)
+            output_current_min_current_validator_edit = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_min_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_min_current_edit_edit = QtWidgets.QLineEdit(str(act.get('minimum_test_current', '5.0')))
+            output_current_min_current_edit_edit.setValidator(output_current_min_current_validator_edit)
+            output_current_min_current_edit_edit.setPlaceholderText('e.g., 5.0')
+            
+            # Maximum Test Current: double input (>= minimum, default 20.0)
+            output_current_max_current_validator_edit = QtGui.QDoubleValidator(0.0, 1000.0, 3, self)
+            output_current_max_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_max_current_edit_edit = QtWidgets.QLineEdit(str(act.get('maximum_test_current', '20.0')))
+            output_current_max_current_edit_edit.setValidator(output_current_max_current_validator_edit)
+            output_current_max_current_edit_edit.setPlaceholderText('e.g., 20.0')
+            
+            # Step Current: double input (>= 0.1, default 5.0)
+            output_current_step_current_validator_edit = QtGui.QDoubleValidator(0.1, 1000.0, 3, self)
+            output_current_step_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_step_current_edit_edit = QtWidgets.QLineEdit(str(act.get('step_current', '5.0')))
+            output_current_step_current_edit_edit.setValidator(output_current_step_current_validator_edit)
+            output_current_step_current_edit_edit.setPlaceholderText('e.g., 5.0')
+            
+            # Pre-Acquisition Time: integer input (>= 0, default 1000)
+            output_current_pre_acq_validator_edit = QtGui.QIntValidator(0, 60000, self)
+            output_current_pre_acq_edit_edit = QtWidgets.QLineEdit(str(act.get('pre_acquisition_time_ms', '1000')))
+            output_current_pre_acq_edit_edit.setValidator(output_current_pre_acq_validator_edit)
+            output_current_pre_acq_edit_edit.setPlaceholderText('e.g., 1000')
+            
+            # Acquisition Time: integer input (>= 1, default 3000)
+            output_current_acq_validator_edit = QtGui.QIntValidator(1, 60000, self)
+            output_current_acq_edit_edit = QtWidgets.QLineEdit(str(act.get('acquisition_time_ms', '3000')))
+            output_current_acq_edit_edit.setValidator(output_current_acq_validator_edit)
+            output_current_acq_edit_edit.setPlaceholderText('e.g., 3000')
+            
+            # Tolerance: double input (>= 0, default 1.0)
+            output_current_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 100.0, 3, self)
+            output_current_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            output_current_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('tolerance_percent', '1.0')))
+            output_current_tolerance_edit_edit.setValidator(output_current_tolerance_validator_edit)
+            output_current_tolerance_edit_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Populate Output Current Calibration fields from stored data
+            try:
+                trigger_msg_id = act.get('test_trigger_source')
+                if trigger_msg_id is not None:
+                    for i in range(output_current_trigger_msg_combo_edit.count()):
+                        if output_current_trigger_msg_combo_edit.itemData(i) == trigger_msg_id:
+                            output_current_trigger_msg_combo_edit.setCurrentIndex(i)
+                            _update_output_current_trigger_signals_edit(i)
+                            break
+                if act.get('test_trigger_signal') and output_current_trigger_signal_combo_edit.count():
+                    try:
+                        output_current_trigger_signal_combo_edit.setCurrentText(str(act.get('test_trigger_signal')))
+                    except Exception:
+                        pass
+                
+                if act.get('current_setpoint_signal') and output_current_setpoint_signal_combo_edit.count():
+                    try:
+                        output_current_setpoint_signal_combo_edit.setCurrentText(str(act.get('current_setpoint_signal')))
+                    except Exception:
+                        pass
+                
+                if act.get('output_current_trim_signal') and output_current_trim_signal_combo_edit.count():
+                    try:
+                        output_current_trim_signal_combo_edit.setCurrentText(str(act.get('output_current_trim_signal')))
+                    except Exception:
+                        pass
+                
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(output_current_feedback_msg_combo_edit.count()):
+                        if output_current_feedback_msg_combo_edit.itemData(i) == fb_msg_id:
+                            output_current_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_output_current_feedback_signals_edit(i)
+                            break
+                if act.get('feedback_signal') and output_current_feedback_signal_combo_edit.count():
+                    try:
+                        output_current_feedback_signal_combo_edit.setCurrentText(str(act.get('feedback_signal')))
+                    except Exception:
+                        pass
+                
+                osc_channel = act.get('oscilloscope_channel', '')
+                if osc_channel and output_current_osc_channel_combo_edit.count():
+                    try:
+                        output_current_osc_channel_combo_edit.setCurrentText(osc_channel)
+                    except Exception:
+                        pass
+                
+                timebase = act.get('oscilloscope_timebase', '')
+                if timebase and output_current_timebase_combo_edit.count():
+                    try:
+                        output_current_timebase_combo_edit.setCurrentText(timebase)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Output Current Calibration Test sub-widget
+            output_current_calibration_layout_edit.addRow('Test Trigger Source:', output_current_trigger_msg_combo_edit)
+            output_current_calibration_layout_edit.addRow('Test Trigger Signal:', output_current_trigger_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Test Trigger Signal Value:', output_current_trigger_value_edit_edit)
+            output_current_calibration_layout_edit.addRow('Current Setpoint Signal:', output_current_setpoint_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Output Current Trim Signal:', output_current_trim_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Initial Trim Value (%):', output_current_initial_trim_edit_edit)
+            output_current_calibration_layout_edit.addRow('Feedback Signal Source:', output_current_feedback_msg_combo_edit)
+            output_current_calibration_layout_edit.addRow('Feedback Signal:', output_current_feedback_signal_combo_edit)
+            output_current_calibration_layout_edit.addRow('Oscilloscope Channel:', output_current_osc_channel_combo_edit)
+            output_current_calibration_layout_edit.addRow('Oscilloscope Timebase:', output_current_timebase_combo_edit)
+            output_current_calibration_layout_edit.addRow('Minimum Test Current (A):', output_current_min_current_edit_edit)
+            output_current_calibration_layout_edit.addRow('Maximum Test Current (A):', output_current_max_current_edit_edit)
+            output_current_calibration_layout_edit.addRow('Step Current (A):', output_current_step_current_edit_edit)
+            output_current_calibration_layout_edit.addRow('Pre-Acquisition Time (ms):', output_current_pre_acq_edit_edit)
+            output_current_calibration_layout_edit.addRow('Acquisition Time (ms):', output_current_acq_edit_edit)
+            output_current_calibration_layout_edit.addRow('Tolerance (%):', output_current_tolerance_edit_edit)
+            
+            # Charged HV Bus Test fields (DBC mode) - for edit dialog
+            charged_hv_bus_widget_edit = QtWidgets.QWidget()
+            charged_hv_bus_layout_edit = QtWidgets.QFormLayout(charged_hv_bus_widget_edit)
+            
+            # Command Signal Source: dropdown of CAN Messages
+            charged_hv_bus_cmd_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_cmd_msg_combo_edit.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            charged_hv_bus_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trigger_signals_edit(idx=0):
+                """Update trigger signal dropdown based on selected message."""
+                charged_hv_bus_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trigger_signals_edit(0)
+            charged_hv_bus_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_trigger_signals_edit)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            charged_hv_bus_trigger_value_validator_edit = QtGui.QIntValidator(0, 255, self)
+            charged_hv_bus_trigger_value_edit_edit = QtWidgets.QLineEdit(str(act.get('test_trigger_signal_value', '1')))
+            charged_hv_bus_trigger_value_edit_edit.setValidator(charged_hv_bus_trigger_value_validator_edit)
+            charged_hv_bus_trigger_value_edit_edit.setPlaceholderText('e.g., 1')
+            
+            # Set Output Current Trim Value Signal: dropdown based on command message
+            charged_hv_bus_trim_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_trim_signals_edit():
+                """Update trim signal dropdown based on command message selection."""
+                charged_hv_bus_trim_signal_combo_edit.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_trim_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_trim_signals_edit()
+            charged_hv_bus_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_trim_signals_edit)
+            
+            # Fallback Output Current Trim Value: double input (0-200)
+            charged_hv_bus_fallback_trim_validator_edit = QtGui.QDoubleValidator(0.0, 200.0, 2, self)
+            charged_hv_bus_fallback_trim_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_fallback_trim_edit_edit = QtWidgets.QLineEdit(str(act.get('fallback_output_current_trim_value', '100.0')))
+            charged_hv_bus_fallback_trim_edit_edit.setValidator(charged_hv_bus_fallback_trim_validator_edit)
+            charged_hv_bus_fallback_trim_edit_edit.setPlaceholderText('e.g., 100.0')
+            
+            # Set Output Current Setpoint Signal: dropdown based on command message
+            charged_hv_bus_setpoint_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_setpoint_signals_edit():
+                """Update setpoint signal dropdown based on command message selection."""
+                charged_hv_bus_setpoint_signal_combo_edit.clear()
+                try:
+                    idx = charged_hv_bus_cmd_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_setpoint_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_setpoint_signals_edit()
+            charged_hv_bus_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_setpoint_signals_edit)
+            
+            # Output Test Current: double input (0-40)
+            charged_hv_bus_output_current_validator_edit = QtGui.QDoubleValidator(0.0, 40.0, 3, self)
+            charged_hv_bus_output_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charged_hv_bus_output_current_edit_edit = QtWidgets.QLineEdit(str(act.get('output_test_current', '10.0')))
+            charged_hv_bus_output_current_edit_edit.setValidator(charged_hv_bus_output_current_validator_edit)
+            charged_hv_bus_output_current_edit_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            charged_hv_bus_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charged_hv_bus_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # DUT Test State Signal: dropdown based on selected message
+            charged_hv_bus_dut_state_signal_combo_edit = QtWidgets.QComboBox()
+            # Enable Relay Signal: dropdown based on selected message
+            charged_hv_bus_enable_relay_signal_combo_edit = QtWidgets.QComboBox()
+            # Enable PFC Signal: dropdown based on selected message
+            charged_hv_bus_enable_pfc_signal_combo_edit = QtWidgets.QComboBox()
+            # PFC Power Good Signal: dropdown based on selected message
+            charged_hv_bus_pfc_power_good_signal_combo_edit = QtWidgets.QComboBox()
+            # PCMC Signal: dropdown based on selected message
+            charged_hv_bus_pcmc_signal_combo_edit = QtWidgets.QComboBox()
+            # PSFB Fault Signal: dropdown based on selected message
+            charged_hv_bus_psfb_fault_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charged_hv_bus_feedback_signals_edit(idx=0):
+                """Update all feedback signal dropdowns based on selected message."""
+                charged_hv_bus_dut_state_signal_combo_edit.clear()
+                charged_hv_bus_enable_relay_signal_combo_edit.clear()
+                charged_hv_bus_enable_pfc_signal_combo_edit.clear()
+                charged_hv_bus_pfc_power_good_signal_combo_edit.clear()
+                charged_hv_bus_pcmc_signal_combo_edit.clear()
+                charged_hv_bus_psfb_fault_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charged_hv_bus_dut_state_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_enable_relay_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_enable_pfc_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_pfc_power_good_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_pcmc_signal_combo_edit.addItems(sigs)
+                    charged_hv_bus_psfb_fault_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charged_hv_bus_feedback_signals_edit(0)
+            charged_hv_bus_feedback_msg_combo_edit.currentIndexChanged.connect(_update_charged_hv_bus_feedback_signals_edit)
+            
+            # Test Time: integer input (>= 1000)
+            charged_hv_bus_test_time_validator_edit = QtGui.QIntValidator(1000, 600000, self)
+            charged_hv_bus_test_time_edit_edit = QtWidgets.QLineEdit(str(act.get('test_time_ms', '30000')))
+            charged_hv_bus_test_time_edit_edit.setValidator(charged_hv_bus_test_time_validator_edit)
+            charged_hv_bus_test_time_edit_edit.setPlaceholderText('e.g., 30000')
+            
+            # Populate Charged HV Bus Test fields from stored data
+            try:
+                cmd_msg_id = act.get('command_signal_source')
+                if cmd_msg_id is not None:
+                    for i in range(charged_hv_bus_cmd_msg_combo_edit.count()):
+                        if charged_hv_bus_cmd_msg_combo_edit.itemData(i) == cmd_msg_id:
+                            charged_hv_bus_cmd_msg_combo_edit.setCurrentIndex(i)
+                            _update_charged_hv_bus_trigger_signals_edit(i)
+                            _update_charged_hv_bus_trim_signals_edit()
+                            _update_charged_hv_bus_setpoint_signals_edit()
+                            break
+                if act.get('test_trigger_signal') and charged_hv_bus_trigger_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_trigger_signal_combo_edit.setCurrentText(str(act.get('test_trigger_signal')))
+                    except Exception:
+                        pass
+                if act.get('set_output_current_trim_signal') and charged_hv_bus_trim_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_trim_signal_combo_edit.setCurrentText(str(act.get('set_output_current_trim_signal')))
+                    except Exception:
+                        pass
+                if act.get('set_output_current_setpoint_signal') and charged_hv_bus_setpoint_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_setpoint_signal_combo_edit.setCurrentText(str(act.get('set_output_current_setpoint_signal')))
+                    except Exception:
+                        pass
+                fb_msg_id = act.get('feedback_signal_source')
+                if fb_msg_id is not None:
+                    for i in range(charged_hv_bus_feedback_msg_combo_edit.count()):
+                        if charged_hv_bus_feedback_msg_combo_edit.itemData(i) == fb_msg_id:
+                            charged_hv_bus_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_charged_hv_bus_feedback_signals_edit(i)
+                            break
+                if act.get('dut_test_state_signal') and charged_hv_bus_dut_state_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_dut_state_signal_combo_edit.setCurrentText(str(act.get('dut_test_state_signal')))
+                    except Exception:
+                        pass
+                if act.get('enable_relay_signal') and charged_hv_bus_enable_relay_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_enable_relay_signal_combo_edit.setCurrentText(str(act.get('enable_relay_signal')))
+                    except Exception:
+                        pass
+                if act.get('enable_pfc_signal') and charged_hv_bus_enable_pfc_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_enable_pfc_signal_combo_edit.setCurrentText(str(act.get('enable_pfc_signal')))
+                    except Exception:
+                        pass
+                if act.get('pfc_power_good_signal') and charged_hv_bus_pfc_power_good_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_pfc_power_good_signal_combo_edit.setCurrentText(str(act.get('pfc_power_good_signal')))
+                    except Exception:
+                        pass
+                if act.get('pcmc_signal') and charged_hv_bus_pcmc_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_pcmc_signal_combo_edit.setCurrentText(str(act.get('pcmc_signal')))
+                    except Exception:
+                        pass
+                if act.get('psfb_fault_signal') and charged_hv_bus_psfb_fault_signal_combo_edit.count():
+                    try:
+                        charged_hv_bus_psfb_fault_signal_combo_edit.setCurrentText(str(act.get('psfb_fault_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Charged HV Bus Test sub-widget
+            charged_hv_bus_layout_edit.addRow('Command Signal Source:', charged_hv_bus_cmd_msg_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Test Trigger Signal:', charged_hv_bus_trigger_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Test Trigger Signal Value:', charged_hv_bus_trigger_value_edit_edit)
+            charged_hv_bus_layout_edit.addRow('Set Output Current Trim Value Signal:', charged_hv_bus_trim_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Fallback Output Current Trim Value (%):', charged_hv_bus_fallback_trim_edit_edit)
+            charged_hv_bus_layout_edit.addRow('Set Output Current Setpoint Signal:', charged_hv_bus_setpoint_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Output Test Current (A):', charged_hv_bus_output_current_edit_edit)
+            charged_hv_bus_layout_edit.addRow('Feedback Signal Source:', charged_hv_bus_feedback_msg_combo_edit)
+            charged_hv_bus_layout_edit.addRow('DUT Test State Signal:', charged_hv_bus_dut_state_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Enable Relay Signal:', charged_hv_bus_enable_relay_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Enable PFC Signal:', charged_hv_bus_enable_pfc_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('PFC Power Good Signal:', charged_hv_bus_pfc_power_good_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('PCMC Signal:', charged_hv_bus_pcmc_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('PSFB Fault Signal:', charged_hv_bus_psfb_fault_signal_combo_edit)
+            charged_hv_bus_layout_edit.addRow('Test Time (ms):', charged_hv_bus_test_time_edit_edit)
+            
+            # Charger Functional Test fields (DBC mode) - for edit dialog
+            charger_functional_widget_edit = QtWidgets.QWidget()
+            charger_functional_layout_edit = QtWidgets.QFormLayout(charger_functional_widget_edit)
+            
+            # Command Signal Source: dropdown of CAN Messages
+            charger_functional_cmd_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charger_functional_cmd_msg_combo_edit.addItem(label, fid)
+            
+            # Test Trigger Signal: dropdown based on selected message
+            charger_functional_trigger_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charger_functional_trigger_signals_edit(idx=0):
+                charger_functional_trigger_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charger_functional_trigger_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charger_functional_trigger_signals_edit(0)
+            charger_functional_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charger_functional_trigger_signals_edit)
+            
+            # Test Trigger Signal Value: integer input (0-255)
+            charger_functional_trigger_value_validator_edit = QtGui.QIntValidator(0, 255, self)
+            charger_functional_trigger_value_edit_edit = QtWidgets.QLineEdit(str(act.get('test_trigger_signal_value', '1')))
+            charger_functional_trigger_value_edit_edit.setValidator(charger_functional_trigger_value_validator_edit)
+            charger_functional_trigger_value_edit_edit.setPlaceholderText('e.g., 1')
+            
+            # Set Output Current Trim Value Signal: dropdown based on command message
+            charger_functional_trim_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charger_functional_trim_signals_edit():
+                charger_functional_trim_signal_combo_edit.clear()
+                try:
+                    idx = charger_functional_cmd_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charger_functional_trim_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charger_functional_trim_signals_edit()
+            charger_functional_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charger_functional_trim_signals_edit)
+            
+            # Fallback Output Current Trim Value: double input (0-200)
+            charger_functional_fallback_trim_validator_edit = QtGui.QDoubleValidator(0.0, 200.0, 2, self)
+            charger_functional_fallback_trim_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charger_functional_fallback_trim_edit_edit = QtWidgets.QLineEdit(str(act.get('fallback_output_current_trim_value', '100.0')))
+            charger_functional_fallback_trim_edit_edit.setValidator(charger_functional_fallback_trim_validator_edit)
+            charger_functional_fallback_trim_edit_edit.setPlaceholderText('e.g., 100.0')
+            
+            # Set Output Current Setpoint Signal: dropdown based on command message
+            charger_functional_setpoint_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charger_functional_setpoint_signals_edit():
+                charger_functional_setpoint_signal_combo_edit.clear()
+                try:
+                    idx = charger_functional_cmd_msg_combo_edit.currentIndex()
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charger_functional_setpoint_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charger_functional_setpoint_signals_edit()
+            charger_functional_cmd_msg_combo_edit.currentIndexChanged.connect(_update_charger_functional_setpoint_signals_edit)
+            
+            # Output Test Current: double input (0-40)
+            charger_functional_output_current_validator_edit = QtGui.QDoubleValidator(0.0, 40.0, 3, self)
+            charger_functional_output_current_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charger_functional_output_current_edit_edit = QtWidgets.QLineEdit(str(act.get('output_test_current', '10.0')))
+            charger_functional_output_current_edit_edit.setValidator(charger_functional_output_current_validator_edit)
+            charger_functional_output_current_edit_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            charger_functional_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                charger_functional_feedback_msg_combo_edit.addItem(label, fid)
+            
+            # DUT Test State Signal: dropdown based on selected message
+            charger_functional_dut_state_signal_combo_edit = QtWidgets.QComboBox()
+            # Enable Relay Signal: dropdown based on selected message
+            charger_functional_enable_relay_signal_combo_edit = QtWidgets.QComboBox()
+            # Enable PFC Signal: dropdown based on selected message
+            charger_functional_enable_pfc_signal_combo_edit = QtWidgets.QComboBox()
+            # PFC Power Good Signal: dropdown based on selected message
+            charger_functional_pfc_power_good_signal_combo_edit = QtWidgets.QComboBox()
+            # PCMC Signal: dropdown based on selected message
+            charger_functional_pcmc_signal_combo_edit = QtWidgets.QComboBox()
+            # Output Current Signal: dropdown based on selected message
+            charger_functional_output_current_signal_combo_edit = QtWidgets.QComboBox()
+            # PSFB Fault Signal: dropdown based on selected message
+            charger_functional_psfb_fault_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_charger_functional_feedback_signals_edit(idx=0):
+                charger_functional_dut_state_signal_combo_edit.clear()
+                charger_functional_enable_relay_signal_combo_edit.clear()
+                charger_functional_enable_pfc_signal_combo_edit.clear()
+                charger_functional_pfc_power_good_signal_combo_edit.clear()
+                charger_functional_pcmc_signal_combo_edit.clear()
+                charger_functional_output_current_signal_combo_edit.clear()
+                charger_functional_psfb_fault_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    charger_functional_dut_state_signal_combo_edit.addItems(sigs)
+                    charger_functional_enable_relay_signal_combo_edit.addItems(sigs)
+                    charger_functional_enable_pfc_signal_combo_edit.addItems(sigs)
+                    charger_functional_pfc_power_good_signal_combo_edit.addItems(sigs)
+                    charger_functional_pcmc_signal_combo_edit.addItems(sigs)
+                    charger_functional_output_current_signal_combo_edit.addItems(sigs)
+                    charger_functional_psfb_fault_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_charger_functional_feedback_signals_edit(0)
+            charger_functional_feedback_msg_combo_edit.currentIndexChanged.connect(_update_charger_functional_feedback_signals_edit)
+            
+            # Output Current Tolerance: double input (>= 0)
+            charger_functional_output_current_tolerance_validator_edit = QtGui.QDoubleValidator(0.0, 999.0, 2, self)
+            charger_functional_output_current_tolerance_validator_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            charger_functional_output_current_tolerance_edit_edit = QtWidgets.QLineEdit(str(act.get('output_current_tolerance', '0.5')))
+            charger_functional_output_current_tolerance_edit_edit.setValidator(charger_functional_output_current_tolerance_validator_edit)
+            charger_functional_output_current_tolerance_edit_edit.setPlaceholderText('e.g., 0.5')
+            
+            # Test Time: integer input (>= 1000)
+            charger_functional_test_time_validator_edit = QtGui.QIntValidator(1000, 600000, self)
+            charger_functional_test_time_edit_edit = QtWidgets.QLineEdit(str(act.get('test_time_ms', '30000')))
+            charger_functional_test_time_edit_edit.setValidator(charger_functional_test_time_validator_edit)
+            charger_functional_test_time_edit_edit.setPlaceholderText('e.g., 30000')
+            
+            # Populate Charger Functional Test fields from stored data
+            try:
+                cmd_msg_id = act.get('command_signal_source')
+                if cmd_msg_id is not None:
+                    for i in range(charger_functional_cmd_msg_combo_edit.count()):
+                        if charger_functional_cmd_msg_combo_edit.itemData(i) == cmd_msg_id:
+                            charger_functional_cmd_msg_combo_edit.setCurrentIndex(i)
+                            _update_charger_functional_trigger_signals_edit(i)
+                            _update_charger_functional_trim_signals_edit()
+                            _update_charger_functional_setpoint_signals_edit()
+                            break
+                if act.get('test_trigger_signal') and charger_functional_trigger_signal_combo_edit.count():
+                    try:
+                        charger_functional_trigger_signal_combo_edit.setCurrentText(str(act.get('test_trigger_signal')))
+                    except Exception:
+                        pass
+                if act.get('set_output_current_trim_signal') and charger_functional_trim_signal_combo_edit.count():
+                    try:
+                        charger_functional_trim_signal_combo_edit.setCurrentText(str(act.get('set_output_current_trim_signal')))
+                    except Exception:
+                        pass
+                if act.get('set_output_current_setpoint_signal') and charger_functional_setpoint_signal_combo_edit.count():
+                    try:
+                        charger_functional_setpoint_signal_combo_edit.setCurrentText(str(act.get('set_output_current_setpoint_signal')))
+                    except Exception:
+                        pass
+                feedback_msg_id = act.get('feedback_signal_source')
+                if feedback_msg_id is not None:
+                    for i in range(charger_functional_feedback_msg_combo_edit.count()):
+                        if charger_functional_feedback_msg_combo_edit.itemData(i) == feedback_msg_id:
+                            charger_functional_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_charger_functional_feedback_signals_edit(i)
+                            break
+                if act.get('dut_test_state_signal') and charger_functional_dut_state_signal_combo_edit.count():
+                    try:
+                        charger_functional_dut_state_signal_combo_edit.setCurrentText(str(act.get('dut_test_state_signal')))
+                    except Exception:
+                        pass
+                if act.get('enable_relay_signal') and charger_functional_enable_relay_signal_combo_edit.count():
+                    try:
+                        charger_functional_enable_relay_signal_combo_edit.setCurrentText(str(act.get('enable_relay_signal')))
+                    except Exception:
+                        pass
+                if act.get('enable_pfc_signal') and charger_functional_enable_pfc_signal_combo_edit.count():
+                    try:
+                        charger_functional_enable_pfc_signal_combo_edit.setCurrentText(str(act.get('enable_pfc_signal')))
+                    except Exception:
+                        pass
+                if act.get('pfc_power_good_signal') and charger_functional_pfc_power_good_signal_combo_edit.count():
+                    try:
+                        charger_functional_pfc_power_good_signal_combo_edit.setCurrentText(str(act.get('pfc_power_good_signal')))
+                    except Exception:
+                        pass
+                if act.get('pcmc_signal') and charger_functional_pcmc_signal_combo_edit.count():
+                    try:
+                        charger_functional_pcmc_signal_combo_edit.setCurrentText(str(act.get('pcmc_signal')))
+                    except Exception:
+                        pass
+                if act.get('output_current_signal') and charger_functional_output_current_signal_combo_edit.count():
+                    try:
+                        charger_functional_output_current_signal_combo_edit.setCurrentText(str(act.get('output_current_signal')))
+                    except Exception:
+                        pass
+                if act.get('psfb_fault_signal') and charger_functional_psfb_fault_signal_combo_edit.count():
+                    try:
+                        charger_functional_psfb_fault_signal_combo_edit.setCurrentText(str(act.get('psfb_fault_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Charger Functional Test sub-widget
+            charger_functional_layout_edit.addRow('Command Signal Source:', charger_functional_cmd_msg_combo_edit)
+            charger_functional_layout_edit.addRow('Test Trigger Signal:', charger_functional_trigger_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Test Trigger Signal Value:', charger_functional_trigger_value_edit_edit)
+            charger_functional_layout_edit.addRow('Set Output Current Trim Value Signal:', charger_functional_trim_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Fallback Output Current Trim Value (%):', charger_functional_fallback_trim_edit_edit)
+            charger_functional_layout_edit.addRow('Set Output Current Setpoint Signal:', charger_functional_setpoint_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Output Test Current (A):', charger_functional_output_current_edit_edit)
+            charger_functional_layout_edit.addRow('Feedback Signal Source:', charger_functional_feedback_msg_combo_edit)
+            charger_functional_layout_edit.addRow('DUT Test State Signal:', charger_functional_dut_state_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Enable Relay Signal:', charger_functional_enable_relay_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Enable PFC Signal:', charger_functional_enable_pfc_signal_combo_edit)
+            charger_functional_layout_edit.addRow('PFC Power Good Signal:', charger_functional_pfc_power_good_signal_combo_edit)
+            charger_functional_layout_edit.addRow('PCMC Signal:', charger_functional_pcmc_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Output Current Signal:', charger_functional_output_current_signal_combo_edit)
+            charger_functional_layout_edit.addRow('PSFB Fault Signal:', charger_functional_psfb_fault_signal_combo_edit)
+            charger_functional_layout_edit.addRow('Output Current Tolerance (A):', charger_functional_output_current_tolerance_edit_edit)
+            charger_functional_layout_edit.addRow('Test Time (ms):', charger_functional_test_time_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -8789,6 +14180,55 @@ Data Points Used: {data_points}"""
             temperature_validation_layout.addRow('Tolerance (°C):', temp_val_tolerance_edit_fallback_edit)
             temperature_validation_layout.addRow('Dwell Time (ms):', temp_val_dwell_time_edit_fallback_edit)
             
+            # Analog PWM Sensor Test fields (fallback when no DBC) - for edit dialog
+            analog_pwm_fb_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_signal_source', '')))
+            analog_pwm_frequency_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_pwm_frequency_signal', '')))
+            analog_pwm_duty_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('feedback_duty_signal', '')))
+            
+            # Reference PWM frequency input (float, in Hz)
+            pwm_freq_reference_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_reference_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_frequency_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('reference_pwm_frequency', '')))
+            analog_pwm_reference_frequency_edit_fallback_edit.setValidator(pwm_freq_reference_validator_fallback_edit)
+            analog_pwm_reference_frequency_edit_fallback_edit.setPlaceholderText('e.g., 1000.0')
+            
+            # Reference duty input (float, in %)
+            duty_reference_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_reference_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_reference_duty_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('reference_duty', '')))
+            analog_pwm_reference_duty_edit_fallback_edit.setValidator(duty_reference_validator_fallback_edit)
+            analog_pwm_reference_duty_edit_fallback_edit.setPlaceholderText('e.g., 50.0')
+            
+            # PWM frequency tolerance input (float, in Hz)
+            pwm_freq_tolerance_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 1000000.0, 2, self)
+            pwm_freq_tolerance_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_frequency_tolerance_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('pwm_frequency_tolerance', '')))
+            analog_pwm_frequency_tolerance_edit_fallback_edit.setValidator(pwm_freq_tolerance_validator_fallback_edit)
+            analog_pwm_frequency_tolerance_edit_fallback_edit.setPlaceholderText('e.g., 10.0')
+            
+            # Duty tolerance input (float, in %)
+            duty_tolerance_validator_fallback_edit = QtGui.QDoubleValidator(0.0, 100.0, 2, self)
+            duty_tolerance_validator_fallback_edit.setNotation(QtGui.QDoubleValidator.StandardNotation)
+            analog_pwm_duty_tolerance_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('duty_tolerance', '')))
+            analog_pwm_duty_tolerance_edit_fallback_edit.setValidator(duty_tolerance_validator_fallback_edit)
+            analog_pwm_duty_tolerance_edit_fallback_edit.setPlaceholderText('e.g., 1.0')
+            
+            # Acquisition time input (int, in ms)
+            pwm_acquisition_time_validator_fallback_edit = QtGui.QIntValidator(1, 60000, self)
+            analog_pwm_acquisition_time_edit_fallback_edit = QtWidgets.QLineEdit(str(act.get('acquisition_time_ms', '')))
+            analog_pwm_acquisition_time_edit_fallback_edit.setValidator(pwm_acquisition_time_validator_fallback_edit)
+            analog_pwm_acquisition_time_edit_fallback_edit.setPlaceholderText('e.g., 3000')
+            
+            # Populate Analog PWM Sensor sub-widget (fallback)
+            analog_pwm_sensor_layout_edit.addRow('Feedback Signal Source (CAN ID):', analog_pwm_fb_msg_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Signal:', analog_pwm_frequency_signal_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Signal:', analog_pwm_duty_signal_edit_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference PWM Frequency (Hz):', analog_pwm_reference_frequency_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('Reference Duty (%):', analog_pwm_reference_duty_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('PWM Frequency Tolerance (Hz):', analog_pwm_frequency_tolerance_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('Duty Tolerance (%):', analog_pwm_duty_tolerance_edit_fallback_edit)
+            analog_pwm_sensor_layout_edit.addRow('Acquisition Time (ms):', analog_pwm_acquisition_time_edit_fallback_edit)
+            
             # Fan Control Test fields (fallback when no DBC) - for edit dialog
             fan_control_trigger_msg_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_test_trigger_source', '')))
             fan_control_trigger_signal_edit_edit = QtWidgets.QLineEdit(str(act.get('fan_test_trigger_signal', '')))
@@ -8821,6 +14261,12 @@ Data Points Used: {data_points}"""
 
         form.addRow('Name:', name_edit)
         form.addRow('Type:', type_combo)
+        # Test Mode field (0-3, default 0)
+        test_mode_spin_edit = QtWidgets.QSpinBox()
+        test_mode_spin_edit.setRange(0, 3)
+        test_mode_spin_edit.setValue(data.get('test_mode', 0))
+        test_mode_spin_edit.setToolTip('DUT must be in this test mode before test execution (0-3)')
+        form.addRow('Test Mode:', test_mode_spin_edit)
         # Feedback fields - store references for showing/hiding
         fb_msg_label = None
         fb_signal_label = None
@@ -8843,10 +14289,15 @@ Data Points Used: {data_points}"""
         test_type_to_index_edit['Analog Sweep Test'] = act_stacked_edit.addWidget(analog_widget)
         test_type_to_index_edit['Phase Current Test'] = act_stacked_edit.addWidget(phase_current_widget)
         test_type_to_index_edit['Analog Static Test'] = act_stacked_edit.addWidget(analog_static_widget)
+        test_type_to_index_edit['Analog PWM Sensor'] = act_stacked_edit.addWidget(analog_pwm_sensor_widget_edit)
         test_type_to_index_edit['Temperature Validation Test'] = act_stacked_edit.addWidget(temperature_validation_widget)
         test_type_to_index_edit['Fan Control Test'] = act_stacked_edit.addWidget(fan_control_widget_edit)
         test_type_to_index_edit['External 5V Test'] = act_stacked_edit.addWidget(ext_5v_test_widget_edit)
         test_type_to_index_edit['DC Bus Sensing'] = act_stacked_edit.addWidget(dc_bus_sensing_widget_edit)
+        if self.dbc_service is not None and self.dbc_service.is_loaded():
+            test_type_to_index_edit['Output Current Calibration'] = act_stacked_edit.addWidget(output_current_calibration_widget_edit)
+            test_type_to_index_edit['Charged HV Bus Test'] = act_stacked_edit.addWidget(charged_hv_bus_widget_edit)
+            test_type_to_index_edit['Charger Functional Test'] = act_stacked_edit.addWidget(charger_functional_widget_edit)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked_edit)
@@ -8868,7 +14319,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -8899,16 +14350,31 @@ Data Points Used: {data_points}"""
             
             data['name'] = new_name
             data['type'] = type_combo.currentText()
+            # Update test_mode
+            data['test_mode'] = test_mode_spin_edit.value()
             # feedback
-            if self.dbc_service is not None and self.dbc_service.is_loaded():
-                try:
-                    data['feedback_message_id'] = fb_msg_combo.currentData()
-                    data['feedback_signal'] = fb_signal_combo.currentText().strip()
-                except Exception:
-                    data['feedback_message_id'] = None
-                    data['feedback_signal'] = ''
+            # Only save feedback fields for test types that use them
+            # Test types that have their own feedback fields inside actuation don't need these
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
+                                          'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test')
+            
+            if data['type'] not in test_types_with_own_feedback:
+                # Only read and save feedback fields for test types that use them
+                if self.dbc_service is not None and self.dbc_service.is_loaded():
+                    try:
+                        data['feedback_message_id'] = fb_msg_combo.currentData()
+                        data['feedback_signal'] = fb_signal_combo.currentText().strip()
+                    except Exception:
+                        data['feedback_message_id'] = None
+                        data['feedback_signal'] = ''
+                else:
+                    data['feedback_signal'] = feedback_edit.text().strip()
             else:
-                data['feedback_signal'] = feedback_edit.text().strip()
+                # Remove feedback fields if they exist (for test types that don't use them)
+                if 'feedback_signal' in data:
+                    del data['feedback_signal']
+                if 'feedback_message_id' in data:
+                    del data['feedback_message_id']
 
             # actuation
             if self.dbc_service is not None and self.dbc_service.is_loaded():
@@ -9137,6 +14603,76 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif data['type'] == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test: read all fields (DBC mode)
+                    try:
+                        fb_msg_id = analog_pwm_fb_msg_combo_edit.currentData() if 'analog_pwm_fb_msg_combo_edit' in locals() else None
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_combo_edit.currentText().strip() if 'analog_pwm_frequency_signal_combo_edit' in locals() and analog_pwm_frequency_signal_combo_edit.count() else ''
+                    duty_signal = analog_pwm_duty_signal_combo_edit.currentText().strip() if 'analog_pwm_duty_signal_combo_edit' in locals() and analog_pwm_duty_signal_combo_edit.count() else ''
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference_edit(analog_pwm_reference_frequency_edit_edit) if 'analog_pwm_reference_frequency_edit_edit' in locals() else None
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference_edit(analog_pwm_reference_duty_edit_edit) if 'analog_pwm_reference_duty_edit_edit' in locals() else None
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance_edit(analog_pwm_frequency_tolerance_edit_edit) if 'analog_pwm_frequency_tolerance_edit_edit' in locals() else None
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance_edit(analog_pwm_duty_tolerance_edit_edit) if 'analog_pwm_duty_tolerance_edit_edit' in locals() else None
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition_edit(analog_pwm_acquisition_time_edit_edit) if 'analog_pwm_acquisition_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
+                    }
                 elif data['type'] == 'Fan Control Test':
                     # Fan Control Test: read all fields (DBC mode)
                     try:
@@ -9274,6 +14810,301 @@ Data Points Used: {data_points}"""
                         'feedback_signal': feedback_signal,
                         'dwell_time_ms': dwell_time_val,
                         'tolerance_v': tolerance_val,
+                    }
+                elif data['type'] == 'Output Current Calibration':
+                    # Output Current Calibration: read all fields (DBC mode)
+                    try:
+                        trigger_msg_id = output_current_trigger_msg_combo_edit.currentData() if 'output_current_trigger_msg_combo_edit' in locals() else None
+                    except Exception:
+                        trigger_msg_id = None
+                    trigger_signal = output_current_trigger_signal_combo_edit.currentText().strip() if 'output_current_trigger_signal_combo_edit' in locals() and output_current_trigger_signal_combo_edit.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_output_current_trigger_value_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_output_current_trigger_value_edit(output_current_trigger_value_edit_edit) if 'output_current_trigger_value_edit_edit' in locals() else None
+                    
+                    setpoint_signal = output_current_setpoint_signal_combo_edit.currentText().strip() if 'output_current_setpoint_signal_combo_edit' in locals() and output_current_setpoint_signal_combo_edit.count() else ''
+                    
+                    trim_signal = output_current_trim_signal_combo_edit.currentText().strip() if 'output_current_trim_signal_combo_edit' in locals() and output_current_trim_signal_combo_edit.count() else ''
+                    
+                    # Initial Trim Value (float, 0.0000-200.0000)
+                    def _to_float_or_none_output_current_initial_trim_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    initial_trim_value = _to_float_or_none_output_current_initial_trim_edit(output_current_initial_trim_edit_edit) if 'output_current_initial_trim_edit_edit' in locals() else None
+                    
+                    try:
+                        feedback_msg_id = output_current_feedback_msg_combo_edit.currentData() if 'output_current_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    feedback_signal = output_current_feedback_signal_combo_edit.currentText().strip() if 'output_current_feedback_signal_combo_edit' in locals() and output_current_feedback_signal_combo_edit.count() else ''
+                    
+                    osc_channel = output_current_osc_channel_combo_edit.currentText().strip() if 'output_current_osc_channel_combo_edit' in locals() and output_current_osc_channel_combo_edit.count() else ''
+                    timebase = output_current_timebase_combo_edit.currentText().strip() if 'output_current_timebase_combo_edit' in locals() and output_current_timebase_combo_edit.count() else ''
+                    
+                    # Minimum Test Current (float)
+                    def _to_float_or_none_output_current_min_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    min_current = _to_float_or_none_output_current_min_edit(output_current_min_current_edit_edit) if 'output_current_min_current_edit_edit' in locals() else None
+                    
+                    # Maximum Test Current (float)
+                    def _to_float_or_none_output_current_max_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    max_current = _to_float_or_none_output_current_max_edit(output_current_max_current_edit_edit) if 'output_current_max_current_edit_edit' in locals() else None
+                    
+                    # Step Current (float)
+                    def _to_float_or_none_output_current_step_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    step_current = _to_float_or_none_output_current_step_edit(output_current_step_current_edit_edit) if 'output_current_step_current_edit_edit' in locals() else None
+                    
+                    # Pre-Acquisition Time (int)
+                    def _to_int_or_none_output_current_pre_acq_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pre_acq_time = _to_int_or_none_output_current_pre_acq_edit(output_current_pre_acq_edit_edit) if 'output_current_pre_acq_edit_edit' in locals() else None
+                    
+                    # Acquisition Time (int)
+                    def _to_int_or_none_output_current_acq_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acq_time = _to_int_or_none_output_current_acq_edit(output_current_acq_edit_edit) if 'output_current_acq_edit_edit' in locals() else None
+                    
+                    # Tolerance (float, in %)
+                    def _to_float_or_none_output_current_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    tolerance_percent = _to_float_or_none_output_current_tolerance_edit(output_current_tolerance_edit_edit) if 'output_current_tolerance_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Output Current Calibration',
+                        'test_trigger_source': trigger_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'current_setpoint_signal': setpoint_signal,
+                        'output_current_trim_signal': trim_signal,
+                        'initial_trim_value': initial_trim_value,
+                        'feedback_signal_source': feedback_msg_id,
+                        'feedback_signal': feedback_signal,
+                        'oscilloscope_channel': osc_channel,
+                        'oscilloscope_timebase': timebase,
+                        'minimum_test_current': min_current,
+                        'maximum_test_current': max_current,
+                        'step_current': step_current,
+                        'pre_acquisition_time_ms': pre_acq_time,
+                        'acquisition_time_ms': acq_time,
+                        'tolerance_percent': tolerance_percent,
+                    }
+                elif data['type'] == 'Charged HV Bus Test':
+                    # Charged HV Bus Test: read all fields (DBC mode)
+                    try:
+                        cmd_msg_id = charged_hv_bus_cmd_msg_combo_edit.currentData() if 'charged_hv_bus_cmd_msg_combo_edit' in locals() else None
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_signal = charged_hv_bus_trigger_signal_combo_edit.currentText().strip() if 'charged_hv_bus_trigger_signal_combo_edit' in locals() and charged_hv_bus_trigger_signal_combo_edit.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_charged_hv_bus_trigger_value_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_charged_hv_bus_trigger_value_edit(charged_hv_bus_trigger_value_edit_edit) if 'charged_hv_bus_trigger_value_edit_edit' in locals() else None
+                    
+                    trim_signal = charged_hv_bus_trim_signal_combo_edit.currentText().strip() if 'charged_hv_bus_trim_signal_combo_edit' in locals() and charged_hv_bus_trim_signal_combo_edit.count() else ''
+                    
+                    # Fallback Output Current Trim Value (float, 0-200)
+                    def _to_float_or_none_charged_hv_bus_fallback_trim_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    fallback_trim = _to_float_or_none_charged_hv_bus_fallback_trim_edit(charged_hv_bus_fallback_trim_edit_edit) if 'charged_hv_bus_fallback_trim_edit_edit' in locals() else None
+                    
+                    setpoint_signal = charged_hv_bus_setpoint_signal_combo_edit.currentText().strip() if 'charged_hv_bus_setpoint_signal_combo_edit' in locals() and charged_hv_bus_setpoint_signal_combo_edit.count() else ''
+                    
+                    # Output Test Current (float, 0-40)
+                    def _to_float_or_none_charged_hv_bus_output_current_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current = _to_float_or_none_charged_hv_bus_output_current_edit(charged_hv_bus_output_current_edit_edit) if 'charged_hv_bus_output_current_edit_edit' in locals() else None
+                    
+                    try:
+                        feedback_msg_id = charged_hv_bus_feedback_msg_combo_edit.currentData() if 'charged_hv_bus_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    dut_state_signal = charged_hv_bus_dut_state_signal_combo_edit.currentText().strip() if 'charged_hv_bus_dut_state_signal_combo_edit' in locals() and charged_hv_bus_dut_state_signal_combo_edit.count() else ''
+                    enable_relay_signal = charged_hv_bus_enable_relay_signal_combo_edit.currentText().strip() if 'charged_hv_bus_enable_relay_signal_combo_edit' in locals() and charged_hv_bus_enable_relay_signal_combo_edit.count() else ''
+                    enable_pfc_signal = charged_hv_bus_enable_pfc_signal_combo_edit.currentText().strip() if 'charged_hv_bus_enable_pfc_signal_combo_edit' in locals() and charged_hv_bus_enable_pfc_signal_combo_edit.count() else ''
+                    pfc_power_good_signal = charged_hv_bus_pfc_power_good_signal_combo_edit.currentText().strip() if 'charged_hv_bus_pfc_power_good_signal_combo_edit' in locals() and charged_hv_bus_pfc_power_good_signal_combo_edit.count() else ''
+                    pcmc_signal = charged_hv_bus_pcmc_signal_combo_edit.currentText().strip() if 'charged_hv_bus_pcmc_signal_combo_edit' in locals() and charged_hv_bus_pcmc_signal_combo_edit.count() else ''
+                    psfb_fault_signal = charged_hv_bus_psfb_fault_signal_combo_edit.currentText().strip() if 'charged_hv_bus_psfb_fault_signal_combo_edit' in locals() and charged_hv_bus_psfb_fault_signal_combo_edit.count() else ''
+                    
+                    # Test Time (int, >= 1000)
+                    def _to_int_or_none_charged_hv_bus_test_time_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    test_time = _to_int_or_none_charged_hv_bus_test_time_edit(charged_hv_bus_test_time_edit_edit) if 'charged_hv_bus_test_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Charged HV Bus Test',
+                        'command_signal_source': cmd_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'set_output_current_trim_signal': trim_signal,
+                        'fallback_output_current_trim_value': fallback_trim,
+                        'set_output_current_setpoint_signal': setpoint_signal,
+                        'output_test_current': output_current,
+                        'feedback_signal_source': feedback_msg_id,
+                        'dut_test_state_signal': dut_state_signal,
+                        'enable_relay_signal': enable_relay_signal,
+                        'enable_pfc_signal': enable_pfc_signal,
+                        'pfc_power_good_signal': pfc_power_good_signal,
+                        'pcmc_signal': pcmc_signal,
+                        'psfb_fault_signal': psfb_fault_signal,
+                        'test_time_ms': test_time,
+                    }
+                elif data['type'] == 'Charger Functional Test':
+                    # Charger Functional Test: read all fields (DBC mode)
+                    try:
+                        cmd_msg_id = charger_functional_cmd_msg_combo_edit.currentData() if 'charger_functional_cmd_msg_combo_edit' in locals() else None
+                    except Exception:
+                        cmd_msg_id = None
+                    trigger_signal = charger_functional_trigger_signal_combo_edit.currentText().strip() if 'charger_functional_trigger_signal_combo_edit' in locals() and charger_functional_trigger_signal_combo_edit.count() else ''
+                    
+                    # Test Trigger Signal Value (int, 0-255)
+                    def _to_int_or_none_charger_functional_trigger_value_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    trigger_value = _to_int_or_none_charger_functional_trigger_value_edit(charger_functional_trigger_value_edit_edit) if 'charger_functional_trigger_value_edit_edit' in locals() else None
+                    
+                    trim_signal = charger_functional_trim_signal_combo_edit.currentText().strip() if 'charger_functional_trim_signal_combo_edit' in locals() and charger_functional_trim_signal_combo_edit.count() else ''
+                    
+                    # Fallback Output Current Trim Value (float, 0-200)
+                    def _to_float_or_none_charger_functional_fallback_trim_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    fallback_trim = _to_float_or_none_charger_functional_fallback_trim_edit(charger_functional_fallback_trim_edit_edit) if 'charger_functional_fallback_trim_edit_edit' in locals() else None
+                    
+                    setpoint_signal = charger_functional_setpoint_signal_combo_edit.currentText().strip() if 'charger_functional_setpoint_signal_combo_edit' in locals() and charger_functional_setpoint_signal_combo_edit.count() else ''
+                    
+                    # Output Test Current (float, 0-40)
+                    def _to_float_or_none_charger_functional_output_current_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current = _to_float_or_none_charger_functional_output_current_edit(charger_functional_output_current_edit_edit) if 'charger_functional_output_current_edit_edit' in locals() else None
+                    
+                    try:
+                        feedback_msg_id = charger_functional_feedback_msg_combo_edit.currentData() if 'charger_functional_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    dut_state_signal = charger_functional_dut_state_signal_combo_edit.currentText().strip() if 'charger_functional_dut_state_signal_combo_edit' in locals() and charger_functional_dut_state_signal_combo_edit.count() else ''
+                    enable_relay_signal = charger_functional_enable_relay_signal_combo_edit.currentText().strip() if 'charger_functional_enable_relay_signal_combo_edit' in locals() and charger_functional_enable_relay_signal_combo_edit.count() else ''
+                    enable_pfc_signal = charger_functional_enable_pfc_signal_combo_edit.currentText().strip() if 'charger_functional_enable_pfc_signal_combo_edit' in locals() and charger_functional_enable_pfc_signal_combo_edit.count() else ''
+                    pfc_power_good_signal = charger_functional_pfc_power_good_signal_combo_edit.currentText().strip() if 'charger_functional_pfc_power_good_signal_combo_edit' in locals() and charger_functional_pfc_power_good_signal_combo_edit.count() else ''
+                    pcmc_signal = charger_functional_pcmc_signal_combo_edit.currentText().strip() if 'charger_functional_pcmc_signal_combo_edit' in locals() and charger_functional_pcmc_signal_combo_edit.count() else ''
+                    output_current_signal = charger_functional_output_current_signal_combo_edit.currentText().strip() if 'charger_functional_output_current_signal_combo_edit' in locals() and charger_functional_output_current_signal_combo_edit.count() else ''
+                    psfb_fault_signal = charger_functional_psfb_fault_signal_combo_edit.currentText().strip() if 'charger_functional_psfb_fault_signal_combo_edit' in locals() and charger_functional_psfb_fault_signal_combo_edit.count() else ''
+                    
+                    # Output Current Tolerance (float, >= 0)
+                    def _to_float_or_none_charger_functional_tolerance_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    output_current_tolerance = _to_float_or_none_charger_functional_tolerance_edit(charger_functional_output_current_tolerance_edit_edit) if 'charger_functional_output_current_tolerance_edit_edit' in locals() else None
+                    
+                    # Test Time (int, >= 1000)
+                    def _to_int_or_none_charger_functional_test_time_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    test_time = _to_int_or_none_charger_functional_test_time_edit(charger_functional_test_time_edit_edit) if 'charger_functional_test_time_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Charger Functional Test',
+                        'command_signal_source': cmd_msg_id,
+                        'test_trigger_signal': trigger_signal,
+                        'test_trigger_signal_value': trigger_value,
+                        'set_output_current_trim_signal': trim_signal,
+                        'fallback_output_current_trim_value': fallback_trim,
+                        'set_output_current_setpoint_signal': setpoint_signal,
+                        'output_test_current': output_current,
+                        'feedback_signal_source': feedback_msg_id,
+                        'dut_test_state_signal': dut_state_signal,
+                        'enable_relay_signal': enable_relay_signal,
+                        'enable_pfc_signal': enable_pfc_signal,
+                        'pfc_power_good_signal': pfc_power_good_signal,
+                        'pcmc_signal': pcmc_signal,
+                        'output_current_signal': output_current_signal,
+                        'psfb_fault_signal': psfb_fault_signal,
+                        'output_current_tolerance': output_current_tolerance,
+                        'test_time_ms': test_time,
                     }
             else:
                 if data['type'] == 'Digital Logic Test':
@@ -9490,6 +15321,76 @@ Data Points Used: {data_points}"""
                         'tolerance_c': tolerance_c_val,
                         'dwell_time_ms': dwell_time_val,
                     }
+                elif data['type'] == 'Analog PWM Sensor':
+                    # Analog PWM Sensor Test (no DBC): read from text fields
+                    try:
+                        fb_msg_id = int(analog_pwm_fb_msg_edit_edit.text().strip(), 0) if 'analog_pwm_fb_msg_edit_edit' in locals() and analog_pwm_fb_msg_edit_edit.text().strip() else None
+                    except Exception:
+                        fb_msg_id = None
+                    pwm_frequency_signal = analog_pwm_frequency_signal_edit_edit.text().strip() if 'analog_pwm_frequency_signal_edit_edit' in locals() else ''
+                    duty_signal = analog_pwm_duty_signal_edit_edit.text().strip() if 'analog_pwm_duty_signal_edit_edit' in locals() else ''
+                    
+                    # Reference PWM frequency (float)
+                    def _to_float_or_none_pwm_freq_reference_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_pwm_freq_val = _to_float_or_none_pwm_freq_reference_fallback_edit(analog_pwm_reference_frequency_edit_fallback_edit) if 'analog_pwm_reference_frequency_edit_fallback_edit' in locals() else None
+                    
+                    # Reference duty (float)
+                    def _to_float_or_none_duty_reference_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    reference_duty_val = _to_float_or_none_duty_reference_fallback_edit(analog_pwm_reference_duty_edit_fallback_edit) if 'analog_pwm_reference_duty_edit_fallback_edit' in locals() else None
+                    
+                    # PWM frequency tolerance (float)
+                    def _to_float_or_none_pwm_freq_tolerance_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    pwm_freq_tolerance_val = _to_float_or_none_pwm_freq_tolerance_fallback_edit(analog_pwm_frequency_tolerance_edit_fallback_edit) if 'analog_pwm_frequency_tolerance_edit_fallback_edit' in locals() else None
+                    
+                    # Duty tolerance (float)
+                    def _to_float_or_none_duty_tolerance_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return float(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    duty_tolerance_val = _to_float_or_none_duty_tolerance_fallback_edit(analog_pwm_duty_tolerance_edit_fallback_edit) if 'analog_pwm_duty_tolerance_edit_fallback_edit' in locals() else None
+                    
+                    # Acquisition time (int)
+                    def _to_int_or_none_acquisition_fallback_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    acquisition_time_val = _to_int_or_none_acquisition_fallback_edit(analog_pwm_acquisition_time_edit_fallback_edit) if 'analog_pwm_acquisition_time_edit_fallback_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Analog PWM Sensor',
+                        'feedback_signal_source': fb_msg_id,
+                        'feedback_pwm_frequency_signal': pwm_frequency_signal,
+                        'feedback_duty_signal': duty_signal,
+                        'reference_pwm_frequency': reference_pwm_freq_val,
+                        'reference_duty': reference_duty_val,
+                        'pwm_frequency_tolerance': pwm_freq_tolerance_val,
+                        'duty_tolerance': duty_tolerance_val,
+                        'acquisition_time_ms': acquisition_time_val,
+                    }
                 elif data['type'] == 'Fan Control Test':
                     # Fan Control Test (no DBC): read from text fields
                     try:
@@ -9576,12 +15477,12 @@ Data Points Used: {data_points}"""
         """
         idx = self.test_list.currentRow()
         if idx < 0 or idx >= len(self._tests):
-            self.status_label.setText('No test selected')
+            self.status_label.setText('Test Status : No test selected')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
             return
         t = self._tests[idx]
         self.tabs_main.setCurrentIndex(self.status_tab_index)
-        self.status_label.setText(f'Running test: {t.get("name", "<unnamed>")}')
+        self.status_label.setText(f'Test Status : Running test: {t.get("name", "<unnamed>")}')
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Starting test: {t.get("name", "<unnamed>")}')
         start_time = time.time()
@@ -9593,7 +15494,7 @@ Data Points Used: {data_points}"""
                     ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
                     if v is not None:
                         try:
-                            self.feedback_signal_label.setText(str(v))
+                            self._update_signal_with_status('feedback_signal', v)
                         except Exception:
                             pass
             except Exception:
@@ -9603,7 +15504,7 @@ Data Points Used: {data_points}"""
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
             result = 'PASS' if ok else 'FAIL'
-            self.status_label.setText(f'Test completed: {result}')
+            self.status_label.setText(f'Test Status : Test completed: {result}')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Result: {result}\n{info}')
             # Add to table
@@ -9635,7 +15536,7 @@ Data Points Used: {data_points}"""
         except Exception as e:
             end_time = time.time()
             exec_time = f"{end_time - start_time:.2f}s"
-            self.status_label.setText('Test error')
+            self.status_label.setText('Test Status : Test error')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Error: {e}')
             # Retrieve plot data that was captured at the end of run_single_test (even if failed, may have partial data)
@@ -9686,7 +15587,7 @@ Data Points Used: {data_points}"""
         
         # Clear execution log
         self.test_log.clear()
-        self.status_label.setText('Results cleared')
+        self.status_label.setText('Test Status : Results cleared')
         
         # Clear DUT UID input and state (user must enter it again for next test sequence)
         if hasattr(self, 'dut_uid_input'):
@@ -9715,6 +15616,144 @@ Data Points Used: {data_points}"""
         only for test sequences via Run Sequence button.
         """
         self._on_run_selected()
+    
+    @QtCore.Slot()
+    def _show_charged_hv_bus_safety_dialog(self) -> None:
+        """Show pre-test safety dialog for Charged HV Bus Test.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.BlockingQueuedConnection.
+        
+        The result is stored in self._charged_hv_bus_dialog_result for retrieval.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            # Ensure we're in the main thread
+            from PySide6 import QtCore
+            if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+                logger.error("_show_charged_hv_bus_safety_dialog called from non-main thread!")
+                self._charged_hv_bus_dialog_result = QMessageBox.No
+                return
+            
+            # Create dialog with proper parent to ensure it's modal
+            msg_box = QMessageBox(self)
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            msg_box.setWindowTitle("Pre-Test Safety Check - Charged HV Bus Test")
+            msg_box.setText("Hardware Connection Requirements:")
+            msg_box.setInformativeText(
+                "1. Ensure that AC Input is connected to a switchable AC Input\n"
+                "2. Ensure that DC Output is connected to a Battery/Load Back\n\n"
+                "Proceed to Run Test?"
+            )
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.Yes)
+            
+            # Show dialog and store result
+            # exec() will block until user clicks a button
+            result = msg_box.exec()
+            self._charged_hv_bus_dialog_result = result
+        except Exception as e:
+            logger.error(f"Error in _show_charged_hv_bus_safety_dialog: {e}", exc_info=True)
+            # Return No on error to be safe
+            self._charged_hv_bus_dialog_result = QMessageBox.No
+    
+    @QtCore.Slot()
+    def _show_charger_functional_safety_dialog(self) -> None:
+        """Show pre-test safety dialog for Charger Functional Test.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.BlockingQueuedConnection.
+        
+        The result is stored in self._charger_functional_dialog_result for retrieval.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            # Ensure we're in the main thread
+            from PySide6 import QtCore
+            if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+                logger.error("_show_charger_functional_safety_dialog called from non-main thread!")
+                self._charger_functional_dialog_result = QMessageBox.No
+                return
+            
+            # Create dialog with proper parent to ensure it's modal
+            msg_box = QMessageBox(self)
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            msg_box.setWindowTitle("Pre-Test Safety Check - Charger Functional Test")
+            msg_box.setText("Hardware Connection Requirements:")
+            msg_box.setInformativeText(
+                "1. Ensure that AC Input is connected to a switchable AC Input\n"
+                "2. Ensure that DC Output is connected to a Battery/Load Bank\n\n"
+                "Proceed to Run Test?"
+            )
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.Yes)
+            
+            # Show dialog and store result
+            # exec() will block until user clicks a button
+            result = msg_box.exec()
+            self._charger_functional_dialog_result = result
+        except Exception as e:
+            logger.error(f"Error in _show_charger_functional_safety_dialog: {e}", exc_info=True)
+            # Return No on error to be safe
+            self._charger_functional_dialog_result = QMessageBox.No
+    
+    @QtCore.Slot()
+    def _show_output_current_calibration_safety_dialog(self) -> None:
+        """Show pre-test safety dialog for Output Current Calibration Test.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.BlockingQueuedConnection.
+        
+        The result is stored in self._output_current_calibration_dialog_result for retrieval.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            # Ensure we're in the main thread
+            from PySide6 import QtCore
+            if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+                logger.error("_show_output_current_calibration_safety_dialog called from non-main thread!")
+                self._output_current_calibration_dialog_result = QMessageBox.No
+                return
+            
+            # Create dialog with proper parent to ensure it's modal
+            msg_box = QMessageBox(self)
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            msg_box.setWindowTitle("Pre-Test Safety Check - Output Current Calibration Test")
+            msg_box.setText("Hardware Connection Requirements:")
+            msg_box.setInformativeText(
+                "1. Ensure that AC Input is connected to a Regulated Power Supply with Maximum 60V and current limited.\n"
+                "2. Ensure that DC Output is connected to a appropriate Low resistive load for current calibration.\n\n"
+                "Proceed to Run Test?"
+            )
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.Yes)
+            
+            # Show dialog and store result
+            # exec() will block until user clicks a button
+            result = msg_box.exec()
+            self._output_current_calibration_dialog_result = result
+        except Exception as e:
+            logger.error(f"Error in _show_output_current_calibration_safety_dialog: {e}", exc_info=True)
+            # Return No on error to be safe
+            self._output_current_calibration_dialog_result = QMessageBox.No
+    
+    @QtCore.Slot()
+    def _request_test_sequence_pause(self) -> None:
+        """Safely request pause on test execution thread from main thread.
+        
+        This method must be called from the main GUI thread.
+        It can be invoked from a background thread using QMetaObject.invokeMethod
+        with Qt.QueuedConnection.
+        """
+        try:
+            if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+                self.test_execution_thread.pause()
+                logger.info("Test sequence pause requested via safe method")
+        except Exception as e:
+            logger.error(f"Error requesting pause: {e}", exc_info=True)
 
     def _on_run_sequence(self) -> None:
         """Execute all configured tests in sequence using background thread.
@@ -9735,7 +15774,7 @@ Data Points Used: {data_points}"""
         
         if not self._tests:
             logger.warning("Run Sequence called but _tests is empty")
-            self.status_label.setText('No tests to run - Load tests first')
+            self.status_label.setText('Test Status : No tests to run - Load tests first')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
             QtWidgets.QMessageBox.warning(self, 'No Tests', 'No tests loaded. Please load a test profile from Test Configurator tab first.')
             return
@@ -9749,15 +15788,10 @@ Data Points Used: {data_points}"""
                 error_type = 'empty'
                 details = ""
             else:
-                try:
-                    val = int(text)
-                    if val <= 0:
-                        error_type = 'invalid_range'
-                        details = str(val)
-                    else:
-                        error_type = 'invalid_format'
-                        details = text
-                except ValueError:
+                if len(text) > self.DUT_UID_MAX_LENGTH:
+                    error_type = 'invalid_range'
+                    details = str(len(text))
+                else:
                     error_type = 'invalid_format'
                     details = text
             
@@ -9775,7 +15809,7 @@ Data Points Used: {data_points}"""
         
         if not can_connected:
             logger.warning("Run Sequence called but CAN adapter not connected")
-            self.status_label.setText('CAN adapter not connected')
+            self.status_label.setText('Test Status : CAN adapter not connected')
             self.tabs_main.setCurrentIndex(self.status_tab_index)
             QtWidgets.QMessageBox.warning(self, 'Adapter Not Connected', 'CAN adapter must be connected before running tests.\n\nPlease go to CAN Data View tab and click "Connect".')
             return
@@ -9784,8 +15818,7 @@ Data Points Used: {data_points}"""
         self.tabs_main.setCurrentIndex(self.status_tab_index)
         
         # Store DUT UID for this test sequence (will be included in reports)
-        # Explicitly ensure integer type
-        self.current_dut_uid = int(dut_uid)
+        self.current_dut_uid = dut_uid
         
         # Disable DUT UID input during sequence execution to prevent changes
         self.dut_uid_input.setEnabled(False)
@@ -9818,12 +15851,19 @@ Data Points Used: {data_points}"""
         self.test_execution_thread.sequence_progress.connect(self._on_sequence_progress)
         self.test_execution_thread.sequence_finished.connect(self._on_sequence_finished)
         self.test_execution_thread.sequence_cancelled.connect(self._on_sequence_cancelled)
+        self.test_execution_thread.sequence_paused.connect(self._on_sequence_paused)
+        self.test_execution_thread.sequence_resumed.connect(self._on_sequence_resumed)
+        self.test_execution_thread.test_mode_mismatch.connect(self._on_test_mode_mismatch)
+        self.test_execution_thread.monitor_signal_update.connect(self.update_monitor_signal)
+        
+        # Set thread reference in TestRunner for thread-safe signal-based updates
+        runner.set_execution_thread(self.test_execution_thread)
         
         # Initialize UI
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, len(self._tests))
         self.progress_bar.setValue(0)
-        self.status_label.setText('Starting test sequence...')
+        self.status_label.setText('Test Status : Starting test sequence...')
         
         # Update run button to cancel button
         try:
@@ -9842,7 +15882,7 @@ Data Points Used: {data_points}"""
             logger.info(f"Started test sequence thread with {len(self._tests)} tests")
         except Exception as e:
             logger.error(f"Failed to start test execution thread: {e}", exc_info=True)
-            self.status_label.setText(f'Error starting tests: {e}')
+            self.status_label.setText(f'Test Status : Error starting tests: {e}')
             QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to start test sequence:\n{e}')
             # Clean up on failure
             try:
@@ -9859,7 +15899,7 @@ Data Points Used: {data_points}"""
         if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
             logger.info("Cancelling test sequence")
             self.test_execution_thread.stop()
-            self.status_label.setText('Cancelling test sequence...')
+            self.status_label.setText('Test Status : Cancelling test sequence...')
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.test_log.appendPlainText(f'[{timestamp}] Test sequence cancellation requested')
         else:
@@ -9869,30 +15909,72 @@ Data Points Used: {data_points}"""
         """Handle sequence started signal from TestExecutionThread."""
         self.progress_bar.setRange(0, total_tests)
         self.progress_bar.setValue(0)
-        self.status_label.setText(f'Running test sequence ({total_tests} tests)...')
+        self.status_label.setText(f'Test Status : Running test sequence ({total_tests} tests)...')
         logger.debug(f"Sequence started: {total_tests} tests")
+        
+        # Enable pause button for all test sequences (including single test)
+        self.pause_test_btn.setEnabled(True)
+        self.resume_test_btn.setEnabled(False)
+        
+        # Start CAN trace logging
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            try:
+                # Get DUT UID from input field
+                dut_uid = None
+                if hasattr(self, 'dut_uid_input') and self.dut_uid_input is not None:
+                    dut_uid_text = self.dut_uid_input.text().strip()
+                    if dut_uid_text:
+                        dut_uid = dut_uid_text
+                
+                test_name = f"Sequence_{total_tests}_tests"
+                log_path = self.can_trace_logger.start_logging(dut_uid=dut_uid, test_name=test_name)
+                if log_path:
+                    logger.info(f"CAN trace logging started: {os.path.basename(log_path)}")
+            except Exception as e:
+                logger.error(f"Failed to start CAN trace logging: {e}", exc_info=True)
     
     def _on_sequence_progress(self, current: int, total: int) -> None:
         """Handle sequence progress signal from TestExecutionThread."""
         self.progress_bar.setValue(current)
-        self.status_label.setText(f'Running test {current}/{total}...')
+        self.status_label.setText(f'Test Status : Running test {current}/{total}...')
+        
+        # Keep pause button enabled for all tests (including last test)
+        # User can pause even on the last test to review results before sequence ends
+        self.pause_test_btn.setEnabled(True)
     
     def _on_test_started(self, test_index: int, test_name: str) -> None:
         """Handle test started signal from TestExecutionThread."""
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Running test: {test_name}')
         
-        # Update Test Plan status to "Running..."
+        # Store current test index for plot detection
+        self._current_test_index = test_index
+        
+        # Update Test Plan status to "Running..." and configure monitoring
         try:
             if test_index < len(self._tests):
                 t = self._tests[test_index]
                 self._update_test_plan_row(t, 'Running...', 'N/A', 'Test execution in progress...')
+                
+                # Initialize plot for this test type (before clearing, so we know what to initialize)
+                # Note: plot_clear_callback is called in test_runner, but we initialize here to ensure proper setup
+                self._initialize_plot_for_test_type(t)
+                
+                # Configure real-time monitoring for this test
+                self.reset_monitor_signals(t)
+                
                 self._current_feedback = (t.get('feedback_message_id'), t.get('feedback_signal'))
                 if self._current_feedback and self._current_feedback[1]:
                     ts, v = self.get_latest_signal(self._current_feedback[0], self._current_feedback[1])
                     if v is not None:
                         try:
-                            self.feedback_signal_label.setText(str(v))
+                            # Update feedback signal if it's being monitored
+                            if 'feedback_signal' in self._monitor_labels:
+                                self._update_signal_with_status('feedback_signal', v)
+                            elif 'dut_feedback_signal' in self._monitor_labels:
+                                self._update_signal_with_status('dut_feedback_signal', v)
+                            elif 'digital_input' in self._monitor_labels:
+                                self._update_signal_with_status('digital_input', v)
                         except Exception:
                             pass
         except Exception:
@@ -9932,6 +16014,60 @@ Data Points Used: {data_points}"""
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (phase current test)")
+                elif test_type == 'Output Current Calibration':
+                    # Retrieve plot data for Output Current Calibration tests
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (Output Current Calibration test)")
+                    # Also retrieve result data for statistics
+                    # CRITICAL: Check if statistics already exist (they may have been set immediately in test_runner.py)
+                    # Only update if they don't exist or are None/invalid
+                    if not hasattr(self, '_test_execution_data'):
+                        self._test_execution_data = {}
+                    if test_name not in self._test_execution_data:
+                        self._test_execution_data[test_name] = {}
+                    
+                    existing_stats = self._test_execution_data[test_name].get('statistics')
+                    stats_already_valid = (existing_stats is not None and 
+                                          isinstance(existing_stats, dict) and 
+                                          existing_stats.get('adjustment_factor') is not None)
+                    
+                    if stats_already_valid:
+                        logger.debug(f"_on_test_finished: Statistics already exist for '{test_name}' with adjustment_factor={existing_stats.get('adjustment_factor')}, preserving them")
+                    elif hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        logger.debug(f"_on_test_finished: Processing result_data for '{test_name}' from temp storage")
+                        
+                        # Store statistics - use second sweep values for pass/fail (as per test logic)
+                        second_sweep_gain_error = result_data.get('second_sweep_gain_error')
+                        tolerance_percent = result_data.get('tolerance_percent', 0)
+                        # Pass/fail is based on second sweep gain error (from linear regression)
+                        passed = False
+                        if second_sweep_gain_error is not None and tolerance_percent is not None:
+                            passed = abs(second_sweep_gain_error) <= tolerance_percent
+                        
+                        self._test_execution_data[test_name]['statistics'] = {
+                            # Store both sweeps' data for completeness
+                            'first_sweep_slope': result_data.get('first_sweep_slope'),
+                            'first_sweep_intercept': result_data.get('first_sweep_intercept'),
+                            'first_sweep_gain_error': result_data.get('first_sweep_gain_error'),
+                            'first_sweep_gain_adjustment_factor': result_data.get('first_sweep_gain_adjustment_factor'),
+                            'second_sweep_slope': result_data.get('second_sweep_slope'),
+                            'second_sweep_intercept': result_data.get('second_sweep_intercept'),
+                            'second_sweep_gain_error': second_sweep_gain_error,
+                            # Legacy fields for backward compatibility
+                            'slope': result_data.get('second_sweep_slope'),  # Use second sweep for legacy
+                            'intercept': result_data.get('second_sweep_intercept'),  # Use second sweep for legacy
+                            'gain_error': second_sweep_gain_error,  # Use second sweep gain error
+                            'adjustment_factor': result_data.get('adjustment_factor'),  # First sweep adjustment factor
+                            'tolerance_percent': tolerance_percent,
+                            'data_points': result_data.get('data_points'),
+                            'calculated_trim_value': result_data.get('calculated_trim_value'),
+                            'passed': passed
+                        }
+                        logger.info(f"_on_test_finished: Stored statistics for '{test_name}' (adjustment_factor={result_data.get('adjustment_factor')}, passed={passed})")
+                    else:
+                        logger.warning(f"_on_test_finished: No result_data found in temp storage for '{test_name}' and no existing valid statistics. Statistics may be missing.")
                 elif test_type == 'Analog Static Test':
                     # Retrieve result data for analog_static tests
                     if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
@@ -9998,12 +16134,52 @@ Data Points Used: {data_points}"""
                             'fan_fault_samples': result_data.get('fan_fault_samples'),
                             'passed': result_data.get('passed', False)
                         }
-                        # Store raw data for potential plotting
-                        plot_data = {
-                            'fan_tach_values': result_data.get('fan_tach_values', []),
-                            'fan_fault_values': result_data.get('fan_fault_values', [])
-                        }
                         logger.debug(f"Retrieved stored result data for {test_name} (fan control test)")
+                elif test_type == 'Charged HV Bus Test':
+                    # Retrieve result data for Charged HV Bus Test
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'pfc_regulation_success': result_data.get('pfc_regulation_success'),
+                            'pcmc_success': result_data.get('pcmc_success'),
+                            'fault_detected': result_data.get('fault_detected'),
+                            'final_dut_state': result_data.get('final_dut_state'),
+                            'trigger_value': result_data.get('trigger_value'),
+                            'trim_value_used': result_data.get('trim_value_used'),
+                            'total_data_points': len(result_data.get('logged_data', [])),
+                            'passed': result_data.get('passed')
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (Charged HV Bus Test)")
+                    else:
+                        plot_data = None
+                elif test_type == 'Charger Functional Test':
+                    # Retrieve result data for Charger Functional Test
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        # Store statistics in exec_data for display
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'pfc_regulation_success': result_data.get('pfc_regulation_success'),
+                            'pcmc_success': result_data.get('pcmc_success'),
+                            'current_regulation_success': result_data.get('current_regulation_success'),
+                            'avg_output_current': result_data.get('avg_output_current'),
+                            'output_current_error': result_data.get('output_current_error'),
+                            'fault_detected': result_data.get('fault_detected'),
+                            'final_dut_state': result_data.get('final_dut_state'),
+                            'trigger_value': result_data.get('trigger_value'),
+                            'trim_value_used': result_data.get('trim_value_used'),
+                            'total_data_points': len(result_data.get('logged_data', [])),
+                            'passed': result_data.get('passed')
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (Charger Functional Test)")
                     else:
                         plot_data = None
                 
@@ -10049,6 +16225,11 @@ Data Points Used: {data_points}"""
                     if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
                         plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
                         logger.debug(f"Retrieved stored plot data for {test_name} (error case, phase current)")
+                elif test_type == 'Output Current Calibration':
+                    # Retrieve plot data for Output Current Calibration tests
+                    if hasattr(self, '_test_plot_data_temp') and test_name in self._test_plot_data_temp:
+                        plot_data = self._test_plot_data_temp.pop(test_name)  # Remove after retrieval
+                        logger.debug(f"Retrieved stored plot data for {test_name} (error case, Output Current Calibration)")
                 self._update_test_plan_row(t, 'ERROR', f"{exec_time:.2f}s", error, plot_data)
         except Exception:
             pass
@@ -10066,16 +16247,35 @@ Data Points Used: {data_points}"""
         # Parse results for UI update
         pass_count = sum(1 for _, success, _ in results if success)
         total = len(results)
-        self.status_label.setText(f'Sequence completed: {pass_count}/{total} passed')
+        self.status_label.setText(f'Test Status : Sequence completed: {pass_count}/{total} passed')
         
         # Log summary
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Sequence summary:\n{summary}')
         
+        # Stop CAN trace logging (defer slightly to allow GUI to update first)
+        # Use QTimer to defer the stop operation so GUI remains responsive
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            def stop_trace_logging():
+                try:
+                    log_path = self.can_trace_logger.stop_logging()
+                    if log_path:
+                        logger.info(f"CAN trace saved: {os.path.basename(log_path)}")
+                except Exception as e:
+                    logger.error(f"Error stopping CAN trace logging: {e}", exc_info=True)
+            # Defer by 100ms to allow GUI to update first
+            QtCore.QTimer.singleShot(100, stop_trace_logging)
+        
         # Re-enable DUT UID input
         if hasattr(self, 'dut_uid_input'):
             self.dut_uid_input.setEnabled(True)
-            self.dut_uid_input.setToolTip('Enter IPC UID number for the next test sequence')
+            tooltip = getattr(
+                self,
+                '_dut_uid_tooltip_text',
+                f'Enter DUT UID (allowed: {self.DUT_UID_ALLOWED_CHARS_DESC}; '
+                f'max {self.DUT_UID_MAX_LENGTH} characters)'
+            )
+            self.dut_uid_input.setToolTip(tooltip)
         
         # Restore run button
         try:
@@ -10090,21 +16290,43 @@ Data Points Used: {data_points}"""
         if self.test_execution_thread is not None:
             self.test_execution_thread.wait(1000)  # Wait up to 1 second for thread to finish
             self.test_execution_thread = None
+        
+        # Disable pause/resume buttons
+        self.pause_test_btn.setEnabled(False)
+        self.resume_test_btn.setEnabled(False)
         
         logger.info(f"Test sequence finished: {pass_count}/{total} passed")
     
     def _on_sequence_cancelled(self) -> None:
         """Handle sequence cancelled signal from TestExecutionThread."""
         self.progress_bar.setVisible(False)
-        self.status_label.setText('Test sequence cancelled')
+        self.status_label.setText('Test Status : Test sequence cancelled')
         
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.test_log.appendPlainText(f'[{timestamp}] Test sequence was cancelled by user')
         
+        # Stop CAN trace logging (defer slightly to allow GUI to update first)
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            def stop_trace_logging():
+                try:
+                    log_path = self.can_trace_logger.stop_logging()
+                    if log_path:
+                        logger.info(f"CAN trace saved (cancelled): {os.path.basename(log_path)}")
+                except Exception as e:
+                    logger.error(f"Error stopping CAN trace logging: {e}", exc_info=True)
+            # Defer by 100ms to allow GUI to update first
+            QtCore.QTimer.singleShot(100, stop_trace_logging)
+        
         # Re-enable DUT UID input
         if hasattr(self, 'dut_uid_input'):
             self.dut_uid_input.setEnabled(True)
-            self.dut_uid_input.setToolTip('Enter IPC UID number for the next test sequence')
+            tooltip = getattr(
+                self,
+                '_dut_uid_tooltip_text',
+                f'Enter DUT UID (allowed: {self.DUT_UID_ALLOWED_CHARS_DESC}; '
+                f'max {self.DUT_UID_MAX_LENGTH} characters)'
+            )
+            self.dut_uid_input.setToolTip(tooltip)
         
         # Restore run button
         try:
@@ -10120,7 +16342,86 @@ Data Points Used: {data_points}"""
             self.test_execution_thread.wait(1000)  # Wait up to 1 second for thread to finish
             self.test_execution_thread = None
         
+        # Disable pause/resume buttons
+        self.pause_test_btn.setEnabled(False)
+        self.resume_test_btn.setEnabled(False)
+        
         logger.info("Test sequence cancelled")
+    
+    def _on_pause_test(self) -> None:
+        """Handle pause test button click.
+        
+        Requests the test sequence to pause after the current test completes.
+        Works when a sequence is running (including single test sequences).
+        """
+        if self.test_execution_thread is not None and self.test_execution_thread.isRunning():
+            self.test_execution_thread.pause()
+            logger.info("Pause test requested")
+        else:
+            logger.debug("Pause ignored - no test sequence running")
+    
+    def _on_resume_test(self) -> None:
+        """Handle resume test button click.
+        
+        Resumes the paused test sequence. Only works when sequence is paused.
+        """
+        if self.test_execution_thread is not None:
+            if self.test_execution_thread.is_paused():
+                self.test_execution_thread.resume()
+                logger.info("Resume test requested")
+            else:
+                logger.debug("Resume ignored - test sequence not paused")
+        else:
+            logger.debug("Resume ignored - no test sequence running")
+    
+    def _on_sequence_paused(self) -> None:
+        """Handle sequence paused signal from TestExecutionThread."""
+        self.status_label.setText('Test Status : Paused - waiting to resume...')
+        self.pause_test_btn.setEnabled(False)
+        self.resume_test_btn.setEnabled(True)
+        
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test sequence paused')
+        logger.info("Test sequence paused")
+    
+    def _on_sequence_resumed(self) -> None:
+        """Handle sequence resumed signal from TestExecutionThread."""
+        # Get current test index to update status
+        if self.test_execution_thread is not None:
+            current = getattr(self.test_execution_thread, '_current_test_index', -1) + 1
+            total = len(self._tests)
+            if current > 0 and current <= total:
+                self.status_label.setText(f'Test Status : Running test {current}/{total}...')
+            else:
+                self.status_label.setText('Test Status : Resuming test sequence...')
+        
+        self.pause_test_btn.setEnabled(True)
+        self.resume_test_btn.setEnabled(False)
+        
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test sequence resumed')
+        logger.info("Test sequence resumed")
+    
+    @QtCore.Slot(str, str)
+    def _on_test_mode_mismatch(self, test_name: str, message: str) -> None:
+        """Handle test mode mismatch signal from TestExecutionThread.
+        
+        Shows a warning dialog when DUT is not in the correct test mode.
+        User can click OK to close the dialog, then press Resume to retry.
+        
+        Args:
+            test_name: Name of the test that failed the mode check
+            message: Error message describing the mismatch
+        """
+        logger.warning(f"Test mode mismatch for {test_name}: {message}")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.test_log.appendPlainText(f'[{timestamp}] Test mode mismatch for {test_name}: {message}')
+        QtWidgets.QMessageBox.warning(
+            self,
+            'Test Mode Mismatch',
+            f'Test: {test_name}\n\n{message}\n\n'
+            'Please ensure DUT is in the correct test mode and click Resume to retry.'
+        )
     
     def closeEvent(self, event) -> None:
         """Handle window close event - cleanup services and resources.
@@ -10139,6 +16440,15 @@ Data Points Used: {data_points}"""
             self.test_execution_thread.stop()
             self.test_execution_thread.wait(2000)  # Wait up to 2 seconds
             self.test_execution_thread = None
+        
+        # Stop CAN trace logging if active
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            try:
+                log_path = self.can_trace_logger.stop_logging()
+                if log_path:
+                    logger.info(f"CAN trace saved on close: {os.path.basename(log_path)}")
+            except Exception as e:
+                logger.error(f"Error stopping CAN trace logger on close: {e}", exc_info=True)
         
         # Phase 3: Cleanup service container
         if self.service_container is not None:
@@ -10214,8 +16524,12 @@ Data Points Used: {data_points}"""
 
     def _toggle_adapter_with_service(self):
         """Connect or disconnect adapter using CanService (Phase 1 implementation)."""
+        device_combo = getattr(self, 'device_combo', None)
+        if device_combo is None:
+            QtWidgets.QMessageBox.warning(self, 'Connection', 'Please open EOL -> Connect EOL to configure connection settings.')
+            return
         try:
-            selected = self.device_combo.currentText()
+            selected = device_combo.currentText()
         except Exception:
             selected = getattr(self, 'adapter_combo', QtWidgets.QComboBox()).currentText()
         
@@ -10233,6 +16547,19 @@ Data Points Used: {data_points}"""
         
         # Connect
         try:
+            channel_combo = getattr(self, 'can_channel_combo', None)
+            if channel_combo is not None:
+                channel_value = channel_combo.currentText().strip()
+                if channel_value:
+                    self.can_service.channel = channel_value
+            bitrate_combo = getattr(self, 'can_bitrate_combo', None)
+            if bitrate_combo is not None:
+                try:
+                    bitrate_value = bitrate_combo.currentText().strip()
+                    if bitrate_value:
+                        self.can_service.bitrate = int(bitrate_value.split()[0])
+                except Exception:
+                    pass
             success = self.can_service.connect(selected)
             if not success:
                 QtWidgets.QMessageBox.critical(self, 'Error', f'Failed to connect to {selected}')
@@ -10408,6 +16735,13 @@ Data Points Used: {data_points}"""
         Args:
             frame: CAN frame object with attributes: can_id, data, timestamp
         """
+        # Log RX frame to CAN trace (if logging is active)
+        if hasattr(self, 'can_trace_logger') and self.can_trace_logger is not None:
+            try:
+                self.can_trace_logger.log_frame(frame, direction='RX')
+            except Exception as e:
+                logger.debug(f"Error logging RX frame to trace: {e}")
+        
         r = self.frame_table.rowCount()
         self.frame_table.insertRow(r)
         ts = getattr(frame, 'timestamp', '')
@@ -10536,7 +16870,7 @@ Data Points Used: {data_points}"""
                                         if cur_id is not None and this_id is not None and cur_id == this_id:
                                             try:
                                                 # Use the gain-adjusted value for feedback label
-                                                self.feedback_signal_label.setText(str(val))
+                                                self._update_signal_with_status('feedback_signal', val)
                                             except Exception:
                                                 pass
                                     except Exception:
@@ -10615,6 +16949,7 @@ Data Points Used: {data_points}"""
                 # Send via service
                 success = self.can_service.send_frame(frame)
                 if success:
+                    # Note: TX frame logging to CAN trace is handled by CanService.tx_frame_callback
                     # Log message
                     self._append_msg_log('TX', frame)
                     logger.debug(f"Sent frame via service: can_id=0x{can_id:X} data={data_bytes.hex()}")

@@ -37,6 +37,8 @@ class TestExecutionThread(QtCore.QThread):
         sequence_progress: Emitted for overall sequence progress (current, total)
         sequence_finished: Emitted when sequence completes (results, summary)
         sequence_cancelled: Emitted when sequence is cancelled
+        sequence_paused: Emitted when sequence is paused
+        sequence_resumed: Emitted when sequence is resumed
     """
     
     # Signals
@@ -48,6 +50,10 @@ class TestExecutionThread(QtCore.QThread):
     sequence_progress = QtCore.Signal(int, int)  # current, total
     sequence_finished = QtCore.Signal(list, str)  # results list, summary text
     sequence_cancelled = QtCore.Signal()
+    sequence_paused = QtCore.Signal()  # Emitted when sequence is paused
+    sequence_resumed = QtCore.Signal()  # Emitted when sequence is resumed
+    test_mode_mismatch = QtCore.Signal(str, str)  # test_name, message
+    monitor_signal_update = QtCore.Signal(str, float)  # key, value - for thread-safe GUI updates
     
     def __init__(self, 
                  tests: List[Dict[str, Any]],
@@ -74,6 +80,10 @@ class TestExecutionThread(QtCore.QThread):
         self.signal_service = signal_service
         self.timeout = timeout
         self._stop_requested = False
+        self._pause_requested = False
+        self._is_paused = False
+        self._pause_lock = QtCore.QMutex()
+        self._pause_condition = QtCore.QWaitCondition()
         self._current_test_index = -1
     
     def stop(self):
@@ -81,11 +91,46 @@ class TestExecutionThread(QtCore.QThread):
         self._stop_requested = True
         logger.info("Test execution thread stop requested")
     
+    def pause(self):
+        """Request the thread to pause after current test completes.
+        
+        The current test will finish, then the sequence will pause before
+        starting the next test. Use resume() to continue.
+        """
+        if not self._is_paused:
+            self._pause_requested = True
+            logger.info("Test execution thread pause requested")
+    
+    def resume(self):
+        """Resume the paused test sequence.
+        
+        The sequence will continue from the next test in the sequence.
+        """
+        if self._is_paused:
+            self._pause_lock.lock()
+            self._pause_requested = False
+            self._is_paused = False
+            self._pause_condition.wakeAll()
+            self._pause_lock.unlock()
+            logger.info("Test execution thread resumed")
+    
+    def is_paused(self) -> bool:
+        """Check if thread is currently paused.
+        
+        Returns:
+            True if thread is paused, False otherwise
+        """
+        return self._is_paused
+    
     def run(self):
         """Execute all tests in sequence (runs in background thread)."""
         if not self.tests:
             logger.warning("TestExecutionThread.run() called but tests list is empty")
             return
+        
+        # Reset pause flags at start
+        self._pause_requested = False
+        self._is_paused = False
         
         total_tests = len(self.tests)
         logger.info(f"TestExecutionThread.run() starting with {total_tests} tests")
@@ -94,36 +139,118 @@ class TestExecutionThread(QtCore.QThread):
         results = []
         exec_times = []
         cancelled = False
+        previous_test_mode = None  # Track previous test's test_mode
         
         try:
-            for i, test in enumerate(self.tests):
+            i = 0
+            while i < total_tests:
                 if self._stop_requested:
                     logger.info(f"Test execution cancelled at test {i+1}/{total_tests}")
                     cancelled = True
                     break
                 
+                test = self.tests[i]
                 self._current_test_index = i
                 test_name = test.get('name', '<unnamed>')
+                current_test_mode = test.get('test_mode', 0)  # Get current test's test_mode
+                
+                # Reset real-time monitoring labels before each test
+                try:
+                    if hasattr(self.test_runner, 'reset_monitor_signals'):
+                        self.test_runner.reset_monitor_signals()
+                except Exception as e:
+                    logger.debug(f"Failed to reset monitor signals: {e}")
                 
                 # Emit test started signal
                 self.test_started.emit(i, test_name)
                 self.sequence_progress.emit(i, total_tests)
                 
-                logger.info(f"Executing test {i+1}/{total_tests}: {test_name}")
+                logger.info(f"Executing test {i+1}/{total_tests}: {test_name} (test_mode={current_test_mode})")
+                
+                # Handle test mode checks for every test
+                use_quick_check = False
+                if previous_test_mode is None:
+                    logger.info("First test in sequence - performing full test mode check")
+                elif current_test_mode == previous_test_mode:
+                    logger.info(f"Test mode matches previous test ({current_test_mode}) - doing quick check first")
+                    use_quick_check = True
+                else:
+                    # Test modes don't match - send Idle (0) first, then set new test mode
+                    logger.info(f"Test mode changed from {previous_test_mode} to {current_test_mode} - sending Idle (0) command first")
+                    idle_success, idle_msg = self.test_runner.send_test_mode_command(0)
+                    if not idle_success:
+                        logger.warning(f"Failed to send Idle command: {idle_msg}")
+                        # Continue anyway - may still work
+                
+                # Always perform test mode check to send command periodically for this test
+                test_mode_check_passed = False
+                while not test_mode_check_passed:
+                    # Check if paused or cancelled
+                    if self._stop_requested:
+                        cancelled = True
+                        break
+                    
+                    # Perform test mode check (sends set_dut_test_mode_signal periodically)
+                    # Use quick check if test mode matches previous test
+                    check_passed, check_msg = self.test_runner.check_test_mode(test, quick_check=use_quick_check)
+                    # After first check attempt, always use full check
+                    use_quick_check = False
+                    
+                    if check_passed:
+                        test_mode_check_passed = True
+                        logger.info(f"Test mode check passed for {test_name}: {check_msg}")
+                    else:
+                        # Pause test sequence
+                        self._pause_lock.lock()
+                        self._is_paused = True
+                        self.sequence_paused.emit()
+                        
+                        # Show warning dialog (must be done in main thread via signal)
+                        logger.warning(f"Test mode mismatch for {test_name}: {check_msg}")
+                        self.test_mode_mismatch.emit(test_name, check_msg)
+                        
+                        # Wait for resume
+                        logger.info(f"Waiting for resume after test mode mismatch for {test_name}")
+                        self._pause_condition.wait(self._pause_lock)
+                        self._is_paused = False
+                        self._pause_lock.unlock()
+                        
+                        # When resumed, loop will check again
+                        logger.info(f"Resumed after test mode mismatch for {test_name}, re-checking...")
+                
+                # If cancelled during test mode check, break out
+                if self._stop_requested:
+                    cancelled = True
+                    break
                 
                 start_time = time.time()
+                test_paused = False  # Flag to track if test requested pause (not a failure)
                 try:
                     # Execute test (this may take time)
                     success, info = self.test_runner.run_single_test(test, self.timeout)
                     end_time = time.time()
                     exec_time = end_time - start_time
-                    exec_times.append(exec_time)
                     
-                    results.append((test_name, success, info))
+                    # Update previous_test_mode after test completes
+                    previous_test_mode = current_test_mode
                     
-                    # Emit test finished signal
-                    self.test_finished.emit(i, success, info, exec_time)
-                    logger.info(f"Test {i+1} completed: {'PASS' if success else 'FAIL'}")
+                    # Check if this is a pause request (not a failure)
+                    # Pause requests have info messages starting with "Test sequence paused"
+                    if not success and info and info.startswith("Test sequence paused"):
+                        test_paused = True
+                        logger.info(f"Test {i+1} requested pause (not a failure): {info}")
+                        
+                        # Don't record as result, don't emit test_finished
+                        # Just pause and wait for resume
+                        # When resumed, this test will be retried (i doesn't increment)
+                    else:
+                        # Normal test completion (pass or fail)
+                        exec_times.append(exec_time)
+                        results.append((test_name, success, info))
+                        
+                        # Emit test finished signal
+                        self.test_finished.emit(i, success, info, exec_time)
+                        logger.info(f"Test {i+1} completed: {'PASS' if success else 'FAIL'}")
                     
                 except Exception as e:
                     end_time = time.time()
@@ -133,18 +260,70 @@ class TestExecutionThread(QtCore.QThread):
                     error_msg = str(e)
                     results.append((test_name, False, error_msg))
                     
+                    # Update previous_test_mode even on failure
+                    previous_test_mode = current_test_mode
+                    
                     # Emit test failed signal
                     self.test_failed.emit(i, error_msg, exec_time)
                     logger.error(f"Test {i+1} failed with exception: {e}", exc_info=True)
                 
-                # Emit progress update
-                progress = (i + 1) / total_tests
-                self.test_progress.emit(progress)
+                # Emit progress update (only if test completed, not paused)
+                if not test_paused:
+                    progress = (i + 1) / total_tests
+                    self.test_progress.emit(progress)
+                
+                # Check for pause request after test completes (but before next test starts)
+                # Also handle test-paused case (when test itself requested pause)
+                if self._pause_requested or test_paused:
+                    # Pause the sequence
+                    self._pause_lock.lock()
+                    self._is_paused = True
+                    self.sequence_paused.emit()
+                    
+                    if test_paused:
+                        # Test requested pause (e.g., user declined safety check)
+                        logger.info(f"Test sequence paused by test {i+1}/{total_tests} (test will be retried on resume)")
+                    elif i < total_tests - 1:
+                        # User clicked pause button - pause before next test
+                        logger.info(f"Test sequence paused after test {i+1}/{total_tests}")
+                    else:
+                        # Last test - pause to allow user to review before sequence ends
+                        logger.info(f"Test sequence paused after final test {i+1}/{total_tests}")
+                    
+                    # Wait until resume is called
+                    while self._is_paused and not self._stop_requested:
+                        self._pause_condition.wait(self._pause_lock, 100)  # Wait 100ms at a time
+                    
+                    if not self._stop_requested:
+                        self.sequence_resumed.emit()
+                        if test_paused:
+                            # Test was paused - retry the same test (don't increment i)
+                            logger.info(f"Test sequence resumed, retrying test {i+1}/{total_tests}")
+                            # Clear pause flags for retry
+                            self._pause_requested = False
+                            self._pause_lock.unlock()
+                            continue  # Retry the same test (don't increment i)
+                        elif i < total_tests - 1:
+                            logger.info(f"Test sequence resumed, continuing with test {i+2}/{total_tests}")
+                        else:
+                            logger.info("Test sequence resumed after final test")
+                    self._pause_lock.unlock()
+                
+                # Increment test index for next iteration (unless test was paused and will be retried)
+                if not test_paused:
+                    i += 1
             
             # Generate summary
             if cancelled:
                 self.sequence_cancelled.emit()
                 summary = f"Sequence cancelled after {len(results)}/{total_tests} tests"
+                # Send Idle command if sequence was cancelled and DUT is not already in Idle
+                if previous_test_mode is not None and previous_test_mode != 0:
+                    logger.info("Sequence cancelled - sending Idle (0) command to return DUT to safe state")
+                    try:
+                        self.test_runner.send_test_mode_command(0)
+                    except Exception as e:
+                        logger.warning(f"Failed to send Idle command after cancellation: {e}")
             else:
                 pass_count = sum(1 for _, success, _ in results if success)
                 pass_rate = pass_count / len(results) * 100 if results else 0
@@ -157,6 +336,16 @@ class TestExecutionThread(QtCore.QThread):
                     f"Average execution time: {avg_time:.2f}s\n"
                     f"Failure reasons: {failure_summary}"
                 )
+                
+                # Send Idle command to return DUT to safe state after sequence completes
+                if previous_test_mode is not None and previous_test_mode != 0:
+                    logger.info("Sequence completed - sending Idle (0) command to return DUT to safe state")
+                    try:
+                        idle_success, idle_msg = self.test_runner.send_test_mode_command(0)
+                        if not idle_success:
+                            logger.warning(f"Failed to send Idle command after sequence: {idle_msg}")
+                    except Exception as e:
+                        logger.warning(f"Error sending Idle command after sequence: {e}")
             
             # Emit sequence finished signal
             self.sequence_finished.emit(results, summary)
@@ -165,6 +354,13 @@ class TestExecutionThread(QtCore.QThread):
         except Exception as e:
             logger.error(f"Test sequence execution failed: {e}", exc_info=True)
             self.sequence_finished.emit(results, f"Sequence failed: {e}")
+            # Try to send Idle command even on exception
+            if previous_test_mode is not None and previous_test_mode != 0:
+                try:
+                    logger.info("Sequence failed - attempting to send Idle (0) command to return DUT to safe state")
+                    self.test_runner.send_test_mode_command(0)
+                except Exception as e2:
+                    logger.warning(f"Failed to send Idle command after exception: {e2}")
     
     def is_running(self) -> bool:
         """Check if thread is currently executing tests.

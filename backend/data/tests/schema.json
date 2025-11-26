@@ -10,8 +10,9 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration","Charged HV Bus Test","Charger Functional Test"]},
           "feedback_signal": {"type":["string","null"]},
+          "test_mode": {"type":"integer", "minimum":0, "maximum":3, "default":0},
           "actuation": {
             "type": "object",
             "oneOf": [
@@ -80,6 +81,29 @@
               },
               {
                 "properties": {
+                  "type": {"const":"Analog PWM Sensor"},
+                  "feedback_signal_source": {"type":"integer"},
+                  "feedback_pwm_frequency_signal": {"type":"string"},
+                  "feedback_duty_signal": {"type":"string"},
+                  "reference_pwm_frequency": {"type":"number"},
+                  "reference_duty": {"type":"number"},
+                  "pwm_frequency_tolerance": {"type":"number", "minimum":0},
+                  "duty_tolerance": {"type":"number", "minimum":0},
+                  "acquisition_time_ms": {"type":"integer", "minimum":1}
+                },
+                "required": [
+                  "feedback_signal_source",
+                  "feedback_pwm_frequency_signal",
+                  "feedback_duty_signal",
+                  "reference_pwm_frequency",
+                  "reference_duty",
+                  "pwm_frequency_tolerance",
+                  "duty_tolerance",
+                  "acquisition_time_ms"
+                ]
+              },
+              {
+                "properties": {
                   "type": {"const":"External 5V Test"},
                   "ext_5v_test_trigger_source": {"type":"integer"},
                   "ext_5v_test_trigger_signal": {"type":"string"},
@@ -118,6 +142,123 @@
                   "feedback_signal",
                   "dwell_time_ms",
                   "tolerance_v"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Output Current Calibration"},
+                  "test_trigger_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "test_trigger_signal": {"type":"string"},
+                  "test_trigger_signal_value": {"type":"integer", "minimum":0, "maximum":255},
+                  "current_setpoint_signal": {"type":"string"},
+                  "output_current_trim_signal": {"type":"string"},
+                  "initial_trim_value": {"type":"number", "minimum":0.0, "maximum":200.0},
+                  "feedback_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "feedback_signal": {"type":"string"},
+                  "oscilloscope_channel": {"type":"string"},
+                  "oscilloscope_timebase": {"type":"string", "enum":["10MS","20MS","100MS","500MS"]},
+                  "minimum_test_current": {"type":"number", "minimum":0},
+                  "maximum_test_current": {"type":"number", "minimum":0},
+                  "step_current": {"type":"number", "minimum":0.1},
+                  "pre_acquisition_time_ms": {"type":"integer", "minimum":0},
+                  "acquisition_time_ms": {"type":"integer", "minimum":1},
+                  "tolerance_percent": {"type":"number", "minimum":0}
+                },
+                "required": [
+                  "test_trigger_source",
+                  "test_trigger_signal",
+                  "test_trigger_signal_value",
+                  "current_setpoint_signal",
+                  "output_current_trim_signal",
+                  "initial_trim_value",
+                  "feedback_signal_source",
+                  "feedback_signal",
+                  "oscilloscope_channel",
+                  "oscilloscope_timebase",
+                  "minimum_test_current",
+                  "maximum_test_current",
+                  "step_current",
+                  "pre_acquisition_time_ms",
+                  "acquisition_time_ms",
+                  "tolerance_percent"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Charged HV Bus Test"},
+                  "command_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "test_trigger_signal": {"type":"string"},
+                  "test_trigger_signal_value": {"type":"integer", "minimum":0, "maximum":255},
+                  "set_output_current_trim_signal": {"type":"string"},
+                  "fallback_output_current_trim_value": {"type":"number", "minimum":0, "maximum":200},
+                  "set_output_current_setpoint_signal": {"type":"string"},
+                  "output_test_current": {"type":"number", "minimum":0, "maximum":40},
+                  "feedback_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "dut_test_state_signal": {"type":"string"},
+                  "enable_relay_signal": {"type":"string"},
+                  "enable_pfc_signal": {"type":"string"},
+                  "pfc_power_good_signal": {"type":"string"},
+                  "pcmc_signal": {"type":"string"},
+                  "psfb_fault_signal": {"type":"string"},
+                  "test_time_ms": {"type":"integer", "minimum":1000}
+                },
+                "required": [
+                  "command_signal_source",
+                  "test_trigger_signal",
+                  "test_trigger_signal_value",
+                  "set_output_current_trim_signal",
+                  "fallback_output_current_trim_value",
+                  "set_output_current_setpoint_signal",
+                  "output_test_current",
+                  "feedback_signal_source",
+                  "dut_test_state_signal",
+                  "enable_relay_signal",
+                  "enable_pfc_signal",
+                  "pfc_power_good_signal",
+                  "pcmc_signal",
+                  "psfb_fault_signal",
+                  "test_time_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Charger Functional Test"},
+                  "command_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "test_trigger_signal": {"type":"string"},
+                  "test_trigger_signal_value": {"type":"integer", "minimum":0, "maximum":255},
+                  "set_output_current_trim_signal": {"type":"string"},
+                  "fallback_output_current_trim_value": {"type":"number", "minimum":0, "maximum":200},
+                  "set_output_current_setpoint_signal": {"type":"string"},
+                  "output_test_current": {"type":"number", "minimum":0, "maximum":40},
+                  "feedback_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "dut_test_state_signal": {"type":"string"},
+                  "enable_relay_signal": {"type":"string"},
+                  "enable_pfc_signal": {"type":"string"},
+                  "pfc_power_good_signal": {"type":"string"},
+                  "pcmc_signal": {"type":"string"},
+                  "output_current_signal": {"type":"string"},
+                  "psfb_fault_signal": {"type":"string"},
+                  "output_current_tolerance": {"type":"number", "minimum":0},
+                  "test_time_ms": {"type":"integer", "minimum":1000}
+                },
+                "required": [
+                  "command_signal_source",
+                  "test_trigger_signal",
+                  "test_trigger_signal_value",
+                  "set_output_current_trim_signal",
+                  "fallback_output_current_trim_value",
+                  "set_output_current_setpoint_signal",
+                  "output_test_current",
+                  "feedback_signal_source",
+                  "dut_test_state_signal",
+                  "enable_relay_signal",
+                  "enable_pfc_signal",
+                  "pfc_power_good_signal",
+                  "pcmc_signal",
+                  "output_current_signal",
+                  "psfb_fault_signal",
+                  "output_current_tolerance",
+                  "test_time_ms"
                 ]
               },
               {

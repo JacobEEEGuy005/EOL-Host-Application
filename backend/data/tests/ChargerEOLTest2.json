@@ -1,0 +1,96 @@
+{
+  "tests": [
+    {
+      "name": "AC PWM Sensor Test",
+      "type": "Analog PWM Sensor",
+      "actuation": {
+        "type": "Analog PWM Sensor",
+        "feedback_signal_source": 250,
+        "feedback_pwm_frequency_signal": "ACPWM_Frequency",
+        "feedback_duty_signal": "ACPWM_Duty",
+        "reference_pwm_frequency": 4800.0,
+        "reference_duty": 39.0,
+        "pwm_frequency_tolerance": 50.0,
+        "duty_tolerance": 1.0,
+        "acquisition_time_ms": 3000
+      },
+      "created_at": "2025-11-17T05:10:07.275563Z",
+      "test_mode": 0
+    },
+    {
+      "name": "Charger Ouput Current Sensor Calibation",
+      "type": "Output Current Calibration",
+      "actuation": {
+        "type": "Output Current Calibration",
+        "test_trigger_source": 272,
+        "test_trigger_signal": "Test_Request",
+        "test_trigger_signal_value": 1,
+        "current_setpoint_signal": "ChargerIout_SetPoint",
+        "output_current_trim_signal": "Set_ChargerIout_TrimValue",
+        "initial_trim_value": 100.0,
+        "feedback_signal_source": 250,
+        "feedback_signal": "ChargerIout",
+        "oscilloscope_channel": "Output Current",
+        "oscilloscope_timebase": "10MS",
+        "minimum_test_current": 5.0,
+        "maximum_test_current": 30.0,
+        "step_current": 5.0,
+        "pre_acquisition_time_ms": 3000,
+        "acquisition_time_ms": 3500,
+        "tolerance_percent": 1.0
+      },
+      "created_at": "2025-11-13T16:07:31.429775Z",
+      "test_mode": 2
+    },
+    {
+      "name": "Charger HV Bus Test V1.3",
+      "type": "Charged HV Bus Test",
+      "actuation": {
+        "type": "Charged HV Bus Test",
+        "command_signal_source": 272,
+        "test_trigger_signal": "Test_Request",
+        "test_trigger_signal_value": 2,
+        "set_output_current_trim_signal": "Set_ChargerIout_TrimValue",
+        "fallback_output_current_trim_value": 100.0,
+        "set_output_current_setpoint_signal": "ChargerIout_SetPoint",
+        "output_test_current": 40.0,
+        "feedback_signal_source": 250,
+        "dut_test_state_signal": "ChargerTestState",
+        "enable_relay_signal": "Enable_ACInputRelay",
+        "enable_pfc_signal": "Enable_PFC",
+        "pfc_power_good_signal": "PFC_PGood_Filtered",
+        "pcmc_signal": "PCMC_Flag",
+        "psfb_fault_signal": "ChargerFaultNow",
+        "test_time_ms": 15000
+      },
+      "created_at": "2025-11-14T12:09:05.117075Z",
+      "test_mode": 2
+    },
+    {
+      "name": "Charger Functional Test V1.3",
+      "type": "Charger Functional Test",
+      "actuation": {
+        "type": "Charger Functional Test",
+        "command_signal_source": 272,
+        "test_trigger_signal": "Test_Request",
+        "test_trigger_signal_value": 3,
+        "set_output_current_trim_signal": "Set_ChargerIout_TrimValue",
+        "fallback_output_current_trim_value": 105.0,
+        "set_output_current_setpoint_signal": "ChargerIout_SetPoint",
+        "output_test_current": 20.0,
+        "feedback_signal_source": 250,
+        "dut_test_state_signal": "ChargerTestState",
+        "enable_relay_signal": "Enable_ACInputRelay",
+        "enable_pfc_signal": "Enable_PFC",
+        "pfc_power_good_signal": "PFC_PGood_Filtered",
+        "pcmc_signal": "PCMC_Flag",
+        "output_current_signal": "ChargerIout",
+        "psfb_fault_signal": "ChargerFaultNow",
+        "output_current_tolerance": 0.5,
+        "test_time_ms": 12000
+      },
+      "created_at": "2025-11-15T17:12:42.233460Z",
+      "test_mode": 2
+    }
+  ]
+}

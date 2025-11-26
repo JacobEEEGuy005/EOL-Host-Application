@@ -2,26 +2,50 @@
 EOL Host GUI - PySide6-based application for End of Line testing of IPC (Integrated Power Converter).
 
 This module provides a GUI interface for:
-- Connecting to CAN bus adapters (PCAN, SocketCAN, Canalystii, SimAdapter)
+- Connecting to CAN bus adapters (PCAN, SocketCAN, PythonCAN, Canalystii, SimAdapter)
 - Loading and managing DBC (Database CAN) files for signal decoding
-- Configuring and executing test sequences (digital and analog tests)
+- Configuring and executing test sequences (12 test types)
 - Real-time monitoring of CAN frames and decoded signals
-- Visualizing test results with live plots (Feedback vs DAC Voltage for analog tests)
+- Visualizing test results with live plots
+- Managing oscilloscope connections for advanced tests
+
+Architecture:
+The application uses a service-based architecture that separates business logic from the GUI layer:
+- Services: CanService, DbcService, SignalService, OscilloscopeService, etc.
+- ServiceContainer: Dependency injection container for service management
+- TestExecutionThread: Async test execution in background thread
 
 Key Components:
 - BaseGUI: Main application window with tabs for CAN data, test configurator, and test status
-- TestRunner: Encapsulates test execution logic (can be moved to background thread)
-- AdapterWorker: Background thread for receiving CAN frames
+- TestRunner: Test execution logic (supports both GUI and decoupled modes)
+- Services: Business logic layer (host_gui/services/)
+  - CanService: CAN adapter management and frame transmission
+  - DbcService: DBC file loading, parsing, and message/signal operations
+  - SignalService: Signal decoding, caching, and value retrieval
+  - OscilloscopeService: Oscilloscope connection and configuration
+  - TestExecutionService: Decoupled test execution (headless support)
+  - TestExecutionThread: Async test execution in background thread
 
 Test Types:
-- Digital: Apply High/Low voltage to inputs, verify IPC feedback (1/0)
-- Analog: Step DAC voltage from min to max, monitor IPC feedback signal response
+- Digital Logic Test: Apply High/Low voltage to inputs, verify IPC feedback
+- Analog Sweep Test: Step DAC voltage from min to max, monitor feedback
+- Phase Current Test: Phase current calibration with oscilloscope integration
+- Analog Static Test: Static analog measurement comparison
+- Analog PWM Sensor: PWM sensor frequency and duty cycle validation
+- Temperature Validation Test: Temperature measurement validation
+- Fan Control Test: Fan control system testing
+- External 5V Test: External 5V power supply testing
+- DC Bus Sensing: DC bus voltage sensing with oscilloscope
+- Output Current Calibration: Output current sensor calibration with oscilloscope
+- Charged HV Bus Test: Charged high voltage bus testing
+- Charger Functional Test: Charger functional testing with current validation
 
 Dependencies:
 - PySide6: GUI framework
 - cantools: DBC parsing and signal encoding/decoding
 - matplotlib: Live plotting (optional)
 - python-can: CAN bus abstraction layer (via backend adapters)
+- pyvisa: Oscilloscope communication (optional, for oscilloscope tests)
 """
 import sys
 import json
@@ -50,11 +74,21 @@ try:
             raise ImportError("Matplotlib Qt backend not available")
     from matplotlib.figure import Figure
     matplotlib_available = True
+    # Import and configure seaborn for enhanced plot styling
+    try:
+        import seaborn as sns
+        # Set seaborn style for all matplotlib plots
+        sns.set_style("whitegrid")
+        sns.set_palette("husl")
+        seaborn_available = True
+    except ImportError:
+        seaborn_available = False
 except Exception:
     matplotlib = None
     FigureCanvasQTAgg = None
     Figure = None
     matplotlib_available = False
+    seaborn_available = False
 try:
     import cantools
 except Exception:
@@ -62,27 +96,22 @@ except Exception:
 
 import logging
 
-# Configure logging for host GUI - respect LOG_LEVEL environment variable
-# (ConfigManager will handle this later, but we need logging setup first)
-log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-try:
-    log_level = getattr(logging, log_level, logging.INFO)
-except (AttributeError, TypeError):
-    log_level = logging.INFO
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
-# Note: Log level will be updated by ConfigManager after it's initialized
-
-# Ensure repo root on sys.path so `backend` imports resolve when running from host_gui/
+# Ensure repo root on sys.path FIRST so imports work correctly
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
+
+# Configure logging early - this is the single place for logging configuration
+# Import config module to use centralized logging configuration
+try:
+    from host_gui.config import configure_logging
+except ImportError:
+    # Fallback: try relative import if running as module
+    from .config import configure_logging
+
+configure_logging()  # Uses LOG_LEVEL env var or defaults to 'INFO'
+
+logger = logging.getLogger(__name__)
 
 # Import constants - simplified import strategy
 # Try relative import first (works when host_gui is a package), then absolute import
@@ -142,8 +171,8 @@ except ImportError:
         LEFT_PANEL_MIN_WIDTH = 300
         LOGO_WIDTH = 280
         LOGO_HEIGHT = 80
-        SLEEP_INTERVAL_SHORT = 0.02
-        SLEEP_INTERVAL_MEDIUM = 0.05
+        SLEEP_INTERVAL_SHORT = 0.005  # Match constants.py
+        SLEEP_INTERVAL_MEDIUM = 0.01  # Match constants.py
         MUX_CHANNEL_MAX = 65535
         DWELL_TIME_MAX_MS = 60000
         PLOT_GRID_ALPHA = 0.3
@@ -216,13 +245,21 @@ except ImportError:
 # Import from services if needed:
 # from host_gui.services.can_service import AdapterWorker
 # Pre-compile regex patterns for oscilloscope command parsing
-REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
-REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
-REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
-REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
-REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
+# Import shared regex patterns for oscilloscope command parsing
+try:
+    from host_gui.utils.regex_patterns import (
+        REGEX_ATTN, REGEX_TDIV, REGEX_VDIV, REGEX_OFST,
+        REGEX_NUMBER, REGEX_NUMBER_SIMPLE, REGEX_TRA
+    )
+except ImportError:
+    # Fallback: define patterns locally if import fails
+    REGEX_ATTN = re.compile(r'ATTN\s+([\d.]+)', re.IGNORECASE)
+    REGEX_TDIV = re.compile(r'TDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_VDIV = re.compile(r'VDIV\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_OFST = re.compile(r'OFST\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)', re.IGNORECASE)
+    REGEX_NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+    REGEX_NUMBER_SIMPLE = re.compile(r'([\d.]+)')
+    REGEX_TRA = re.compile(r'TRA\s+(\w+)', re.IGNORECASE)
 
 # Import numpy for optimized array operations (optional)
 try:
@@ -261,8 +298,8 @@ def main():
     # create QApplication and show main window
     app = QtWidgets.QApplication(sys.argv)
     win = BaseGUI()
-    win.show()
-    logger.info('GUI shown; entering Qt event loop')
+    win.showMaximized()
+    logger.info('GUI shown maximized; entering Qt event loop')
     sys.exit(app.exec())
 
 

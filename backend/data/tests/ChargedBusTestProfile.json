@@ -1,0 +1,27 @@
+{
+  "tests": [
+    {
+      "name": "Charger HV Bus Test V1.3",
+      "type": "Charged HV Bus Test",
+      "actuation": {
+        "type": "Charged HV Bus Test",
+        "command_signal_source": 272,
+        "test_trigger_signal": "Test_Request",
+        "test_trigger_signal_value": 2,
+        "set_output_current_trim_signal": "Set_ChargerIout_TrimValue",
+        "fallback_output_current_trim_value": 110.3,
+        "set_output_current_setpoint_signal": "ChargerIout_SetPoint",
+        "output_test_current": 40.0,
+        "feedback_signal_source": 250,
+        "dut_test_state_signal": "ChargerTestState",
+        "enable_relay_signal": "Enable_ACInputRelay",
+        "enable_pfc_signal": "Enable_PFC",
+        "pfc_power_good_signal": "PFC_PGood_Filtered",
+        "pcmc_signal": "PCMC_Flag",
+        "psfb_fault_signal": "ChargerFaultNow",
+        "test_time_ms": 15000
+      },
+      "created_at": "2025-11-14T12:09:05.117075Z"
+    }
+  ]
+}

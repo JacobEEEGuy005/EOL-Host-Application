@@ -1,0 +1,14 @@
+{
+  "name": "EOL_HW_V1_1",
+  "feedback_message_id": 256,
+  "feedback_message_name": "Status_Data",
+  "measured_dac_signal": "ADC_A1_mV",
+  "created_at": "2025-11-03T14:14:48.368097Z",
+  "updated_at": "2025-11-19T12:33:59.271150Z",
+  "eol_command_message_id": 272,
+  "eol_command_message_name": "Command",
+  "set_dut_test_mode_signal": "SetTestMode",
+  "dut_feedback_message_id": 250,
+  "dut_feedback_message_name": "IP_Status_Data",
+  "dut_test_status_signal": "IPCTestState"
+}
