@@ -5720,12 +5720,58 @@ class TestRunner:
                 except Exception as e:
                     logger.warning(f"Failed to disable test mode at end of first sweep: {e}")
                 
-                # Step 9: First Sweep Post-Analysis - Perform linear regression and calculate gain error and adjustment factor
+                # Step 9: First Sweep Post-Analysis - Calculate gain error and adjustment factor (point-by-point method, same as Phase Current Test)
                 if len(can_averages) < 2:
-                    return False, f"Insufficient data points collected in first sweep. Need at least 2 setpoints for linear regression, got {len(can_averages)}. Check CAN connection and signal configuration."
+                    return False, f"Insufficient data points collected in first sweep. Need at least 2 setpoints, got {len(can_averages)}. Check CAN connection and signal configuration."
                 
-                logger.info(f"First Sweep: Performing linear regression on {len(can_averages)} data points...")
+                logger.info(f"First Sweep: Calculating gain error and adjustment factor using point-by-point method on {len(can_averages)} data points...")
                 
+                # Calculate gain error and correction factor for each point (same as Phase Current Test)
+                gain_errors = []
+                gain_corrections = []
+                
+                for osc_avg, can_avg in zip(osc_averages, can_averages):
+                    if osc_avg is not None and can_avg is not None and abs(osc_avg) > 1e-10:
+                        # Calculate gain error: ((can - osc) / osc) * 100.0
+                        gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+                        gain_errors.append(gain_error)
+                        
+                        # Calculate correction factor: osc / can
+                        if abs(can_avg) > 1e-10:
+                            gain_correction = osc_avg / can_avg
+                            gain_corrections.append(gain_correction)
+                        else:
+                            gain_corrections.append(float('nan'))
+                    else:
+                        gain_errors.append(float('nan'))
+                        gain_corrections.append(float('nan'))
+                
+                # Filter out invalid values (NaN, Inf)
+                valid_errors = [e for e in gain_errors if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                valid_corrections = [c for c in gain_corrections if not (isinstance(c, float) and (c != c or abs(c) == float('inf')))]
+                
+                if len(valid_errors) < 1:
+                    return False, "Insufficient valid data points for calculation in first sweep. Need at least 1 valid data point. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                
+                # Calculate average gain error and average correction factor (same as Phase Current Test)
+                first_sweep_gain_error = sum(valid_errors) / len(valid_errors) if valid_errors else None
+                first_sweep_gain_adjustment_factor = sum(valid_corrections) / len(valid_corrections) if valid_corrections else None
+                
+                if first_sweep_gain_adjustment_factor is None:
+                    return False, "Failed to calculate adjustment factor: no valid correction factors. Check first sweep data quality."
+                
+                # Validate adjustment factor is reasonable (typically 0.5 to 2.0, which corresponds to 50% to 200% trim)
+                if not (0.5 <= abs(first_sweep_gain_adjustment_factor) <= 2.0):
+                    logger.warning(f"Output Current Calibration: Adjustment factor {first_sweep_gain_adjustment_factor:.6f} is outside typical range (0.5-2.0), may indicate data quality issues")
+                
+                # Calculate trim value for second sweep: calculated_trim_value = 100 * gain_adjustment_factor
+                calculated_trim_value = 100.0 * first_sweep_gain_adjustment_factor
+                
+                # Validate calculated trim value
+                if not (0.0 <= calculated_trim_value <= 200.0):
+                    return False, f"Calculated trim value ({calculated_trim_value:.4f}%) is out of valid range (0.0000-200.0000%). Check first sweep data quality."
+                
+                # For backward compatibility, calculate slope and intercept from linear regression (for display purposes only)
                 # Filter out invalid data points for linear regression
                 valid_osc_values = []
                 valid_can_values = []
@@ -5737,51 +5783,26 @@ class TestRunner:
                         valid_osc_values.append(float(osc_avg))
                         valid_can_values.append(float(can_avg))
                 
-                if len(valid_osc_values) < 2:
-                    return False, "Insufficient valid data points for linear regression in first sweep. Need at least 2 valid data points. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                first_sweep_slope = None
+                first_sweep_intercept = None
+                if len(valid_osc_values) >= 2:
+                    try:
+                        n = len(valid_osc_values)
+                        sum_x = sum(valid_osc_values)
+                        sum_y = sum(valid_can_values)
+                        sum_xy = sum(x * y for x, y in zip(valid_osc_values, valid_can_values))
+                        sum_x2 = sum(x * x for x in valid_osc_values)
+                        
+                        denominator = n * sum_x2 - sum_x * sum_x
+                        if abs(denominator) >= 1e-10:
+                            first_sweep_slope = (n * sum_xy - sum_x * sum_y) / denominator
+                            first_sweep_intercept = (sum_y - first_sweep_slope * sum_x) / n
+                    except Exception:
+                        pass  # Keep slope and intercept as None if calculation fails
                 
-                # Perform linear regression: can_avg = slope * osc_avg + intercept
-                # X-axis: oscilloscope_averages (reference), Y-axis: can_averages (DUT measurements)
-                try:
-                    n = len(valid_osc_values)
-                    sum_x = sum(valid_osc_values)
-                    sum_y = sum(valid_can_values)
-                    sum_xy = sum(x * y for x, y in zip(valid_osc_values, valid_can_values))
-                    sum_x2 = sum(x * x for x in valid_osc_values)
-                    
-                    # Calculate slope using least squares method
-                    denominator = n * sum_x2 - sum_x * sum_x
-                    if abs(denominator) < 1e-10:
-                        return False, "Failed to perform linear regression on first sweep data: denominator too small (data may be constant). Check data quality."
-                    
-                    first_sweep_slope = (n * sum_xy - sum_x * sum_y) / denominator
-                    
-                    # Calculate intercept
-                    first_sweep_intercept = (sum_y - first_sweep_slope * sum_x) / n
-                    
-                    # Calculate gain error from slope (ideal slope = 1.0)
-                    first_sweep_gain_error = (first_sweep_slope - 1.0) * 100.0
-                    
-                    # Calculate adjustment factor from slope
-                    if abs(first_sweep_slope) < 1e-10:
-                        return False, "Failed to calculate adjustment factor: slope is too close to zero. Check first sweep data quality."
-                    
-                    first_sweep_gain_adjustment_factor = 1.0 / first_sweep_slope
-                    
-                    # Validate adjustment factor is reasonable (typically 0.5 to 2.0, which corresponds to 50% to 200% trim)
-                    if not (0.5 <= abs(first_sweep_gain_adjustment_factor) <= 2.0):
-                        logger.warning(f"Output Current Calibration: Adjustment factor {first_sweep_gain_adjustment_factor:.6f} is outside typical range (0.5-2.0), may indicate data quality issues")
-                    
-                    # Calculate trim value for second sweep: calculated_trim_value = 100 * gain_adjustment_factor
-                    calculated_trim_value = 100.0 * first_sweep_gain_adjustment_factor
-                    
-                    # Validate calculated trim value
-                    if not (0.0 <= calculated_trim_value <= 200.0):
-                        return False, f"Calculated trim value ({calculated_trim_value:.4f}%) is out of valid range (0.0000-200.0000%). Check first sweep data quality."
-                    
-                    logger.info(f"First Sweep Linear Regression Results: Slope={first_sweep_slope:.6f}, Intercept={first_sweep_intercept:.6f}A, Gain Error={first_sweep_gain_error:.4f}%, Adjustment Factor={first_sweep_gain_adjustment_factor:.6f}, Calculated Trim Value={calculated_trim_value:.4f}%")
-                except Exception as e:
-                    return False, f"Failed to perform linear regression on first sweep data: {e}. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                logger.info(f"First Sweep Point-by-Point Results: Average Gain Error={first_sweep_gain_error:.4f}%, Average Adjustment Factor={first_sweep_gain_adjustment_factor:.6f}, Calculated Trim Value={calculated_trim_value:.4f}%")
+                if first_sweep_slope is not None:
+                    logger.info(f"First Sweep Linear Regression (for reference): Slope={first_sweep_slope:.6f}, Intercept={first_sweep_intercept:.6f}A")
                 
                 # Store first sweep plot data with label
                 first_sweep_plot_label = f"First Sweep (Trim Value: {initial_trim_value}%)"
@@ -5794,10 +5815,11 @@ class TestRunner:
                         'osc_averages': list(osc_averages),
                         'can_averages': list(can_averages),
                         'setpoint_values': list(setpoint_values),
-                        'slope': first_sweep_slope,
-                        'intercept': first_sweep_intercept,
-                        'gain_error': first_sweep_gain_error,
-                        'adjustment_factor': first_sweep_gain_adjustment_factor,
+                        'slope': first_sweep_slope,  # For reference only (linear regression)
+                        'intercept': first_sweep_intercept,  # For reference only (linear regression)
+                        'gain_error': first_sweep_gain_error,  # Average gain error (point-by-point method)
+                        'avg_gain_error': first_sweep_gain_error,  # Same as gain_error for consistency
+                        'adjustment_factor': first_sweep_gain_adjustment_factor,  # Average adjustment factor (point-by-point method)
                         'trim_value': initial_trim_value,
                         'plot_label': first_sweep_plot_label
                     }
@@ -6118,13 +6140,36 @@ class TestRunner:
                 except Exception as e:
                     logger.warning(f"Failed to disable test mode at end of second sweep: {e}")
                 
-                # Step 16: Second Sweep Post-Test Analysis - Perform linear regression and calculate gain error (pass/fail based on this)
+                # Step 16: Second Sweep Post-Test Analysis - Calculate gain error (point-by-point method, same as Phase Current Test)
                 if len(second_can_averages) < 2:
-                    return False, f"Insufficient data points collected in second sweep. Need at least 2 setpoints for linear regression, got {len(second_can_averages)}. Check CAN connection and signal configuration."
+                    return False, f"Insufficient data points collected in second sweep. Need at least 2 setpoints, got {len(second_can_averages)}. Check CAN connection and signal configuration."
                 
-                logger.info(f"Second Sweep: Performing linear regression on {len(second_can_averages)} data points...")
+                logger.info(f"Second Sweep: Calculating gain error using point-by-point method on {len(second_can_averages)} data points...")
                 
-                # Filter out invalid data points for linear regression
+                # Calculate gain error for each point (same as Phase Current Test)
+                second_sweep_gain_errors = []
+                
+                for osc_avg, can_avg in zip(second_osc_averages, second_can_averages):
+                    if osc_avg is not None and can_avg is not None and abs(osc_avg) > 1e-10:
+                        # Calculate gain error: ((can - osc) / osc) * 100.0
+                        gain_error = ((can_avg - osc_avg) / osc_avg) * 100.0
+                        second_sweep_gain_errors.append(gain_error)
+                    else:
+                        second_sweep_gain_errors.append(float('nan'))
+                
+                # Filter out invalid values (NaN, Inf)
+                valid_second_errors = [e for e in second_sweep_gain_errors if not (isinstance(e, float) and (e != e or abs(e) == float('inf')))]
+                
+                if len(valid_second_errors) < 1:
+                    return False, "Insufficient valid data points for calculation in second sweep. Need at least 1 valid data point. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                
+                # Calculate average gain error (same as Phase Current Test)
+                second_sweep_gain_error = sum(valid_second_errors) / len(valid_second_errors) if valid_second_errors else None
+                
+                if second_sweep_gain_error is None:
+                    return False, "Failed to calculate gain error: no valid errors. Check second sweep data quality."
+                
+                # For backward compatibility, calculate slope and intercept from linear regression (for display purposes only)
                 valid_second_osc_values = []
                 valid_second_can_values = []
                 for osc_avg, can_avg in zip(second_osc_averages, second_can_averages):
@@ -6135,34 +6180,26 @@ class TestRunner:
                         valid_second_osc_values.append(float(osc_avg))
                         valid_second_can_values.append(float(can_avg))
                 
-                if len(valid_second_osc_values) < 2:
-                    return False, "Insufficient valid data points for linear regression in second sweep. Need at least 2 valid data points. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                second_sweep_slope = None
+                second_sweep_intercept = None
+                if len(valid_second_osc_values) >= 2:
+                    try:
+                        n = len(valid_second_osc_values)
+                        sum_x = sum(valid_second_osc_values)
+                        sum_y = sum(valid_second_can_values)
+                        sum_xy = sum(x * y for x, y in zip(valid_second_osc_values, valid_second_can_values))
+                        sum_x2 = sum(x * x for x in valid_second_osc_values)
+                        
+                        denominator = n * sum_x2 - sum_x * sum_x
+                        if abs(denominator) >= 1e-10:
+                            second_sweep_slope = (n * sum_xy - sum_x * sum_y) / denominator
+                            second_sweep_intercept = (sum_y - second_sweep_slope * sum_x) / n
+                    except Exception:
+                        pass  # Keep slope and intercept as None if calculation fails
                 
-                # Perform linear regression: can_avg = slope * osc_avg + intercept
-                # X-axis: oscilloscope_averages (reference), Y-axis: can_averages (DUT measurements with calculated trim value applied)
-                try:
-                    n = len(valid_second_osc_values)
-                    sum_x = sum(valid_second_osc_values)
-                    sum_y = sum(valid_second_can_values)
-                    sum_xy = sum(x * y for x, y in zip(valid_second_osc_values, valid_second_can_values))
-                    sum_x2 = sum(x * x for x in valid_second_osc_values)
-                    
-                    # Calculate slope using least squares method
-                    denominator = n * sum_x2 - sum_x * sum_x
-                    if abs(denominator) < 1e-10:
-                        return False, "Failed to perform linear regression on second sweep data: denominator too small (data may be constant). Check data quality."
-                    
-                    second_sweep_slope = (n * sum_xy - sum_x * sum_y) / denominator
-                    
-                    # Calculate intercept
-                    second_sweep_intercept = (sum_y - second_sweep_slope * sum_x) / n
-                    
-                    # Calculate gain error from slope (ideal slope = 1.0)
-                    second_sweep_gain_error = (second_sweep_slope - 1.0) * 100.0
-                    
-                    logger.info(f"Second Sweep Linear Regression Results: Slope={second_sweep_slope:.6f}, Intercept={second_sweep_intercept:.6f}A, Gain Error={second_sweep_gain_error:.4f}%")
-                except Exception as e:
-                    return False, f"Failed to perform linear regression on second sweep data: {e}. Check data quality and ensure oscilloscope and CAN measurements are valid."
+                logger.info(f"Second Sweep Point-by-Point Results: Average Gain Error={second_sweep_gain_error:.4f}%")
+                if second_sweep_slope is not None:
+                    logger.info(f"Second Sweep Linear Regression (for reference): Slope={second_sweep_slope:.6f}, Intercept={second_sweep_intercept:.6f}A")
                 
                 # Store second sweep plot data with label
                 second_sweep_plot_label = f"Second Sweep (Trim Value: {calculated_trim_value:.4f}%)"
@@ -6175,9 +6212,10 @@ class TestRunner:
                         'osc_averages': list(second_osc_averages),
                         'can_averages': list(second_can_averages),
                         'setpoint_values': list(second_setpoint_values),
-                        'slope': second_sweep_slope,
-                        'intercept': second_sweep_intercept,
-                        'gain_error': second_sweep_gain_error,
+                        'slope': second_sweep_slope,  # For reference only (linear regression)
+                        'intercept': second_sweep_intercept,  # For reference only (linear regression)
+                        'gain_error': second_sweep_gain_error,  # Average gain error (point-by-point method)
+                        'avg_gain_error': second_sweep_gain_error,  # Same as gain_error for consistency
                         'trim_value': calculated_trim_value,
                         'plot_label': second_sweep_plot_label
                     }
@@ -6185,21 +6223,23 @@ class TestRunner:
                     self.gui._test_plot_data_temp[test_name]['calculated_trim_value'] = calculated_trim_value
                     self.gui._test_plot_data_temp[test_name]['tolerance_percent'] = tolerance_percent
                 
-                # Determine pass/fail based on second sweep gain error from linear regression only
+                # Determine pass/fail based on second sweep average gain error (point-by-point method)
                 passed = abs(second_sweep_gain_error) <= tolerance_percent
                 
                 # Build info string with both sweeps' results
                 info = f"Output Current Calibration Results:\n\n"
                 info += f"First Sweep (Trim Value: {initial_trim_value}%):\n"
-                info += f"  Linear Regression: Slope={first_sweep_slope:.6f}, Intercept={first_sweep_intercept:.6f}A\n"
-                info += f"  Gain Error: {first_sweep_gain_error:.4f}%\n"
-                info += f"  Adjustment Factor: {first_sweep_gain_adjustment_factor:.6f}\n"
-                info += f"  Data Points: {len(can_averages)} (valid: {len(valid_osc_values)})\n"
+                info += f"  Average Gain Error: {first_sweep_gain_error:.4f}%\n"
+                info += f"  Average Adjustment Factor: {first_sweep_gain_adjustment_factor:.6f}\n"
+                if first_sweep_slope is not None:
+                    info += f"  Linear Regression (reference): Slope={first_sweep_slope:.6f}, Intercept={first_sweep_intercept:.6f}A\n"
+                info += f"  Data Points: {len(can_averages)} (valid: {len(valid_errors)})\n"
                 info += f"\nCalculated Trim Value: {calculated_trim_value:.4f}%\n\n"
                 info += f"Second Sweep (Trim Value: {calculated_trim_value:.4f}%):\n"
-                info += f"  Linear Regression: Slope={second_sweep_slope:.6f}, Intercept={second_sweep_intercept:.6f}A\n"
-                info += f"  Gain Error: {second_sweep_gain_error:.4f}%\n"
-                info += f"  Data Points: {len(second_can_averages)} (valid: {len(valid_second_osc_values)})\n"
+                info += f"  Average Gain Error: {second_sweep_gain_error:.4f}%\n"
+                if second_sweep_slope is not None:
+                    info += f"  Linear Regression (reference): Slope={second_sweep_slope:.6f}, Intercept={second_sweep_intercept:.6f}A\n"
+                info += f"  Data Points: {len(second_can_averages)} (valid: {len(valid_second_errors)})\n"
                 info += f"\nTolerance: {tolerance_percent:.4f}%\n"
                 info += f"\nFirst Sweep Setpoint Results:\n"
                 for i, (sp, can_avg, osc_avg) in enumerate(zip(setpoint_values, can_averages, osc_averages)):
@@ -6209,9 +6249,9 @@ class TestRunner:
                     info += f"  {sp}A: CAN={can_avg:.4f}A, Osc={osc_avg:.4f}A\n"
                 
                 if passed:
-                    info += f"\nPASS: Second sweep gain error {second_sweep_gain_error:.4f}% (from linear regression) within tolerance {tolerance_percent:.4f}%"
+                    info += f"\nPASS: Second sweep average gain error {second_sweep_gain_error:.4f}% (point-by-point method) within tolerance {tolerance_percent:.4f}%"
                 else:
-                    info += f"\nFAIL: Second sweep gain error {second_sweep_gain_error:.4f}% (from linear regression) exceeds tolerance {tolerance_percent:.4f}%"
+                    info += f"\nFAIL: Second sweep average gain error {second_sweep_gain_error:.4f}% (point-by-point method) exceeds tolerance {tolerance_percent:.4f}%"
                 
                 # Store results for display (includes both sweeps)
                 result_data = {
@@ -6221,7 +6261,7 @@ class TestRunner:
                     'first_sweep_gain_error': first_sweep_gain_error,
                     'first_sweep_gain_adjustment_factor': first_sweep_gain_adjustment_factor,
                     'first_sweep_data_points': len(can_averages),
-                    'first_sweep_valid_data_points': len(valid_osc_values),
+                    'first_sweep_valid_data_points': len(valid_errors),
                     'first_sweep_setpoint_values': setpoint_values,
                     'first_sweep_can_averages': can_averages,
                     'first_sweep_osc_averages': osc_averages,
@@ -6233,7 +6273,7 @@ class TestRunner:
                     'second_sweep_intercept': second_sweep_intercept,
                     'second_sweep_gain_error': second_sweep_gain_error,
                     'second_sweep_data_points': len(second_can_averages),
-                    'second_sweep_valid_data_points': len(valid_second_osc_values),
+                    'second_sweep_valid_data_points': len(valid_second_errors),
                     'second_sweep_setpoint_values': second_setpoint_values,
                     'second_sweep_can_averages': second_can_averages,
                     'second_sweep_osc_averages': second_osc_averages,
@@ -6245,7 +6285,7 @@ class TestRunner:
                     'avg_gain_error': abs(second_sweep_gain_error),
                     'adjustment_factor': first_sweep_gain_adjustment_factor,
                     'data_points': len(second_can_averages),
-                    'valid_data_points': len(valid_second_osc_values)
+                    'valid_data_points': len(valid_second_errors)
                 }
                 
                 # Plot data is already stored above in _test_plot_data_temp with 'first_sweep' and 'second_sweep' keys
