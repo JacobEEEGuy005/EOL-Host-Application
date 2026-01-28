@@ -132,6 +132,9 @@ BO_ 250 IP_Status_Data: 8 IPC_Hardware
  SG_ ChargerIout m110 : 32|16@1+ (0.01,0) [0|655.35] "A" Vector__XXX
  SG_ RectifierTemperature m110 : 48|16@1- (0.01,0) [-327.67|327.67] "degC" Vector__XXX
  SG_ ChargerIout_TrimValue m111 : 32|16@1+ (0.01,0) [0|655.35] "%" Vector__XXX
+ SG_ PhaseV_ADC_Offset m122 : 8|16@1+ (1,0) [0|4096] "" Vector__XXX
+ SG_ PhaseW_ADC_Offset m122 : 24|16@1+ (1,0) [0|4096] "" Vector__XXX
+ SG_ PhaseOffset_Calib_Status m122 : 56|8@1+ (1,0) [0|255] "" Vector__XXX
 
 
 
@@ -234,4 +237,5 @@ VAL_ 250 IPCTestEnabled 0 "FALSE" 1 "TRUE" ;
 VAL_ 250 FanEnabled 0 "FALSE" 1 "TRUE" ;
 VAL_ 250 FanTachGood 0 "FALSE" 1 "TRUE" ;
 VAL_ 250 FanFault 0 "FALSE" 1 "TRUE" ;
+VAL_ 250 PhaseOffset_Calib_Status 0 "INIT" 1 "CAL" 2 "CAL_DONE" ;
 
