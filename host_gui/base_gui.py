@@ -15636,9 +15636,10 @@ Data Points Used: {data_points}"""
                 self._charged_hv_bus_dialog_result = QMessageBox.No
                 return
             
-            # Create dialog with proper parent to ensure it's modal
-            msg_box = QMessageBox(self)
-            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            # Create dialog without parent to avoid memory corruption issues
+            # Use ApplicationModal for better isolation when called from background threads
+            msg_box = QMessageBox()
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
             msg_box.setWindowTitle("Pre-Test Safety Check - Charged HV Bus Test")
             msg_box.setText("Hardware Connection Requirements:")
             msg_box.setInformativeText(
@@ -15677,9 +15678,10 @@ Data Points Used: {data_points}"""
                 self._charger_functional_dialog_result = QMessageBox.No
                 return
             
-            # Create dialog with proper parent to ensure it's modal
-            msg_box = QMessageBox(self)
-            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            # Create dialog without parent to avoid memory corruption issues
+            # Use ApplicationModal for better isolation when called from background threads
+            msg_box = QMessageBox()
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
             msg_box.setWindowTitle("Pre-Test Safety Check - Charger Functional Test")
             msg_box.setText("Hardware Connection Requirements:")
             msg_box.setInformativeText(
@@ -15718,9 +15720,10 @@ Data Points Used: {data_points}"""
                 self._output_current_calibration_dialog_result = QMessageBox.No
                 return
             
-            # Create dialog with proper parent to ensure it's modal
-            msg_box = QMessageBox(self)
-            msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            # Create dialog without parent to avoid memory corruption issues
+            # Use ApplicationModal for better isolation when called from background threads
+            msg_box = QMessageBox()
+            msg_box.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
             msg_box.setWindowTitle("Pre-Test Safety Check - Output Current Calibration Test")
             msg_box.setText("Hardware Connection Requirements:")
             msg_box.setInformativeText(
