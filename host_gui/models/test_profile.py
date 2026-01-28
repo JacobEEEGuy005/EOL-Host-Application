@@ -147,8 +147,18 @@ class ActuationConfig:
         psfb_fault_signal: Signal name for PSFB fault feedback
         output_current_tolerance: Tolerance for output current regulation in Amperes (>= 0)
         test_time_ms: Test duration in milliseconds from test trigger (minimum 1000)
+        
+        For Phase Offset Calibration Test:
+        test_request_source: CAN message ID for test request command (typically 272)
+        test_request_signal: Signal name for test request (typically "Test_Request")
+        test_request_value: Value to send for test request signal (typically 1 to enable Drive Mode)
+        feedback_signal_source: CAN message ID for feedback messages (typically 250)
+        calib_state_signal: Signal name for calibration status (typically "PhaseOffset_Calib_Status")
+        phase_v_offset_signal: Signal name for Phase V ADC offset (typically "PhaseV_ADC_Offset")
+        phase_w_offset_signal: Signal name for Phase W ADC offset (typically "PhaseW_ADC_Offset")
+        calibration_timeout_ms: Timeout in milliseconds to wait for CAL_DONE status (minimum 1000, default 5000)
     """
-    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', or 'Charger Functional Test'
+    type: str  # 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', or 'Phase Offset Calibration Test'
     
     # Digital test fields
     can_id: Optional[int] = None
@@ -263,6 +273,16 @@ class ActuationConfig:
     # Charger Functional Test fields
     output_current_signal: Optional[str] = None  # Signal name for output current feedback
     output_current_tolerance: Optional[float] = None  # Tolerance for output current regulation in Amperes
+    
+    # Phase Offset Calibration Test fields
+    test_request_source: Optional[int] = None  # CAN message ID for test request command (typically 272)
+    test_request_signal: Optional[str] = None  # Signal name for test request (typically "Test_Request")
+    test_request_value: Optional[int] = None  # Value to send for test request signal (typically 1)
+    # Note: feedback_signal_source is already defined for Analog Static Test
+    calib_state_signal: Optional[str] = None  # Signal name for calibration status (typically "PhaseOffset_Calib_Status")
+    phase_v_offset_signal: Optional[str] = None  # Signal name for Phase V ADC offset (typically "PhaseV_ADC_Offset")
+    phase_w_offset_signal: Optional[str] = None  # Signal name for Phase W ADC offset (typically "PhaseW_ADC_Offset")
+    calibration_timeout_ms: Optional[int] = None  # Timeout in milliseconds to wait for CAL_DONE status (minimum 1000)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format (for JSON serialization)."""
@@ -509,6 +529,23 @@ class ActuationConfig:
                 result['output_current_tolerance'] = self.output_current_tolerance
             if self.test_time_ms is not None:
                 result['test_time_ms'] = self.test_time_ms
+        elif self.type == 'Phase Offset Calibration Test':
+            if self.test_request_source is not None:
+                result['test_request_source'] = self.test_request_source
+            if self.test_request_signal:
+                result['test_request_signal'] = self.test_request_signal
+            if self.test_request_value is not None:
+                result['test_request_value'] = self.test_request_value
+            if self.feedback_signal_source is not None:
+                result['feedback_signal_source'] = self.feedback_signal_source
+            if self.calib_state_signal:
+                result['calib_state_signal'] = self.calib_state_signal
+            if self.phase_v_offset_signal:
+                result['phase_v_offset_signal'] = self.phase_v_offset_signal
+            if self.phase_w_offset_signal:
+                result['phase_w_offset_signal'] = self.phase_w_offset_signal
+            if self.calibration_timeout_ms is not None:
+                result['calibration_timeout_ms'] = self.calibration_timeout_ms
         return result
     
     @classmethod

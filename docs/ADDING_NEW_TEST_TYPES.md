@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides a comprehensive guide for AI agents on how to add new test types to the EOL Host Application codebase. The system currently supports 12 test types:
+This document provides a comprehensive guide for AI agents on how to add new test types to the EOL Host Application codebase. The system currently supports 13 test types:
 
 1. **Digital Logic Test** - Tests digital relay states
 2. **Analog Sweep Test** - Sweeps DAC voltages and monitors feedback
@@ -16,6 +16,7 @@ This document provides a comprehensive guide for AI agents on how to add new tes
 10. **Output Current Calibration** - Output current sensor calibration with oscilloscope integration
 11. **Charged HV Bus Test** - Charged high voltage bus testing
 12. **Charger Functional Test** - Charger functional testing with current validation
+13. **Phase Offset Calibration Test** - Phase offset calibration: send Test Request (Drive Mode), poll for CAL_DONE, read Phase V/W ADC offsets
 
 ## Architecture Overview
 

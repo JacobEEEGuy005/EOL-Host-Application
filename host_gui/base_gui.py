@@ -3452,6 +3452,9 @@ Data Points Used: {data_points}"""
             'enable_pfc': 'enable_pfc',
             'pfc_power_good': 'pfc_power_good',
             'output_current': 'output_current',
+            # Phase Offset Calibration Test (offset monitoring)
+            'phase_v_offset': 'phase_v_offset',
+            'phase_w_offset': 'phase_w_offset',
         }
         
         signal_name = key_map.get(key)
@@ -3723,6 +3726,11 @@ Data Points Used: {data_points}"""
             _setup_signal('output_current', 'Output Current', None)
             self._monitor_sent_values['output_current_signal_name'] = actuation.get('output_current_signal')
             self._monitor_sent_values['output_current_msg_id'] = actuation.get('feedback_signal_source')
+
+        elif test_type == 'Phase Offset Calibration Test':
+            # Phase offsets are updated in real-time by the test runner via update_monitor_signal()
+            _setup_signal('phase_v_offset', 'Phase V Offset', None)
+            _setup_signal('phase_w_offset', 'Phase W Offset', None)
         
         # Update backward compatibility references
         self.current_signal_label = self._monitor_labels.get('current_signal')
@@ -4160,7 +4168,7 @@ Data Points Used: {data_points}"""
         filter_layout.addWidget(self.report_status_filter)
         
         self.report_type_filter = QtWidgets.QComboBox()
-        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Analog PWM Sensor', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'])
+        self.report_type_filter.addItems(['All', 'Digital Logic Test', 'Analog Sweep Test', 'Analog Static Test', 'Analog PWM Sensor', 'Phase Current Test', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', 'Phase Offset Calibration Test'])
         filter_layout.addWidget(self.report_type_filter)
         
         filter_layout.addStretch()
@@ -8588,7 +8596,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit()
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', 'Phase Offset Calibration Test'])
         feedback_edit = QtWidgets.QLineEdit()
         # actuation fields container - use QStackedWidget to show only relevant fields
         act_stacked = QtWidgets.QStackedWidget()
@@ -9950,6 +9958,84 @@ Data Points Used: {data_points}"""
             charger_functional_layout.addRow('PSFB Fault Signal:', charger_functional_psfb_fault_signal_combo)
             charger_functional_layout.addRow('Output Current Tolerance (A):', charger_functional_output_current_tolerance_edit)
             charger_functional_layout.addRow('Test Time (ms):', charger_functional_test_time_edit)
+            
+            # Phase Offset Calibration Test fields (DBC mode)
+            # Test request (Drive Mode) is sent via shared Test Mode field -> EOL Set DUT Test Mode Signal
+            phase_offset_calib_widget = QtWidgets.QWidget()
+            phase_offset_calib_layout = QtWidgets.QFormLayout(phase_offset_calib_widget)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            phase_offset_calib_feedback_msg_combo = QtWidgets.QComboBox()
+            phase_offset_calib_feedback_msg_combo.setEditable(False)
+            if self.dbc_service is not None and self.dbc_service.is_loaded():
+                db = self.dbc_service.database
+                if db:
+                    for msg in db.messages:
+                        phase_offset_calib_feedback_msg_combo.addItem(f"{msg.name} (0x{msg.frame_id:X})", msg.frame_id)
+            
+            # Phase V Offset Signal: dropdown based on Feedback Signal Source
+            phase_offset_calib_phase_v_offset_signal_combo = QtWidgets.QComboBox()
+            phase_offset_calib_phase_v_offset_signal_combo.setEditable(False)
+            
+            def _update_phase_offset_calib_phase_v_offset_signals():
+                phase_offset_calib_phase_v_offset_signal_combo.clear()
+                try:
+                    msg_id = phase_offset_calib_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                phase_offset_calib_phase_v_offset_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            phase_offset_calib_feedback_msg_combo.currentIndexChanged.connect(_update_phase_offset_calib_phase_v_offset_signals)
+            _update_phase_offset_calib_phase_v_offset_signals()
+            
+            # Phase W Offset Signal: dropdown based on Feedback Signal Source
+            phase_offset_calib_phase_w_offset_signal_combo = QtWidgets.QComboBox()
+            phase_offset_calib_phase_w_offset_signal_combo.setEditable(False)
+            
+            def _update_phase_offset_calib_phase_w_offset_signals():
+                phase_offset_calib_phase_w_offset_signal_combo.clear()
+                try:
+                    msg_id = phase_offset_calib_feedback_msg_combo.currentData()
+                    if msg_id is not None and self.dbc_service is not None:
+                        msg = self.dbc_service.find_message_by_id(msg_id)
+                        if msg:
+                            for sig in msg.signals:
+                                phase_offset_calib_phase_w_offset_signal_combo.addItem(sig.name)
+                except Exception:
+                    pass
+            
+            phase_offset_calib_feedback_msg_combo.currentIndexChanged.connect(_update_phase_offset_calib_phase_w_offset_signals)
+            _update_phase_offset_calib_phase_w_offset_signals()
+            
+            # Acquisition Time (ms) (int, >= 1000) - default 5000ms
+            phase_offset_calib_timeout_validator = QtGui.QIntValidator(1000, 60000, self)
+            phase_offset_calib_timeout_edit = QtWidgets.QLineEdit()
+            phase_offset_calib_timeout_edit.setValidator(phase_offset_calib_timeout_validator)
+            phase_offset_calib_timeout_edit.setPlaceholderText('e.g., 5000')
+            phase_offset_calib_timeout_edit.setText('5000')
+
+            # Offset limits (int)
+            phase_offset_calib_limit_validator = QtGui.QIntValidator(-4096, 4096, self)
+            phase_offset_calib_lower_limit_edit = QtWidgets.QLineEdit()
+            phase_offset_calib_lower_limit_edit.setValidator(phase_offset_calib_limit_validator)
+            phase_offset_calib_lower_limit_edit.setPlaceholderText('e.g., 0')
+            phase_offset_calib_lower_limit_edit.setText('0')
+            phase_offset_calib_upper_limit_edit = QtWidgets.QLineEdit()
+            phase_offset_calib_upper_limit_edit.setValidator(phase_offset_calib_limit_validator)
+            phase_offset_calib_upper_limit_edit.setPlaceholderText('e.g., 4096')
+            phase_offset_calib_upper_limit_edit.setText('4096')
+            
+            # Populate Phase Offset Calibration Test sub-widget (Test Mode = test request is in shared Test Mode field)
+            phase_offset_calib_layout.addRow('Feedback Signal Source:', phase_offset_calib_feedback_msg_combo)
+            phase_offset_calib_layout.addRow('Phase V Offset Signal:', phase_offset_calib_phase_v_offset_signal_combo)
+            phase_offset_calib_layout.addRow('Phase W Offset Signal:', phase_offset_calib_phase_w_offset_signal_combo)
+            phase_offset_calib_layout.addRow('Offset Lower Limit:', phase_offset_calib_lower_limit_edit)
+            phase_offset_calib_layout.addRow('Offset Upper Limit:', phase_offset_calib_upper_limit_edit)
+            phase_offset_calib_layout.addRow('Acquisition Time (ms):', phase_offset_calib_timeout_edit)
         else:
             # digital actuation - free text fallback
             dig_can = QtWidgets.QLineEdit()
@@ -10307,6 +10393,7 @@ Data Points Used: {data_points}"""
             test_type_to_index['Output Current Calibration'] = act_stacked.addWidget(output_current_calibration_widget)
             test_type_to_index['Charged HV Bus Test'] = act_stacked.addWidget(charged_hv_bus_widget)
             test_type_to_index['Charger Functional Test'] = act_stacked.addWidget(charger_functional_widget)
+            test_type_to_index['Phase Offset Calibration Test'] = act_stacked.addWidget(phase_offset_calib_widget)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked)
@@ -10328,7 +10415,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', 'Phase Offset Calibration Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -11102,6 +11189,45 @@ Data Points Used: {data_points}"""
                         'output_current_tolerance': output_current_tolerance,
                         'test_time_ms': test_time,
                     }
+                elif t == 'Phase Offset Calibration Test':
+                    # Phase Offset Calibration Test: sample offsets for acquisition time and compare to limits
+                    try:
+                        feedback_msg_id = phase_offset_calib_feedback_msg_combo.currentData()
+                    except Exception:
+                        feedback_msg_id = None
+                    phase_v_offset_signal = phase_offset_calib_phase_v_offset_signal_combo.currentText().strip() if phase_offset_calib_phase_v_offset_signal_combo.count() else ''
+                    phase_w_offset_signal = phase_offset_calib_phase_w_offset_signal_combo.currentText().strip() if phase_offset_calib_phase_w_offset_signal_combo.count() else ''
+                    
+                    # Calibration Timeout (int, >= 1000)
+                    def _to_int_or_none_phase_offset_calib_timeout(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    calibration_timeout = _to_int_or_none_phase_offset_calib_timeout(phase_offset_calib_timeout_edit)
+
+                    # Limits (int)
+                    def _to_int_or_none_phase_offset_calib_limit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+
+                    lower_limit = _to_int_or_none_phase_offset_calib_limit(phase_offset_calib_lower_limit_edit)
+                    upper_limit = _to_int_or_none_phase_offset_calib_limit(phase_offset_calib_upper_limit_edit)
+                    
+                    act = {
+                        'type': 'Phase Offset Calibration Test',
+                        'feedback_signal_source': feedback_msg_id,
+                        'phase_v_offset_signal': phase_v_offset_signal,
+                        'phase_w_offset_signal': phase_w_offset_signal,
+                        'phase_offset_lower_limit': lower_limit,
+                        'phase_offset_upper_limit': upper_limit,
+                        'calibration_timeout_ms': calibration_timeout,
+                    }
             else:  # No DBC loaded
                 if t == 'Digital Logic Test':
                     try:
@@ -11543,7 +11669,7 @@ Data Points Used: {data_points}"""
             # if using DBC-driven fields, read feedback from combo
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
-            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Phase Offset Calibration Test', 
                                           'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test')
             
             fb_msg_id = None
@@ -11657,8 +11783,8 @@ Data Points Used: {data_points}"""
         
         # Check type
         test_type = test_data.get('type')
-        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'):
-            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', or 'Charged HV Bus Test'"
+        if test_type not in ('Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', 'Phase Offset Calibration Test'):
+            return False, f"Invalid test type: {test_type}. Must be 'Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', or 'Phase Offset Calibration Test'"
         
         # Check actuation
         actuation = test_data.get('actuation', {})
@@ -11994,6 +12120,34 @@ Data Points Used: {data_points}"""
             # Check DBC service is available (test requires DBC)
             if self.dbc_service is None or not self.dbc_service.is_loaded():
                 return False, "Charger Functional Test requires DBC file to be loaded"
+        elif test_type == 'Phase Offset Calibration Test':
+            # Validate required fields (test request = shared Test Mode field -> EOL Set DUT Test Mode Signal)
+            if actuation.get('feedback_signal_source') is None:
+                return False, "Phase Offset Calibration Test requires feedback signal source (CAN ID)"
+            if not (0 <= actuation.get('feedback_signal_source', -1) <= 0x1FFFFFFF):
+                return False, "Feedback signal source must be in range 0-0x1FFFFFFF"
+            if not actuation.get('phase_v_offset_signal'):
+                return False, "Phase Offset Calibration Test requires phase V offset signal name"
+            if not actuation.get('phase_w_offset_signal'):
+                return False, "Phase Offset Calibration Test requires phase W offset signal name"
+            if actuation.get('phase_offset_lower_limit') is None:
+                return False, "Phase Offset Calibration Test requires offset lower limit"
+            if actuation.get('phase_offset_upper_limit') is None:
+                return False, "Phase Offset Calibration Test requires offset upper limit"
+            try:
+                ll = int(actuation.get('phase_offset_lower_limit'))
+                ul = int(actuation.get('phase_offset_upper_limit'))
+                if ll > ul:
+                    return False, "Offset lower limit must be <= upper limit"
+            except Exception:
+                return False, "Offset limits must be integers"
+            if actuation.get('calibration_timeout_ms') is None:
+                return False, "Phase Offset Calibration Test requires acquisition time (ms)"
+            if actuation.get('calibration_timeout_ms', 0) < 1000:
+                return False, "Acquisition time must be >= 1000 ms"
+            # Check DBC service is available (test requires DBC)
+            if self.dbc_service is None or not self.dbc_service.is_loaded():
+                return False, "Phase Offset Calibration Test requires DBC file to be loaded"
         
         return True, ""
     
@@ -12389,7 +12543,7 @@ Data Points Used: {data_points}"""
         form = QtWidgets.QFormLayout()
         name_edit = QtWidgets.QLineEdit(data.get('name', ''))
         type_combo = QtWidgets.QComboBox()
-        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'])
+        type_combo.addItems(['Digital Logic Test', 'Analog Sweep Test', 'Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', 'Phase Offset Calibration Test'])
         try:
             type_combo.setCurrentText(data.get('type', 'digital'))
         except Exception:
@@ -14006,6 +14160,81 @@ Data Points Used: {data_points}"""
             charger_functional_layout_edit.addRow('PSFB Fault Signal:', charger_functional_psfb_fault_signal_combo_edit)
             charger_functional_layout_edit.addRow('Output Current Tolerance (A):', charger_functional_output_current_tolerance_edit_edit)
             charger_functional_layout_edit.addRow('Test Time (ms):', charger_functional_test_time_edit_edit)
+            
+            # Phase Offset Calibration Test fields (DBC mode) - for edit dialog
+            # Test request = shared Test Mode field -> EOL Set DUT Test Mode Signal
+            phase_offset_calib_widget_edit = QtWidgets.QWidget()
+            phase_offset_calib_layout_edit = QtWidgets.QFormLayout(phase_offset_calib_widget_edit)
+            
+            # Feedback Signal Source: dropdown of CAN Messages
+            phase_offset_calib_feedback_msg_combo_edit = QtWidgets.QComboBox()
+            for m, label in msg_display:
+                fid = getattr(m, 'frame_id', getattr(m, 'arbitration_id', None))
+                phase_offset_calib_feedback_msg_combo_edit.addItem(label, fid)
+            # Phase V Offset Signal: dropdown based on selected message
+            phase_offset_calib_phase_v_offset_signal_combo_edit = QtWidgets.QComboBox()
+            # Phase W Offset Signal: dropdown based on selected message
+            phase_offset_calib_phase_w_offset_signal_combo_edit = QtWidgets.QComboBox()
+            
+            def _update_phase_offset_calib_feedback_signals_edit(idx=0):
+                phase_offset_calib_phase_v_offset_signal_combo_edit.clear()
+                phase_offset_calib_phase_w_offset_signal_combo_edit.clear()
+                try:
+                    m = messages[idx]
+                    sigs = [s.name for s in getattr(m, 'signals', [])]
+                    phase_offset_calib_phase_v_offset_signal_combo_edit.addItems(sigs)
+                    phase_offset_calib_phase_w_offset_signal_combo_edit.addItems(sigs)
+                except Exception:
+                    pass
+            
+            if msg_display:
+                _update_phase_offset_calib_feedback_signals_edit(0)
+            phase_offset_calib_feedback_msg_combo_edit.currentIndexChanged.connect(_update_phase_offset_calib_feedback_signals_edit)
+            
+            # Acquisition Time (ms): integer input (>= 1000)
+            phase_offset_calib_timeout_validator_edit = QtGui.QIntValidator(1000, 60000, self)
+            phase_offset_calib_timeout_edit_edit = QtWidgets.QLineEdit(str(act.get('calibration_timeout_ms', '5000')))
+            phase_offset_calib_timeout_edit_edit.setValidator(phase_offset_calib_timeout_validator_edit)
+            phase_offset_calib_timeout_edit_edit.setPlaceholderText('e.g., 5000')
+
+            # Offset limits (int)
+            phase_offset_calib_limit_validator_edit = QtGui.QIntValidator(-4096, 4096, self)
+            phase_offset_calib_lower_limit_edit_edit = QtWidgets.QLineEdit(str(act.get('phase_offset_lower_limit', '0')))
+            phase_offset_calib_lower_limit_edit_edit.setValidator(phase_offset_calib_limit_validator_edit)
+            phase_offset_calib_lower_limit_edit_edit.setPlaceholderText('e.g., 0')
+            phase_offset_calib_upper_limit_edit_edit = QtWidgets.QLineEdit(str(act.get('phase_offset_upper_limit', '4096')))
+            phase_offset_calib_upper_limit_edit_edit.setValidator(phase_offset_calib_limit_validator_edit)
+            phase_offset_calib_upper_limit_edit_edit.setPlaceholderText('e.g., 4096')
+            
+            # Populate Phase Offset Calibration Test fields from stored data
+            try:
+                feedback_msg_id = act.get('feedback_signal_source')
+                if feedback_msg_id is not None:
+                    for i in range(phase_offset_calib_feedback_msg_combo_edit.count()):
+                        if phase_offset_calib_feedback_msg_combo_edit.itemData(i) == feedback_msg_id:
+                            phase_offset_calib_feedback_msg_combo_edit.setCurrentIndex(i)
+                            _update_phase_offset_calib_feedback_signals_edit(i)
+                            break
+                if act.get('phase_v_offset_signal') and phase_offset_calib_phase_v_offset_signal_combo_edit.count():
+                    try:
+                        phase_offset_calib_phase_v_offset_signal_combo_edit.setCurrentText(str(act.get('phase_v_offset_signal')))
+                    except Exception:
+                        pass
+                if act.get('phase_w_offset_signal') and phase_offset_calib_phase_w_offset_signal_combo_edit.count():
+                    try:
+                        phase_offset_calib_phase_w_offset_signal_combo_edit.setCurrentText(str(act.get('phase_w_offset_signal')))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            
+            # Populate Phase Offset Calibration Test sub-widget (Test Mode = shared field)
+            phase_offset_calib_layout_edit.addRow('Feedback Signal Source:', phase_offset_calib_feedback_msg_combo_edit)
+            phase_offset_calib_layout_edit.addRow('Phase V Offset Signal:', phase_offset_calib_phase_v_offset_signal_combo_edit)
+            phase_offset_calib_layout_edit.addRow('Phase W Offset Signal:', phase_offset_calib_phase_w_offset_signal_combo_edit)
+            phase_offset_calib_layout_edit.addRow('Offset Lower Limit:', phase_offset_calib_lower_limit_edit_edit)
+            phase_offset_calib_layout_edit.addRow('Offset Upper Limit:', phase_offset_calib_upper_limit_edit_edit)
+            phase_offset_calib_layout_edit.addRow('Acquisition Time (ms):', phase_offset_calib_timeout_edit_edit)
         else:
             dig_can = QtWidgets.QLineEdit(str(act.get('can_id','')))
             dig_signal = QtWidgets.QLineEdit(str(act.get('signal','')))
@@ -14298,6 +14527,7 @@ Data Points Used: {data_points}"""
             test_type_to_index_edit['Output Current Calibration'] = act_stacked_edit.addWidget(output_current_calibration_widget_edit)
             test_type_to_index_edit['Charged HV Bus Test'] = act_stacked_edit.addWidget(charged_hv_bus_widget_edit)
             test_type_to_index_edit['Charger Functional Test'] = act_stacked_edit.addWidget(charger_functional_widget_edit)
+            test_type_to_index_edit['Phase Offset Calibration Test'] = act_stacked_edit.addWidget(phase_offset_calib_widget_edit)
         
         v.addWidget(QtWidgets.QLabel('Test Configuration:'))
         v.addWidget(act_stacked_edit)
@@ -14319,7 +14549,7 @@ Data Points Used: {data_points}"""
                     elif feedback_edit_label is not None:
                         feedback_edit_label.show()
                         feedback_edit.show()
-                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test'):
+                elif txt in ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test', 'Phase Offset Calibration Test'):
                     # Hide feedback fields (these test types use their own fields)
                     if fb_msg_label is not None:
                         fb_msg_label.hide()
@@ -14355,7 +14585,7 @@ Data Points Used: {data_points}"""
             # feedback
             # Only save feedback fields for test types that use them
             # Test types that have their own feedback fields inside actuation don't need these
-            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 
+            test_types_with_own_feedback = ('Phase Current Test', 'Analog Static Test', 'Analog PWM Sensor', 'Temperature Validation Test', 'Phase Offset Calibration Test', 
                                           'Fan Control Test', 'External 5V Test', 'DC Bus Sensing', 'Output Current Calibration', 'Charged HV Bus Test', 'Charger Functional Test')
             
             if data['type'] not in test_types_with_own_feedback:
@@ -15105,6 +15335,45 @@ Data Points Used: {data_points}"""
                         'psfb_fault_signal': psfb_fault_signal,
                         'output_current_tolerance': output_current_tolerance,
                         'test_time_ms': test_time,
+                    }
+                elif data['type'] == 'Phase Offset Calibration Test':
+                    # Phase Offset Calibration Test: read offsets/limits/acquisition time; test request = shared Test Mode field
+                    try:
+                        feedback_msg_id = phase_offset_calib_feedback_msg_combo_edit.currentData() if 'phase_offset_calib_feedback_msg_combo_edit' in locals() else None
+                    except Exception:
+                        feedback_msg_id = None
+                    phase_v_offset_signal = phase_offset_calib_phase_v_offset_signal_combo_edit.currentText().strip() if 'phase_offset_calib_phase_v_offset_signal_combo_edit' in locals() and phase_offset_calib_phase_v_offset_signal_combo_edit.count() else ''
+                    phase_w_offset_signal = phase_offset_calib_phase_w_offset_signal_combo_edit.currentText().strip() if 'phase_offset_calib_phase_w_offset_signal_combo_edit' in locals() and phase_offset_calib_phase_w_offset_signal_combo_edit.count() else ''
+                    
+                    # Calibration Timeout (int, >= 1000)
+                    def _to_int_or_none_phase_offset_calib_timeout_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+                    
+                    calibration_timeout = _to_int_or_none_phase_offset_calib_timeout_edit(phase_offset_calib_timeout_edit_edit) if 'phase_offset_calib_timeout_edit_edit' in locals() else None
+
+                    # Limits (int)
+                    def _to_int_or_none_phase_offset_calib_limit_edit(txt_widget):
+                        try:
+                            txt = txt_widget.text().strip() if hasattr(txt_widget, 'text') else ''
+                            return int(txt) if txt else None
+                        except Exception:
+                            return None
+
+                    lower_limit = _to_int_or_none_phase_offset_calib_limit_edit(phase_offset_calib_lower_limit_edit_edit) if 'phase_offset_calib_lower_limit_edit_edit' in locals() else None
+                    upper_limit = _to_int_or_none_phase_offset_calib_limit_edit(phase_offset_calib_upper_limit_edit_edit) if 'phase_offset_calib_upper_limit_edit_edit' in locals() else None
+                    
+                    data['actuation'] = {
+                        'type': 'Phase Offset Calibration Test',
+                        'feedback_signal_source': feedback_msg_id,
+                        'phase_v_offset_signal': phase_v_offset_signal,
+                        'phase_w_offset_signal': phase_w_offset_signal,
+                        'phase_offset_lower_limit': lower_limit,
+                        'phase_offset_upper_limit': upper_limit,
+                        'calibration_timeout_ms': calibration_timeout,
                     }
             else:
                 if data['type'] == 'Digital Logic Test':
@@ -16183,6 +16452,25 @@ Data Points Used: {data_points}"""
                             'passed': result_data.get('passed')
                         }
                         logger.debug(f"Retrieved stored result data for {test_name} (Charger Functional Test)")
+                    else:
+                        plot_data = None
+                elif test_type == 'Phase Offset Calibration Test':
+                    # Retrieve result data for Phase Offset Calibration Test
+                    if hasattr(self, '_test_result_data_temp') and test_name in self._test_result_data_temp:
+                        result_data = self._test_result_data_temp.pop(test_name)
+                        if not hasattr(self, '_test_execution_data'):
+                            self._test_execution_data = {}
+                        if test_name not in self._test_execution_data:
+                            self._test_execution_data[test_name] = {}
+                        self._test_execution_data[test_name]['statistics'] = {
+                            'phase_v_offset': result_data.get('phase_v_offset'),
+                            'phase_w_offset': result_data.get('phase_w_offset'),
+                            'lower_limit': result_data.get('lower_limit'),
+                            'upper_limit': result_data.get('upper_limit'),
+                            'acquisition_time_ms': result_data.get('acquisition_time_ms'),
+                            'passed': result_data.get('passed')
+                        }
+                        logger.debug(f"Retrieved stored result data for {test_name} (Phase Offset Calibration Test)")
                     else:
                         plot_data = None
                 

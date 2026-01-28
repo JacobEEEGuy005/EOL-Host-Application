@@ -4991,6 +4991,127 @@ class TestRunner:
                 
                 logger.info(f"Charger Functional Test completed: {'PASS' if passed else 'FAIL'}")
                 return passed, info
+            elif act.get('type') == 'Phase Offset Calibration Test':
+                # Phase Offset Calibration Test execution:
+                # 1) Send Test Mode (e.g. 1 = Drive Mode) via EOL Set DUT Test Mode Signal (shared Test Mode field)
+                # 2) Sample Phase V / Phase W offset signals for acquisition time (default 5s)
+                # 3) Check both final offsets against lower/upper limits
+                # 4) PASS if both within limits, otherwise FAIL
+                test_mode = test.get('test_mode', 1)
+                feedback_signal_source = act.get('feedback_signal_source')
+                phase_v_offset_signal = act.get('phase_v_offset_signal')
+                phase_w_offset_signal = act.get('phase_w_offset_signal')
+                lower_limit = act.get('phase_offset_lower_limit')
+                upper_limit = act.get('phase_offset_upper_limit')
+                calibration_timeout_ms = act.get('calibration_timeout_ms', 5000)
+                if calibration_timeout_ms is None:
+                    calibration_timeout_ms = 5000
+                calibration_timeout_sec = max(1.0, calibration_timeout_ms / 1000.0)
+                if not all([feedback_signal_source is not None, phase_v_offset_signal, phase_w_offset_signal,
+                            lower_limit is not None, upper_limit is not None]):
+                    return False, "Missing required Phase Offset Calibration Test parameters"
+                try:
+                    lower_limit = float(lower_limit)
+                    upper_limit = float(upper_limit)
+                except (ValueError, TypeError):
+                    return False, "Phase Offset Calibration Test: Invalid offset limits"
+                if lower_limit > upper_limit:
+                    return False, "Phase Offset Calibration Test: Offset lower limit must be <= upper limit"
+                def _nb_sleep(sec: float) -> None:
+                    end = time.time() + float(sec)
+                    while time.time() < end:
+                        try:
+                            QtCore.QCoreApplication.processEvents()
+                        except Exception:
+                            pass
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(SLEEP_INTERVAL_SHORT, remaining))
+                # Send Test Mode (e.g. 1 = Drive Mode) using EOL HW config -> Set DUT Test Mode Signal
+                send_ok, send_msg = self.send_test_mode_command(test_mode)
+                if not send_ok:
+                    return False, f"Phase Offset Calibration Test: {send_msg}"
+                logger.info(f"Phase Offset Calibration Test: Sent Test Mode {test_mode} (Drive Mode)")
+                start_t = time.time()
+                deadline = start_t + calibration_timeout_sec
+                pv = None
+                pw = None
+                pv_samples = 0
+                pw_samples = 0
+                while time.time() < deadline:
+                    try:
+                        if self.signal_service is not None:
+                            _, pv_val = self.signal_service.get_latest_signal(feedback_signal_source, phase_v_offset_signal)
+                            _, pw_val = self.signal_service.get_latest_signal(feedback_signal_source, phase_w_offset_signal)
+                        elif self.gui is not None:
+                            _, pv_val = self.gui.get_latest_signal(feedback_signal_source, phase_v_offset_signal)
+                            _, pw_val = self.gui.get_latest_signal(feedback_signal_source, phase_w_offset_signal)
+                        else:
+                            pv_val = None
+                            pw_val = None
+                        if pv_val is not None:
+                            try:
+                                pv = float(pv_val)
+                                pv_samples += 1
+                            except (ValueError, TypeError):
+                                pass
+                        if pw_val is not None:
+                            try:
+                                pw = float(pw_val)
+                                pw_samples += 1
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Real-time monitoring updates during acquisition
+                        if self.monitor_signal_update_callback:
+                            try:
+                                if pv is not None:
+                                    self.update_monitor_signal('phase_v_offset', pv)
+                                if pw is not None:
+                                    self.update_monitor_signal('phase_w_offset', pw)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Phase Offset Calibration Test: sample error: {e}")
+                    _nb_sleep(SLEEP_INTERVAL_SHORT)
+
+                if pv is None or pw is None:
+                    return False, f"Phase Offset Calibration Test: No valid offset readings (V samples={pv_samples}, W samples={pw_samples})"
+
+                pv_ok = (lower_limit <= pv <= upper_limit)
+                pw_ok = (lower_limit <= pw <= upper_limit)
+                passed = bool(pv_ok and pw_ok)
+                info = (f"Phase offsets after {int(calibration_timeout_ms)} ms: "
+                        f"V={pv} ({'OK' if pv_ok else 'OUT'}), "
+                        f"W={pw} ({'OK' if pw_ok else 'OUT'}), "
+                        f"Limits=[{lower_limit}, {upper_limit}]")
+
+                # Store result data for report/statistics
+                test_name = test.get('name', '<unnamed>')
+                result_data = {
+                    'phase_v_offset': pv,
+                    'phase_w_offset': pw,
+                    'lower_limit': lower_limit,
+                    'upper_limit': upper_limit,
+                    'acquisition_time_ms': int(calibration_timeout_ms),
+                    'passed': passed
+                }
+                if self.gui is not None:
+                    if not hasattr(self.gui, '_test_result_data_temp'):
+                        self.gui._test_result_data_temp = {}
+                    self.gui._test_result_data_temp[test_name] = result_data
+
+                if self.monitor_signal_update_callback:
+                    try:
+                        if pv is not None:
+                            self.update_monitor_signal('phase_v_offset', pv)
+                        if pw is not None:
+                            self.update_monitor_signal('phase_w_offset', pw)
+                    except Exception:
+                        pass
+                logger.info(f"Phase Offset Calibration Test completed: {'PASS' if passed else 'FAIL'}. {info}")
+                return passed, info
             elif act.get('type') == 'Output Current Calibration':
                 # Output Current Calibration Test execution:
                 # 0) Pre-Test Safety Dialog - MUST be shown BEFORE any test execution

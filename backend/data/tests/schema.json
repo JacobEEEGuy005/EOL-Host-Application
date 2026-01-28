@@ -10,7 +10,7 @@
         "required": ["name","type","actuation"],
         "properties": {
           "name": {"type":"string"},
-          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration","Charged HV Bus Test","Charger Functional Test"]},
+          "type": {"type":"string","enum":["Digital Logic Test","Analog Sweep Test","Phase Current Test","Analog Static Test","Analog PWM Sensor","Temperature Validation Test","Fan Control Test","External 5V Test","DC Bus Sensing","Output Current Calibration","Charged HV Bus Test","Charger Functional Test","Phase Offset Calibration Test"]},
           "feedback_signal": {"type":["string","null"]},
           "test_mode": {"type":"integer", "minimum":0, "maximum":3, "default":0},
           "actuation": {
@@ -259,6 +259,25 @@
                   "psfb_fault_signal",
                   "output_current_tolerance",
                   "test_time_ms"
+                ]
+              },
+              {
+                "properties": {
+                  "type": {"const":"Phase Offset Calibration Test"},
+                  "feedback_signal_source": {"type":"integer", "minimum":0, "maximum":536870911},
+                  "phase_v_offset_signal": {"type":"string"},
+                  "phase_w_offset_signal": {"type":"string"},
+                  "phase_offset_lower_limit": {"type":"integer"},
+                  "phase_offset_upper_limit": {"type":"integer"},
+                  "calibration_timeout_ms": {"type":"integer", "minimum":1000}
+                },
+                "required": [
+                  "feedback_signal_source",
+                  "phase_v_offset_signal",
+                  "phase_w_offset_signal",
+                  "phase_offset_lower_limit",
+                  "phase_offset_upper_limit",
+                  "calibration_timeout_ms"
                 ]
               },
               {
