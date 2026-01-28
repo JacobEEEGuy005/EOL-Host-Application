@@ -317,10 +317,6 @@ class TestRunner:
             """Non-blocking sleep that processes Qt events."""
             end = time.time() + float(sec)
             while time.time() < end:
-                try:
-                    QtCore.QCoreApplication.processEvents()
-                except Exception:
-                    pass
                 remaining = end - time.time()
                 if remaining <= 0:
                     break
@@ -503,10 +499,6 @@ class TestRunner:
             """Non-blocking sleep that processes Qt events."""
             end = time.time() + float(sec)
             while time.time() < end:
-                try:
-                    QtCore.QCoreApplication.processEvents()
-                except Exception:
-                    pass
                 remaining = end - time.time()
                 if remaining <= 0:
                     break
@@ -779,10 +771,6 @@ class TestRunner:
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            LocalQtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -817,7 +805,6 @@ class TestRunner:
                     
                     while time.time() < end and iteration_count < max_iterations:
                         iteration_count += 1
-                        LocalQtCore.QCoreApplication.processEvents()
                         try:
                             if fb:
                                 if fb_mid is not None:
@@ -1087,10 +1074,6 @@ class TestRunner:
                 def _nb_sleep(sec: float):
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -1196,15 +1179,6 @@ class TestRunner:
                                 last_command_time = current_time
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during settling: {e}")
-                        
-                        # Process Qt events to keep UI responsive (less frequently during settling)
-                        # Process events approximately every 100ms during settling
-                        if (current_time - last_event_process_time) >= 0.1:  # Every ~100ms
-                            try:
-                                QtCore.QCoreApplication.processEvents()
-                                last_event_process_time = current_time
-                            except Exception:
-                                pass
                         
                         time.sleep(data_collection_loop_interval_sec)
                     
@@ -1346,15 +1320,6 @@ class TestRunner:
                                 batched_data_points.clear()
                             last_plot_update_time = current_time
                         
-                        # Process Qt events to keep UI responsive (less frequently)
-                        # Process events approximately every 100ms during data collection
-                        if (current_time - last_event_process_time) >= 0.1:  # Every ~100ms
-                            try:
-                                QtCore.QCoreApplication.processEvents()
-                                last_event_process_time = current_time
-                            except Exception:
-                                pass
-                        
                         # Optimization: Use larger sleep interval (25ms instead of 5ms)
                         # This reduces loop iteration overhead while maintaining good data collection rate
                         time.sleep(data_collection_loop_interval_sec)
@@ -1408,11 +1373,6 @@ class TestRunner:
                             except Exception as e:
                                 logger.debug(f"Error sending DAC command during hold period: {e}")
                         
-                        # Process Qt events to keep UI responsive
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
@@ -2197,10 +2157,6 @@ class TestRunner:
                     """
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -2253,11 +2209,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading EOL signal: {e}")
                     
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # Step 3: Calculate averages and validate data quality
@@ -2381,10 +2332,6 @@ class TestRunner:
                     """
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -2419,11 +2366,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading temperature signal: {e}")
                     
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # Step 2: Check if any data was collected
@@ -2539,10 +2481,6 @@ class TestRunner:
                     """
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -2601,11 +2539,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading duty signal: {e}")
                     
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # Step 2: Check if data was collected for both signals
@@ -2699,10 +2632,6 @@ class TestRunner:
                     """Non-blocking sleep that processes Qt events."""
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -2851,11 +2780,6 @@ class TestRunner:
                             except Exception as e:
                                 logger.debug(f"Failed to update EOL signal: {e}")
                         
-                        # Process events and sleep
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
                     return eol_values, feedback_values
@@ -3006,17 +2930,13 @@ class TestRunner:
                     AdapterFrame = None
                 
                 def _nb_sleep(sec: float) -> None:
-                    """Non-blocking sleep that processes Qt events.
+                    """Non-blocking sleep (no Qt processEvents; safe for worker thread).
 
                     Args:
                         sec: Sleep duration in seconds
                     """
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -3200,11 +3120,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading fan enabled signal: {e}")
                     
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # Step 3: Check if fan enabled was verified
@@ -3268,11 +3183,6 @@ class TestRunner:
                         except Exception as e:
                             logger.debug(f"Error reading fan fault signal: {e}")
                         
-                        # Process events and sleep
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                 finally:
                     # Step 5: Always disable fan in cleanup, even if test fails
@@ -3327,8 +3237,9 @@ class TestRunner:
                 # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
                 if self.gui is not None:
                     try:
-                        current_thread = QtCore.QThread.currentThread()
-                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        from PySide6 import QtCore as _Qt
+                        current_thread = _Qt.QThread.currentThread()
+                        main_thread = _Qt.QCoreApplication.instance().thread()
                         
                         if current_thread != main_thread:
                             logger.debug(f"Storing test result data from background thread for '{test_name}'")
@@ -3392,10 +3303,6 @@ class TestRunner:
                     """
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -3488,11 +3395,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading CAN feedback signal: {e}")
                     
-                    # Process events and sleep
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # Step 4: Stop oscilloscope acquisition and stop logging
@@ -3717,10 +3619,6 @@ class TestRunner:
                     """Non-blocking sleep that processes Qt events."""
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -4171,11 +4069,6 @@ class TestRunner:
                             logger.warning("Charged HV Bus Test: Fault detected, stopping test execution early")
                             break
                         
-                        # Process events and sleep
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                 finally:
                     # Step 7: Always stop test and logging, even if fault detected or exception occurred
@@ -4473,10 +4366,6 @@ class TestRunner:
                     """Non-blocking sleep that processes Qt events."""
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -4790,11 +4679,6 @@ class TestRunner:
                             logger.warning("Charger Functional Test: Fault detected, stopping test execution early")
                             break
                         
-                        # Process events and sleep
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                 finally:
                     # Step 6: Always stop test and logging, even if fault detected or exception occurred
@@ -5020,10 +4904,6 @@ class TestRunner:
                 def _nb_sleep(sec: float) -> None:
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -5302,10 +5182,6 @@ class TestRunner:
                     """Non-blocking sleep that processes Qt events."""
                     end = time.time() + float(sec)
                     while time.time() < end:
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Error processing Qt events during sleep: {e}")
                         remaining = end - time.time()
                         if remaining <= 0:
                             break
@@ -5633,10 +5509,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading CAN feedback signal: {e}")
                     
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # 6d. Stop data acquisition
@@ -5775,10 +5647,6 @@ class TestRunner:
                         except Exception as e:
                             logger.debug(f"Error reading CAN feedback signal: {e}")
                         
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
                     # 7e. Stop data acquisition
@@ -6089,10 +5957,6 @@ class TestRunner:
                     except Exception as e:
                         logger.debug(f"Error reading CAN feedback signal: {e}")
                     
-                    try:
-                        QtCore.QCoreApplication.processEvents()
-                    except Exception:
-                        pass
                     time.sleep(SLEEP_INTERVAL_SHORT)
                 
                 # 13d. Stop data acquisition
@@ -6196,10 +6060,6 @@ class TestRunner:
                         except Exception as e:
                             logger.debug(f"Error reading CAN feedback signal: {e}")
                         
-                        try:
-                            QtCore.QCoreApplication.processEvents()
-                        except Exception:
-                            pass
                         time.sleep(SLEEP_INTERVAL_SHORT)
                     
                     # 14e. Stop data acquisition
@@ -6473,7 +6333,6 @@ class TestRunner:
         poll_interval = POLL_INTERVAL_MS / 1000.0  # Convert ms to seconds
         observed_info = 'no feedback'
         while waited < timeout:
-            QtCore.QCoreApplication.processEvents()
             time.sleep(poll_interval)
             waited += poll_interval
             fb = test.get('feedback_signal')
