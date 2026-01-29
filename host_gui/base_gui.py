@@ -4147,11 +4147,13 @@ Data Points Used: {data_points}"""
         button_layout = QtWidgets.QHBoxLayout()
         
         self.report_refresh_btn = QtWidgets.QPushButton('Refresh Report')
+        self.report_generate_eol_btn = QtWidgets.QPushButton('Generate EOL JSON')
         self.report_export_html_btn = QtWidgets.QPushButton('Export as HTML')
         self.report_export_pdf_btn = QtWidgets.QPushButton('Export as PDF')
         self.report_export_json_btn = QtWidgets.QPushButton('Export as JSON')
         
         button_layout.addWidget(self.report_refresh_btn)
+        button_layout.addWidget(self.report_generate_eol_btn)
         button_layout.addStretch()
         button_layout.addWidget(self.report_export_html_btn)
         button_layout.addWidget(self.report_export_pdf_btn)
@@ -4195,6 +4197,7 @@ Data Points Used: {data_points}"""
         
         # Wire buttons
         self.report_refresh_btn.clicked.connect(self._refresh_test_report)
+        self.report_generate_eol_btn.clicked.connect(self._open_generate_eol_json_dialog)
         self.report_export_html_btn.clicked.connect(self._export_report_html)
         self.report_export_pdf_btn.clicked.connect(self._export_report_pdf)
         self.report_export_json_btn.clicked.connect(self._export_report_json)
@@ -5345,6 +5348,256 @@ Data Points Used: {data_points}"""
             logger.error(f"Failed to export JSON report: {e}", exc_info=True)
             QtWidgets.QMessageBox.critical(self, 'Export Error', 
                 f'Failed to export JSON report:\n{e}')
+
+    def _open_generate_eol_json_dialog(self):
+        """Open dialog to generate EOL JSON from a test report JSON."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Generate EOL JSON')
+        dialog.setMinimumWidth(500)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+        
+        form_layout = QtWidgets.QFormLayout()
+        
+        unit_number_edit = QtWidgets.QLineEdit()
+        firmware_version_edit = QtWidgets.QLineEdit()
+        hardware_version_edit = QtWidgets.QLineEdit()
+        unit_build_date_edit = QtWidgets.QLineEdit()
+        unit_build_date_edit.setPlaceholderText('YYYYMMDD')
+        
+        form_layout.addRow('Unit Number:', unit_number_edit)
+        form_layout.addRow('Firmware Version:', firmware_version_edit)
+        form_layout.addRow('Hardware Version:', hardware_version_edit)
+        form_layout.addRow('Unit Build Date:', unit_build_date_edit)
+        
+        # Test report JSON file selector
+        report_path_edit = QtWidgets.QLineEdit()
+        browse_btn = QtWidgets.QPushButton('Browse...')
+        
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(report_path_edit, 1)
+        hbox.addWidget(browse_btn)
+        
+        form_layout.addRow('Test Report JSON:', hbox)
+        
+        layout.addLayout(form_layout)
+        
+        # Default directory for reports
+        try:
+            default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend', 'data', 'reports')
+        except Exception:
+            default_dir = os.path.expanduser('~')
+        
+        def _browse_report():
+            fname, _ = QtWidgets.QFileDialog.getOpenFileName(
+                dialog,
+                'Select Test Report JSON',
+                default_dir,
+                'JSON Files (*.json);;All Files (*)'
+            )
+            if fname:
+                report_path_edit.setText(fname)
+        
+        browse_btn.clicked.connect(_browse_report)
+        
+        # Dialog buttons
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        layout.addWidget(button_box)
+        
+        def _on_accept():
+            unit_number = unit_number_edit.text().strip()
+            firmware_version = firmware_version_edit.text().strip()
+            hardware_version = hardware_version_edit.text().strip()
+            unit_build_date = unit_build_date_edit.text().strip()
+            report_path = report_path_edit.text().strip()
+            
+            if not unit_number or not firmware_version or not hardware_version or not unit_build_date:
+                QtWidgets.QMessageBox.warning(dialog, 'Missing Data', 'Please fill in all unit parameters.')
+                return
+            
+            if not report_path:
+                QtWidgets.QMessageBox.warning(dialog, 'Missing File', 'Please select a Test Report JSON file.')
+                return
+            
+            if not os.path.isfile(report_path):
+                QtWidgets.QMessageBox.warning(dialog, 'Invalid File', 'Selected Test Report JSON file does not exist.')
+                return
+            
+            try:
+                self._generate_eol_json_from_report_path(
+                    report_path=report_path,
+                    unit_number=unit_number,
+                    firmware_version=firmware_version,
+                    hardware_version=hardware_version,
+                    unit_build_date=unit_build_date,
+                )
+                dialog.accept()
+            except Exception as e:
+                logger.error(f"Failed to generate EOL JSON: {e}", exc_info=True)
+                QtWidgets.QMessageBox.critical(dialog, 'Generation Error', f'Failed to generate EOL JSON:\n{e}')
+        
+        button_box.accepted.connect(_on_accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        dialog.exec()
+
+    def _generate_eol_json_from_report_path(
+        self,
+        report_path: str,
+        unit_number: str,
+        firmware_version: str,
+        hardware_version: str,
+        unit_build_date: str,
+    ) -> None:
+        """Generate an EOL JSON file from a test report JSON and user parameters.
+        
+        This uses docs/EOL_Parameter Specification/eol_parameters_sample.json as a template and
+        fills in trim/offset values based on:
+        - Output Current Calibration Test: ChargerOutputCurrentTrimValue = trim_value / 100
+        - Phase Offset Calibration Test: PhaseACurrentOffsetValue, PhaseBCurrentOffsetValue
+        - Phase Current Test: PhaseACurrentTrimValue, PhaseBCurrentTrimValue
+        - MaxChargerVoltageTrimValue: hardcoded to 1.0
+        """
+        # Resolve template path
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        template_path = os.path.join(
+            base_dir,
+            '..',
+            'docs',
+            'EOL_Parameter Specification',
+            'eol_parameters_sample.json',
+        )
+        template_path = os.path.abspath(template_path)
+        
+        if not os.path.isfile(template_path):
+            raise FileNotFoundError(f'EOL parameter template not found at:\n{template_path}')
+        
+        # Load template and report
+        with open(template_path, 'r', encoding='utf-8') as f:
+            eol_template = json.load(f)
+        
+        with open(report_path, 'r', encoding='utf-8') as f:
+            report_data = json.load(f)
+        
+        tests = report_data.get('tests', [])
+        
+        output_current_test = None
+        phase_offset_test = None
+        phase_current_test = None
+        
+        for entry in tests:
+            exec_data = entry.get('execution_data', {})
+            test_type = exec_data.get('test_type') or entry.get('test_configuration', {}).get('type')
+            if test_type == 'Output Current Calibration':
+                output_current_test = entry
+            elif test_type == 'Phase Offset Calibration Test':
+                phase_offset_test = entry
+            elif test_type == 'Phase Current Test':
+                phase_current_test = entry
+        
+        if output_current_test is None:
+            raise ValueError('Output Current Calibration test not found in selected report.')
+        if phase_offset_test is None:
+            raise ValueError('Phase Offset Calibration Test not found in selected report.')
+        if phase_current_test is None:
+            raise ValueError('Phase Current Test not found in selected report.')
+        
+        # Output Current Calibration: use calculated trim_value / 100
+        oc_exec = output_current_test.get('execution_data', {})
+        oc_stats = oc_exec.get('statistics', {}) or {}
+        oc_plot = oc_exec.get('plot_data', {}) or {}
+        
+        calculated_trim = oc_stats.get('calculated_trim_value')
+        if calculated_trim is None:
+            calculated_trim = oc_plot.get('calculated_trim_value')
+        if calculated_trim is None:
+            # Fallback: second sweep trim_value if available
+            second = (oc_plot.get('second_sweep') or {})
+            calculated_trim = second.get('trim_value')
+        if calculated_trim is None:
+            raise ValueError('Could not find calculated trim value in Output Current Calibration test.')
+        
+        charger_output_trim = float(calculated_trim) / 100.0
+        
+        # Phase Offset Calibration Test: offsets
+        po_exec = phase_offset_test.get('execution_data', {})
+        po_stats = po_exec.get('statistics', {}) or {}
+        phase_v_offset = po_stats.get('phase_v_offset')
+        phase_w_offset = po_stats.get('phase_w_offset')
+        if phase_v_offset is None or phase_w_offset is None:
+            raise ValueError('Phase offsets not found in Phase Offset Calibration Test statistics.')
+        
+        # Phase Current Test: average gain corrections
+        pc_exec = phase_current_test.get('execution_data', {})
+        pc_plot = pc_exec.get('plot_data', {}) or {}
+        avg_gain_corr_v = pc_plot.get('avg_gain_correction_v')
+        avg_gain_corr_w = pc_plot.get('avg_gain_correction_w')
+        if avg_gain_corr_v is None or avg_gain_corr_w is None:
+            raise ValueError('Average gain corrections not found in Phase Current Test plot data.')
+        
+        # Populate template
+        unit_params = eol_template.setdefault('UnitParameters', {})
+        trim_params = eol_template.setdefault('TrimParameters', {})
+        
+        # Unit parameters: try to coerce to numeric types where appropriate
+        try:
+            unit_params['unitNumber'] = int(unit_number)
+        except Exception:
+            unit_params['unitNumber'] = unit_number
+        
+        try:
+            unit_params['firmwareVersion'] = float(firmware_version)
+        except Exception:
+            unit_params['firmwareVersion'] = firmware_version
+        
+        try:
+            unit_params['hardwareVersion'] = float(hardware_version)
+        except Exception:
+            unit_params['hardwareVersion'] = hardware_version
+        
+        # Normalize build date: accept raw YYYYMMDD or allow non-digits
+        digits_only = ''.join(ch for ch in unit_build_date if ch.isdigit())
+        if digits_only:
+            try:
+                unit_params['unitBuildDate'] = int(digits_only)
+            except Exception:
+                unit_params['unitBuildDate'] = digits_only
+        else:
+            unit_params['unitBuildDate'] = unit_build_date
+        
+        # Trim parameters
+        trim_params['PhaseACurrentTrimValue'] = float(avg_gain_corr_v)
+        trim_params['PhaseBCurrentTrimValue'] = float(avg_gain_corr_w)
+        trim_params['ChargerOutputCurrentTrimValue'] = float(charger_output_trim)
+        trim_params['MaxChargerVoltageTrimValue'] = 1.0
+        trim_params['PhaseACurrentOffsetValue'] = float(phase_v_offset)
+        trim_params['PhaseBCurrentOffsetValue'] = float(phase_w_offset)
+        
+        # Choose default output directory: same folder as template
+        default_out_dir = os.path.dirname(template_path)
+        os.makedirs(default_out_dir, exist_ok=True)
+        
+        default_out_name = f'eol_parameters_{unit_params.get("unitNumber", "unit")}.json'
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            'Save Generated EOL JSON',
+            os.path.join(default_out_dir, str(default_out_name)),
+            'JSON Files (*.json);;All Files (*)',
+        )
+        if not out_path:
+            return
+        
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(eol_template, f, indent=4, ensure_ascii=False)
+        
+        logger.info(f'Generated EOL JSON: {os.path.basename(out_path)} from report {os.path.basename(report_path)}')
+        QtWidgets.QMessageBox.information(
+            self,
+            'Generation Successful',
+            f'Generated EOL JSON:\n{os.path.basename(out_path)}',
+        )
     
     def _export_report_html(self):
         """Export test report as HTML file with embedded plots and styled tables."""
