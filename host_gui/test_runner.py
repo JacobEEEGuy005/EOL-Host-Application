@@ -2090,15 +2090,14 @@ class TestRunner:
                                 # Use a temporary key structure that _on_test_finished can access (thread-safe)
                                 if self.gui is not None:
                                     try:
-                                        # Safely access QtCore - may not be available in all contexts
+                                        # Use local import so QtCore is always available in this branch (avoids UnboundLocalError when other branches use local QtCore)
                                         try:
-                                            current_thread = QtCore.QThread.currentThread()
-                                            main_thread = QtCore.QCoreApplication.instance().thread()
-                                            
+                                            from PySide6 import QtCore as _Qt
+                                            current_thread = _Qt.QThread.currentThread()
+                                            main_thread = _Qt.QCoreApplication.instance().thread()
                                             if current_thread != main_thread:
                                                 logger.debug(f"Storing plot data from background thread for '{test_name}'")
                                         except (AttributeError, NameError, RuntimeError):
-                                            # QtCore not available or not initialized - skip thread check
                                             current_thread = None
                                             main_thread = None
                                             logger.debug(f"QtCore not available for thread check, storing plot data anyway")
@@ -2277,8 +2276,9 @@ class TestRunner:
                 # Note: Dictionary assignment is atomic in Python due to GIL, but we check thread for safety
                 if self.gui is not None:
                     try:
-                        current_thread = QtCore.QThread.currentThread()
-                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        from PySide6 import QtCore as _Qt
+                        current_thread = _Qt.QThread.currentThread()
+                        main_thread = _Qt.QCoreApplication.instance().thread()
                         
                         if current_thread != main_thread:
                             logger.debug(f"Storing test result data from background thread for '{test_name}'")
@@ -2418,8 +2418,9 @@ class TestRunner:
                 # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
                 if self.gui is not None:
                     try:
-                        current_thread = QtCore.QThread.currentThread()
-                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        from PySide6 import QtCore as _Qt
+                        current_thread = _Qt.QThread.currentThread()
+                        main_thread = _Qt.QCoreApplication.instance().thread()
                         
                         if current_thread != main_thread:
                             logger.debug(f"Storing test result data from background thread for '{test_name}'")
@@ -3470,8 +3471,9 @@ class TestRunner:
                 # Store in temporary storage for retrieval by _on_test_finished (thread-safe)
                 if self.gui is not None:
                     try:
-                        current_thread = QtCore.QThread.currentThread()
-                        main_thread = QtCore.QCoreApplication.instance().thread()
+                        from PySide6 import QtCore as _Qt
+                        current_thread = _Qt.QThread.currentThread()
+                        main_thread = _Qt.QCoreApplication.instance().thread()
                         
                         if current_thread != main_thread:
                             logger.debug(f"Storing test result data from background thread for '{test_name}'")
