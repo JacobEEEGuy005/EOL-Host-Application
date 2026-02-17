@@ -2983,11 +2983,9 @@ Data Points Used: {data_points}"""
             self.plot_axes.set_ylabel('Nil')
             self.plot_axes.set_title('Nil')
             self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
-            # Create empty plot line
-            if hasattr(self, 'plot_line') and self.plot_line is not None:
-                self.plot_line.set_data([], [])
-            else:
-                self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+            # Always create a new plot line after clear(); never reuse the old one -
+            # clear() removes artists from the axes and using the old reference can cause heap corruption.
+            self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
             self.plot_axes.relim()
             self.plot_axes.autoscale()
             self.plot_figure.tight_layout()
@@ -2995,6 +2993,93 @@ Data Points Used: {data_points}"""
             self.plot_canvas.draw()
         except Exception as e:
             logger.debug(f"Failed to update plot during initialization: {e}", exc_info=True)
+    
+    @QtCore.Slot()
+    def _initialize_phase_current_plots(self) -> None:
+        """Initialize live plots for Phase Current test (Phase V and Phase W subplots).
+        Must be called from the main thread. Used by PhaseCurrentTestStateMachine via invokeMethod.
+        """
+        if not matplotlib_available or not hasattr(self, 'plot_figure') or self.plot_figure is None:
+            return
+        if not hasattr(self, 'plot_canvas') or self.plot_canvas is None:
+            return
+        try:
+            if hasattr(self, 'plot_axes') and self.plot_axes is not None:
+                self.plot_axes.clear()
+            self.plot_figure.clear()
+            self.plot_axes_v = self.plot_figure.add_subplot(121)
+            self.plot_axes_w = self.plot_figure.add_subplot(122)
+            self.plot_line_v, = self.plot_axes_v.plot([], [], 'bo', markersize=6, label='Phase V')
+            self.plot_line_w, = self.plot_axes_w.plot([], [], 'ro', markersize=6, label='Phase W')
+            self.plot_figure.suptitle('DUT Phase Current vs Measured Phase Current', fontsize=12, y=0.98)
+            self.plot_axes_v.set_xlabel('Measured Phase V Current (A)')
+            self.plot_axes_v.set_ylabel('DUT Phase V Current (A)')
+            self.plot_axes_v.set_title('')
+            self.plot_axes_v.grid(True, alpha=PLOT_GRID_ALPHA)
+            self.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            self.plot_axes_v.legend()
+            self.plot_axes_w.set_xlabel('Measured Phase W Current (A)')
+            self.plot_axes_w.set_ylabel('DUT Phase W Current (A)')
+            self.plot_axes_w.set_title('')
+            self.plot_axes_w.grid(True, alpha=PLOT_GRID_ALPHA)
+            self.plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
+            self.plot_axes_w.legend()
+            self.plot_figure.tight_layout(rect=[0, 0, 1, 0.96])
+            self.plot_canvas.draw()
+        except Exception as e:
+            logger.debug(f"Failed to initialize phase current plots: {e}", exc_info=True)
+    
+    @QtCore.Slot()
+    def _update_phase_current_live_plots(self) -> None:
+        """Update Phase V/W live plots from state machine data. Must be called from the main thread."""
+        if not matplotlib_available or not hasattr(self, 'plot_axes_v') or not hasattr(self, 'plot_axes_w'):
+            return
+        sm = getattr(self, '_phase_current_state_machine', None)
+        if sm is None or not hasattr(sm, 'plot_can_v_avg'):
+            return
+        try:
+            num_points = len(sm.plot_can_v_avg)
+            if num_points == 0:
+                return
+            can_v_valid = []
+            osc_v_valid = []
+            can_w_valid = []
+            osc_w_valid = []
+            for i in range(num_points):
+                can_v = sm.plot_can_v_avg[i]
+                osc_v = sm.plot_osc_v_avg[i]
+                can_w = sm.plot_can_w_avg[i]
+                osc_w = sm.plot_osc_w_avg[i]
+                if (isinstance(can_v, (int, float)) and isinstance(osc_v, (int, float)) and
+                        not (isinstance(can_v, float) and can_v != can_v) and
+                        not (isinstance(osc_v, float) and osc_v != osc_v)):
+                    can_v_valid.append(can_v)
+                    osc_v_valid.append(osc_v)
+                if (isinstance(can_w, (int, float)) and isinstance(osc_w, (int, float)) and
+                        not (isinstance(can_w, float) and can_w != can_w) and
+                        not (isinstance(osc_w, float) and osc_w != osc_w)):
+                    can_w_valid.append(can_w)
+                    osc_w_valid.append(osc_w)
+            if can_v_valid and osc_v_valid:
+                self.plot_line_v.set_data(osc_v_valid, can_v_valid)
+                self.plot_axes_v.relim()
+                self.plot_axes_v.autoscale()
+            if can_w_valid and osc_w_valid:
+                self.plot_line_w.set_data(osc_w_valid, can_w_valid)
+                self.plot_axes_w.relim()
+                self.plot_axes_w.autoscale()
+            self.plot_canvas.draw()
+        except Exception as e:
+            logger.debug(f"Failed to update phase current live plots: {e}", exc_info=True)
+    
+    @QtCore.Slot(float, float)
+    def update_phase_current_monitor(self, v_val: float, w_val: float) -> None:
+        """Update phase V/W monitor labels. Must be called from the main thread (slot for invokeMethod)."""
+        try:
+            self.update_monitor_signal_by_name('dut_phase_v_current', v_val)
+            self.update_monitor_signal_by_name('dut_phase_w_current', w_val)
+        except Exception as e:
+            logger.debug(f"Failed to update phase current monitor: {e}")
     
     @QtCore.Slot(str)
     def _initialize_output_current_plot(self, test_name: str = '', sweep_title: str = '') -> None:
@@ -3121,10 +3206,9 @@ Data Points Used: {data_points}"""
                 self.plot_axes.set_ylabel('Nil')
                 self.plot_axes.set_title('Nil')
                 self.plot_axes.grid(True, alpha=PLOT_GRID_ALPHA)
-                if hasattr(self, 'plot_line') and self.plot_line is not None:
-                    self.plot_line.set_data([], [])
-                else:
-                    self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
+                # Always create a new plot line after clear(); never reuse the old one -
+                # clear() removes artists from the axes and using the old reference can cause heap corruption.
+                self.plot_line, = self.plot_axes.plot([], [], 'bo', markersize=6, label='Data Points')
                 self.plot_figure.tight_layout()
                 # Use draw() for immediate update during initialization
                 self.plot_canvas.draw()
@@ -3339,56 +3423,68 @@ Data Points Used: {data_points}"""
             elif hasattr(timestamp_item, 'setText'):
                 timestamp_item.setText(timestamp_str)  # Compact: just show time, no "Updated:" prefix
         
-        # Color coding based on thresholds
+        # Color coding based on thresholds (use fixed hex strings for stylesheet to avoid parse errors/crashes)
+        _MONITOR_STYLE_BASE = 'font-weight: bold; font-size: 8pt; padding: 1px 3px; border: 1px solid #ddd; border-radius: 1px;'
         if value is None:
             # Gray for N/A
             if isinstance(label, QtWidgets.QTableWidgetItem):
                 label.setForeground(QtGui.QColor('gray'))
                 label.setBackground(QtGui.QColor('#f5f5f5'))
             elif hasattr(label, 'setStyleSheet'):
-                label.setStyleSheet('color: gray; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+                try:
+                    label.setStyleSheet(f'color: #808080; background-color: #f5f5f5; {_MONITOR_STYLE_BASE}')
+                except Exception:
+                    pass
         else:
             try:
                 float_val = float(value)
                 
-                # Determine colors based on thresholds
+                # Determine style using fixed hex strings (never use QColor.name() in stylesheet - can cause parse/crash)
                 if threshold_good is not None and threshold_warn is not None:
                     if threshold_good[0] <= float_val <= threshold_good[1]:
-                        text_color = QtGui.QColor('green')
-                        bg_color = QtGui.QColor('#e8f5e9')
+                        style = f'color: #2e7d32; background-color: #e8f5e9; {_MONITOR_STYLE_BASE}'
                     elif threshold_warn[0] <= float_val <= threshold_warn[1]:
-                        text_color = QtGui.QColor('orange')
-                        bg_color = QtGui.QColor('#fff3e0')
+                        style = f'color: #ef6c00; background-color: #fff3e0; {_MONITOR_STYLE_BASE}'
                     else:
-                        text_color = QtGui.QColor('red')
-                        bg_color = QtGui.QColor('#ffebee')
+                        style = f'color: #c62828; background-color: #ffebee; {_MONITOR_STYLE_BASE}'
                 elif signal_type == 'digital':
-                    # Digital signals: 1 = green, 0 = red
                     if float_val >= 0.5:
-                        text_color = QtGui.QColor('green')
-                        bg_color = QtGui.QColor('#e8f5e9')
+                        style = f'color: #2e7d32; background-color: #e8f5e9; {_MONITOR_STYLE_BASE}'
                     else:
-                        text_color = QtGui.QColor('red')
-                        bg_color = QtGui.QColor('#ffebee')
+                        style = f'color: #c62828; background-color: #ffebee; {_MONITOR_STYLE_BASE}'
                 else:
-                    # Default: blue for analog values
-                    text_color = QtGui.QColor('blue')
-                    bg_color = QtGui.QColor('#e3f2fd')
+                    style = f'color: #1565c0; background-color: #e3f2fd; {_MONITOR_STYLE_BASE}'
                 
                 # Apply colors
                 if isinstance(label, QtWidgets.QTableWidgetItem):
-                    label.setForeground(text_color)
-                    label.setBackground(bg_color)
+                    # Map style back to QColors for table items
+                    if '2e7d32' in style:
+                        label.setForeground(QtGui.QColor('green'))
+                        label.setBackground(QtGui.QColor('#e8f5e9'))
+                    elif 'ef6c00' in style:
+                        label.setForeground(QtGui.QColor('orange'))
+                        label.setBackground(QtGui.QColor('#fff3e0'))
+                    elif 'c62828' in style:
+                        label.setForeground(QtGui.QColor('red'))
+                        label.setBackground(QtGui.QColor('#ffebee'))
+                    else:
+                        label.setForeground(QtGui.QColor('blue'))
+                        label.setBackground(QtGui.QColor('#e3f2fd'))
                 elif hasattr(label, 'setStyleSheet'):
-                    style = f'color: {text_color.name()}; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: {bg_color.name()}; border: 1px solid #ddd; border-radius: 1px;'
-                    label.setStyleSheet(style)
+                    try:
+                        label.setStyleSheet(style)
+                    except Exception:
+                        pass
             except (ValueError, TypeError):
                 # Default blue for non-numeric values
                 if isinstance(label, QtWidgets.QTableWidgetItem):
                     label.setForeground(QtGui.QColor('blue'))
                     label.setBackground(QtGui.QColor('#e3f2fd'))
                 elif hasattr(label, 'setStyleSheet'):
-                    label.setStyleSheet('color: blue; font-weight: bold; font-size: 8pt; padding: 1px 3px; background-color: #e3f2fd; border: 1px solid #ddd; border-radius: 1px;')
+                    try:
+                        label.setStyleSheet(f'color: #1565c0; background-color: #e3f2fd; {_MONITOR_STYLE_BASE}')
+                    except Exception:
+                        pass
         
         # Update value history and sparkline
         if signal_name in self._monitor_data:
@@ -3483,10 +3579,14 @@ Data Points Used: {data_points}"""
             test: Optional test configuration dictionary. If provided, configures labels based on test type.
                   If None, clears all labels.
         """
-        # Clear all label slots
+        # Clear all label slots (wrap setStyleSheet in try/except to avoid crash if widget is invalid)
+        _SAFE_CLEAR_STYLE = 'padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;'
         for label in self._monitor_label_slots:
-            label.setText('')
-            label.setStyleSheet('padding: 1px 3px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 1px;')
+            try:
+                label.setText('')
+                label.setStyleSheet(_SAFE_CLEAR_STYLE)
+            except Exception:
+                pass
         
         # Clear all monitoring data
         self._monitor_labels.clear()
@@ -4076,6 +4176,7 @@ Data Points Used: {data_points}"""
         except Exception as e:
             logger.error(f"Error updating plot: {e}", exc_info=True)
     
+    @QtCore.Slot(float, float)
     def _add_regression_line_to_plot(self, slope: float, intercept: float) -> None:
         """Add regression line to the current plot after test completion.
         

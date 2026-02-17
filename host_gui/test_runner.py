@@ -2064,10 +2064,22 @@ class TestRunner:
                                                     else:
                                                         logger.info(f"Analog Sweep Test Linear Regression: Slope={slope:.6f}, Intercept={intercept:.6f}")
                                                         
-                                                        # Add regression line to plot
+                                                        # Add regression line to plot (must run on main thread to avoid heap corruption)
                                                         if self.gui is not None and hasattr(self.gui, '_add_regression_line_to_plot'):
                                                             try:
-                                                                self.gui._add_regression_line_to_plot(slope, intercept)
+                                                                from PySide6 import QtCore as _Qt
+                                                                current_thread = _Qt.QThread.currentThread()
+                                                                main_thread = _Qt.QCoreApplication.instance().thread()
+                                                                if current_thread == main_thread:
+                                                                    self.gui._add_regression_line_to_plot(slope, intercept)
+                                                                else:
+                                                                    _Qt.QMetaObject.invokeMethod(
+                                                                        self.gui,
+                                                                        '_add_regression_line_to_plot',
+                                                                        _Qt.Qt.ConnectionType.QueuedConnection,
+                                                                        _Qt.Q_ARG(float, slope),
+                                                                        _Qt.Q_ARG(float, intercept)
+                                                                    )
                                                             except Exception as e:
                                                                 logger.debug(f"Failed to add regression line to plot: {e}")
                                                 else:

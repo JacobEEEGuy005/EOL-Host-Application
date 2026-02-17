@@ -153,130 +153,48 @@ class PhaseCurrentTestStateMachine:
         self._init_live_plots()
     
     def _init_live_plots(self) -> None:
-        """Initialize live plots for Phase V and Phase W current comparison."""
-        if not matplotlib_available:
-            logger.debug("Matplotlib not available, skipping live plot initialization")
+        """Initialize live plots for Phase V and Phase W (on main thread only to avoid segfaults)."""
+        if not matplotlib_available or self.gui is None:
             return
-        
-        if self.gui is None:
-            logger.debug("GUI is None, skipping live plot initialization")
+        if not hasattr(self.gui, 'plot_canvas') or self.gui.plot_canvas is None:
             return
-        
+        if not hasattr(self.gui, '_initialize_phase_current_plots'):
+            return
         try:
-            # Check if GUI has plot infrastructure
-            if not hasattr(self.gui, 'plot_canvas') or self.gui.plot_canvas is None:
-                logger.debug("GUI plot canvas not available, skipping live plot initialization")
-                return
-            
-            # Clear existing plot
-            if hasattr(self.gui, 'plot_axes') and self.gui.plot_axes is not None:
-                self.gui.plot_axes.clear()
-            
-            # Create two subplots: Phase V and Phase W
-            if not hasattr(self.gui, 'plot_figure') or self.gui.plot_figure is None:
-                logger.debug("GUI plot figure not available, skipping live plot initialization")
-                return
-            
-            self.gui.plot_figure.clear()
-            
-            # Create two subplots side by side
-            self.gui.plot_axes_v = self.gui.plot_figure.add_subplot(121)  # Phase V
-            self.gui.plot_axes_w = self.gui.plot_figure.add_subplot(122)  # Phase W
-            
-            # Initialize plot lines (scatter plots: Oscilloscope on X, CAN on Y)
-            self.gui.plot_line_v, = self.gui.plot_axes_v.plot([], [], 'bo', markersize=6, label='Phase V')
-            self.gui.plot_line_w, = self.gui.plot_axes_w.plot([], [], 'ro', markersize=6, label='Phase W')
-            
-            # Set labels and titles
-            # Main title centered between subplots
-            self.gui.plot_figure.suptitle('DUT Phase Current vs Measured Phase Current', fontsize=12, y=0.98)
-            
-            # Subplot 1: Phase V
-            self.gui.plot_axes_v.set_xlabel('Measured Phase V Current (A)')
-            self.gui.plot_axes_v.set_ylabel('DUT Phase V Current (A)')
-            self.gui.plot_axes_v.set_title('')  # Remove subplot title, main title is centered
-            self.gui.plot_axes_v.grid(True, alpha=0.3)
-            # Add diagonal reference line (y=x) for Phase V - displayed before test starts
-            self.gui.plot_axes_v.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            self.gui.plot_axes_v.legend()
-            
-            # Subplot 2: Phase W
-            self.gui.plot_axes_w.set_xlabel('Measured Phase W Current (A)')
-            self.gui.plot_axes_w.set_ylabel('DUT Phase W Current (A)')
-            self.gui.plot_axes_w.set_title('')  # Remove subplot title, main title is centered
-            self.gui.plot_axes_w.grid(True, alpha=0.3)
-            # Add diagonal reference line (y=x) for Phase W - displayed before test starts
-            self.gui.plot_axes_w.axline((0, 0), slope=1, color='gray', linestyle='--', alpha=0.5, label='Ideal (y=x)')
-            self.gui.plot_axes_w.legend()
-            
-            # Tight layout
-            self.gui.plot_figure.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for suptitle
-            
-            # Update canvas
-            self.gui.plot_canvas.draw()
-            
+            if QtCore is not None:
+                current = QtCore.QThread.currentThread()
+                main = QtCore.QCoreApplication.instance().thread()
+                if current != main:
+                    QtCore.QMetaObject.invokeMethod(
+                        self.gui,
+                        '_initialize_phase_current_plots',
+                        QtCore.Qt.ConnectionType.BlockingQueuedConnection
+                    )
+                    logger.info("Live plots initialized for Phase Current test (main thread)")
+                    return
+            self.gui._initialize_phase_current_plots()
             logger.info("Live plots initialized for Phase Current test")
         except Exception as e:
             logger.error(f"Failed to initialize live plots: {e}", exc_info=True)
     
     def _update_live_plots(self) -> None:
-        """Update live plots with latest data point."""
-        if not matplotlib_available:
+        """Update live plots with latest data (on main thread only to avoid segfaults)."""
+        if not matplotlib_available or self.gui is None:
             return
-        
-        if self.gui is None:
+        if not hasattr(self.gui, '_update_phase_current_live_plots'):
             return
-        
         try:
-            if not hasattr(self.gui, 'plot_axes_v') or not hasattr(self.gui, 'plot_axes_w'):
-                return
-            
-            # Get current data lengths
-            num_points = len(self.plot_can_v_avg)
-            if num_points == 0:
-                return
-            
-            # Filter out NaN values for plotting
-            can_v_valid = []
-            osc_v_valid = []
-            can_w_valid = []
-            osc_w_valid = []
-            
-            for i in range(num_points):
-                can_v = self.plot_can_v_avg[i]
-                osc_v = self.plot_osc_v_avg[i]
-                can_w = self.plot_can_w_avg[i]
-                osc_w = self.plot_osc_w_avg[i]
-                
-                # Only include points where both CAN and Oscilloscope values are valid (not NaN)
-                if (isinstance(can_v, (int, float)) and isinstance(osc_v, (int, float)) and
-                    not (isinstance(can_v, float) and can_v != can_v) and  # can_v is not NaN
-                    not (isinstance(osc_v, float) and osc_v != osc_v)):  # osc_v is not NaN
-                    can_v_valid.append(can_v)
-                    osc_v_valid.append(osc_v)
-                
-                if (isinstance(can_w, (int, float)) and isinstance(osc_w, (int, float)) and
-                    not (isinstance(can_w, float) and can_w != can_w) and  # can_w is not NaN
-                    not (isinstance(osc_w, float) and osc_w != osc_w)):  # osc_w is not NaN
-                    can_w_valid.append(can_w)
-                    osc_w_valid.append(osc_w)
-            
-            # Update Phase V plot (Oscilloscope on X, CAN on Y)
-            if can_v_valid and osc_v_valid:
-                self.gui.plot_line_v.set_data(osc_v_valid, can_v_valid)
-                self.gui.plot_axes_v.relim()
-                self.gui.plot_axes_v.autoscale()
-            
-            # Update Phase W plot (Oscilloscope on X, CAN on Y)
-            if can_w_valid and osc_w_valid:
-                self.gui.plot_line_w.set_data(osc_w_valid, can_w_valid)
-                self.gui.plot_axes_w.relim()
-                self.gui.plot_axes_w.autoscale()
-            
-            # Update canvas
-            self.gui.plot_canvas.draw()
-            self.gui.plot_canvas.draw_idle()
-            
+            if QtCore is not None:
+                current = QtCore.QThread.currentThread()
+                main = QtCore.QCoreApplication.instance().thread()
+                if current != main:
+                    QtCore.QMetaObject.invokeMethod(
+                        self.gui,
+                        '_update_phase_current_live_plots',
+                        QtCore.Qt.ConnectionType.QueuedConnection
+                    )
+                    return
+            self.gui._update_phase_current_live_plots()
         except Exception as e:
             logger.error(f"Failed to update live plots: {e}", exc_info=True)
     
@@ -368,26 +286,28 @@ class PhaseCurrentTestStateMachine:
                                     logger.info(f"Phase V Current: {v_val} A, Phase W Current: {w_val} A")
                                     self.collected_signals.append((signal_timestamp, v_val, w_val))
                                     
-                                    # Update real-time monitoring
-                                    if self.gui is not None:
+                                    # Update real-time monitoring on main thread only (avoids segfault)
+                                    if self.gui is not None and hasattr(self.gui, 'update_phase_current_monitor'):
                                         try:
-                                            if hasattr(self.gui, 'update_monitor_signal_by_name') and callable(getattr(self.gui, 'update_monitor_signal_by_name', None)):
-                                                self.gui.update_monitor_signal_by_name('dut_phase_v_current', v_val)
-                                                self.gui.update_monitor_signal_by_name('dut_phase_w_current', w_val)
+                                            if QtCore is not None:
+                                                current = QtCore.QThread.currentThread()
+                                                main = QtCore.QCoreApplication.instance().thread()
+                                                if current != main:
+                                                    QtCore.QMetaObject.invokeMethod(
+                                                        self.gui,
+                                                        'update_phase_current_monitor',
+                                                        QtCore.Qt.ConnectionType.QueuedConnection,
+                                                        QtCore.Q_ARG(float, float(v_val)),
+                                                        QtCore.Q_ARG(float, float(w_val))
+                                                    )
+                                                else:
+                                                    self.gui.update_phase_current_monitor(float(v_val), float(w_val))
+                                            else:
+                                                self.gui.update_phase_current_monitor(float(v_val), float(w_val))
                                         except Exception as e:
                                             logger.debug(f"Failed to update phase current monitoring: {e}")
                         except Exception as e:
                             logger.warning(f"Failed to collect signals from cache: {e}", exc_info=True)
-                    
-                    # Process Qt events to keep UI responsive
-                    if self.gui is not None:
-                        try:
-                            if hasattr(self.gui, 'processEvents') and callable(getattr(self.gui, 'processEvents', None)):
-                                self.gui.processEvents()
-                            elif QtCore and hasattr(QtCore.QCoreApplication, 'processEvents'):
-                                QtCore.QCoreApplication.processEvents()
-                        except Exception as e:
-                            logger.debug(f"Failed to process Qt events: {e}")
                     
                     # Sleep to avoid excessive polling (frames are decoded by _poll_frames periodically)
                     time.sleep(poll_interval)
