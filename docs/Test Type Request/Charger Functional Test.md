@@ -13,8 +13,7 @@
   - Output current regulation to the specified test current within tolerance
   
   How it works:
-  - The test starts by configuring output current trim value (from previous Output Current Calibration 
-    test result or fallback value) and output current setpoint
+  - The test starts by configuring output current trim value (fixed at 100%) and output current setpoint
   - A test trigger signal is sent to the DUT via CAN to initiate the test
   - The DUT receives the trigger and initializes for the test
   - When DUT receives AC Input, it enables PFC and waits for PFC Regulation
@@ -39,8 +38,7 @@
   
   Special Considerations:
   - **Pre-Test Safety Dialog**: Before starting the test, the test sequence must pause and display a safety confirmation dialog. The dialog lists hardware connection requirements and asks the user to confirm before proceeding. If the user clicks "No", the test sequence pauses and the same dialog will appear again when the user resumes the sequence.
-  - Test requires Output Current Calibration test to be performed prior (for trim value)
-  - If Output Current Calibration was not performed, uses fallback trim value from user input
+  - Trim value sent to DUT is always 100% (no calibration or fallback).
   - Test monitors multiple feedback signals simultaneously during execution
   - Test performs post-execution analysis of logged CAN data
   - Test duration is user-configurable (test_time_ms)
@@ -60,7 +58,7 @@ List all fields that must be provided for this test type:
 | `test_trigger_signal` | `string` | `CAN signal name for test trigger command` | `Non-empty, Required` | `"Test_Request"` |
 | `test_trigger_signal_value` | `integer` | `Value to send for test trigger signal (user configurable)` | `Range: 0-255, Required` | `1` |
 | `set_output_current_trim_signal` | `string` | `CAN signal name for setting output current trim value` | `Non-empty, Required` | `"Set_ChargerIout_TrimValue"` |
-| `fallback_output_current_trim_value` | `number` | `Fallback trim value (0-200%) if Output Current Calibration not performed` | `Range: 0-200, Required` | `100.0` |
+| `fallback_output_current_trim_value` | `number` | `Unused; trim is always 100%. Kept for backward compatibility.` | `Range: 0-200, Required` | `100.0` |
 | `set_output_current_setpoint_signal` | `string` | `CAN signal name for setting output current setpoint` | `Non-empty, Required` | `"ChargerIout_SetPoint"` |
 | `output_test_current` | `number` | `Output current setpoint in Amperes` | `Range: 0-40, Required` | `10.0` |
 | `feedback_signal_source` | `integer` | `CAN message ID for feedback messages` | `Range: 0-0x1FFFFFFF, Required` | `0x107` |
@@ -85,7 +83,7 @@ If the test uses CAN communication, specify:
   - Message ID: `command_signal_source` (configurable, e.g., 0x110)
   - Signals used: 
     - `test_trigger_signal` - Test trigger command (value: `test_trigger_signal_value`, user configurable)
-    - `set_output_current_trim_signal` - Output current trim value (percentage, 0-200%)
+    - `set_output_current_trim_signal` - Output current trim value (always 100%)
     - `set_output_current_setpoint_signal` - Output current setpoint (Amperes, 0-40A)
   - Purpose: `Send test trigger, current trim, and current setpoint commands to DUT`
 
@@ -129,14 +127,11 @@ Describe the step-by-step execution flow:
    - Duration: User-dependent (until user responds)
    - Expected result: User confirms hardware connections are ready, or test sequence paused
 
-1. Initialize and Get Output Current Trim Value
+1. Set Output Current Trim Value
    - Action: 
-     1. Check if Output Current Calibration test was performed previously in test sequence
-     2. If found, retrieve adjustment_factor from test results
-     3. Calculate trim value: trim_value = adjustment_factor * 100 (percentage)
-     4. If not found, use fallback_output_current_trim_value from configuration
+     1. Set trim_value = 100 (fixed; no calibration or fallback)
    - Duration: As fast as possible
-   - Expected result: Trim value determined (from calibration or fallback)
+   - Expected result: Trim value set to 100%
 
 2. Send Output Current Trim Value
    - Action: 
@@ -360,10 +355,10 @@ Specify the UI fields needed:
 
 #### Field 5: Fallback Output Current Trim Value
 - **Type**: `QLineEdit` with QDoubleValidator
-- **Placeholder**: `Enter fallback trim value (0-200%)`
+- **Placeholder**: `Unused; trim is always 100%`
 - **Validator**: `Float 0.0-200.0`
 - **DBC Mode**: `Free-text (same for both modes)`
-- **Required**: `Yes`
+- **Required**: `Yes` (kept for backward compatibility; value is ignored)
 
 #### Field 6: Set Output Current Setpoint Signal
 - **Type**: `QComboBox` (DBC mode) / `QLineEdit` (non-DBC mode)
@@ -591,35 +586,31 @@ List potential errors and how to handle them:
    - Error: `"Field value out of range"`
    - Handling: Return `False, "Field value out of range: expected range, got {value}"`
 
-3. **Output Current Calibration Not Found**
-   - Error: `"Output Current Calibration test not found in sequence"`
-   - Handling: Use fallback_output_current_trim_value, log warning message
-
-4. **DUT Fault Detected**
+3. **DUT Fault Detected**
    - Error: `"DUT Test State = 7 (fault detected)"`
    - Handling: Stop test immediately, return `False, "Test failed: DUT fault detected (Test State = 7)"`
 
-5. **Signal Not Found During Execution**
+4. **Signal Not Found During Execution**
    - Error: `"Signal not found in CAN messages"`
    - Handling: Return `False, "No data collected: signal {signal_name} not found"`
 
-6. **PFC Regulation Failed**
+5. **PFC Regulation Failed**
    - Error: `"PFC Power Good signal never transitioned from 1→0"`
    - Handling: Return `False, "PFC Regulation failed: PFC Power Good never transitioned from 1→0 (PFC is regulating when signal is 0)"`
 
-7. **PCMC Success Failed**
+6. **PCMC Success Failed**
    - Error: `"PCMC signal is not 1"`
    - Handling: Return `False, "PCMC Success failed: PCMC signal = {value} (expected 1)"`
 
-8. **Output Current Regulation Failed**
+7. **Output Current Regulation Failed**
    - Error: `"Average output current outside tolerance"`
    - Handling: Return `False, "Output Current Regulation failed: average = {avg}A, expected = {expected}A ± {tolerance}A"`
 
-9. **Insufficient Data for Current Analysis**
+8. **Insufficient Data for Current Analysis**
    - Error: `"Less than 1 second of data available for current analysis"`
    - Handling: Use all available data, log warning, proceed with analysis
 
-10. **DBC Encoding Failure**
+9. **DBC Encoding Failure**
     - Error: `"Failed to encode message"`
     - Handling: Return `False, "Failed to encode CAN message: {error}"`
 
@@ -689,7 +680,7 @@ List potential errors and how to handle them:
 
 ### Special Considerations
 - **Pre-Test Safety Dialog**: Before test execution begins, a modal safety confirmation dialog must be displayed. The dialog lists two hardware connection requirements and asks the user to confirm readiness. If the user clicks "No", the test sequence pauses and the dialog will reappear when the user resumes the sequence. This ensures proper hardware connections before starting the test, which is critical for safety and test validity. The dialog must be shown in the main GUI thread before any test initialization occurs.
-- **Output Current Calibration Dependency**: Test attempts to retrieve adjustment_factor from previous "Output Current Calibration" test in the test sequence. If not found, uses fallback value. Implementation should search test results/execution history for previous test.
+- **Fixed Trim Value**: Test always sends trim value 100% to the DUT (no calibration or fallback).
 - **Multi-Signal Monitoring**: Test monitors 7 feedback signals simultaneously during execution. All signals must be logged with timestamps for post-execution analysis.
 - **Post-Execution Analysis**: Test performs analysis of logged CAN data after test execution completes. This requires storing all logged data with timestamps.
 - **Fault Detection**: Test must immediately fail if DUT Test State = 7 is detected at any point during execution.
@@ -701,18 +692,16 @@ List potential errors and how to handle them:
 - **can_service**: Required for sending CAN commands and receiving CAN frames
 - **dbc_service**: Required for proper signal encoding/decoding (test requires DBC)
 - **signal_service**: Required for reading feedback signals
-- **Test Result Access**: Requires ability to access results from previous tests in test sequence (for Output Current Calibration adjustment_factor)
+- **Test Result Access**: Not required for trim value (trim is always 100%)
 
 ### Similar Test Types
-- **Charged HV Bus Test**: Very similar test type with same PFC Regulation and PCMC Success checks, but Charger Functional Test adds Output Current Regulation verification
+- **Charged HV Bus Test**: Very similar test type with same PFC Regulation and PCMC Success checks, but Charger Functional Test adds Output Current Regulation verification and always uses trim value 100%
 - **Output Current Calibration**: Similar CAN command/feedback pattern, but this test focuses on functional operation rather than calibration
 
 ### Testing Requirements
 - Test with hardware connected (DUT, CAN hardware, AC power source, Battery/Load Bank)
 - Test with valid DBC file loaded (required)
-- Test with Output Current Calibration performed prior (to verify trim value retrieval)
-- Test without Output Current Calibration (to verify fallback value usage)
-- Test with various test_time_ms values
+- Test with various test_time_ms values (trim value is always 100%)
 - Test with different output_test_current values
 - Test with different output_current_tolerance values
 - Test error cases (fault detection, signal not found, etc.)
@@ -740,7 +729,7 @@ Test results are automatically included in PDF report exports:
   - Both check PFC Regulation and PCMC Success
   - Both use CAN communication for commands and feedback
   - Both perform post-execution analysis of logged data
-  - Both have dependency on previous test results (Output Current Calibration)
+  - Charger Functional Test always sends trim value 100%; Charged HV Bus Test may use Output Current Calibration result
 - **Key Differences**: 
   - Charger Functional Test adds Output Current Regulation verification
   - Charger Functional Test monitors 7 signals vs 6 signals in Charged HV Bus Test (adds output_current_signal)
@@ -777,8 +766,7 @@ Test results are automatically included in PDF report exports:
 - [ ] Test results appear in results table
 - [ ] Test results appear in test report
 - [ ] JSON schema validation works
-- [ ] Output Current Calibration result retrieval works (if test performed prior)
-- [ ] Fallback trim value used correctly (if Output Current Calibration not performed)
+- [ ] Trim value 100 sent to DUT (no calibration or fallback)
 
 ### Technical Requirements
 - [ ] All files updated according to documentation
@@ -804,9 +792,7 @@ Test results are automatically included in PDF report exports:
 - [ ] Pre-test dialog reappears on resume after "No" response
 - [ ] Test execution produces correct results
 - [ ] Error cases handled gracefully (fault detection, signal not found, etc.)
-- [ ] Test with Output Current Calibration performed prior
-- [ ] Test without Output Current Calibration (fallback value)
-- [ ] Test with various test_time_ms values
+- [ ] Test with various test_time_ms values (trim is always 100%)
 - [ ] Test with different output_test_current values
 - [ ] Test with different output_current_tolerance values
 - [ ] Post-execution analysis produces correct results
@@ -837,9 +823,8 @@ Please implement this new test type following the documentation in:
 5. Implement pre-test safety dialog (modal dialog with Yes/No, pause sequence on No, re-show on resume)
 6. Implement execution logic with multi-signal monitoring
 7. Implement post-execution data analysis (PFC Regulation, PCMC Success, Output Current Regulation)
-8. Implement previous test result access (for Output Current Calibration)
-9. Test thoroughly with both valid and invalid configurations
-10. Ensure all acceptance criteria are met
+8. Test thoroughly with both valid and invalid configurations
+9. Ensure all acceptance criteria are met
 
 ### Key Reminders
 - Use exact test type name consistently across all files: `"Charger Functional Test"`
@@ -851,8 +836,7 @@ Please implement this new test type following the documentation in:
 - **Implement pre-test safety dialog before test execution starts** - Show modal dialog with hardware connection requirements, pause sequence if user clicks "No", re-show dialog when user resumes
 - Implement multi-signal monitoring with timestamped logging
 - Implement post-execution analysis for PFC Regulation, PCMC Success, and Output Current Regulation
-- Access previous test results for Output Current Calibration adjustment_factor
+- Always send trim value 100 to DUT (no calibration or fallback)
 - Fail immediately if DUT Test State = 7 detected
-- Use fallback trim value if Output Current Calibration not found
 - Analyze output current from last 1 second of logged data (use all available data if less than 1 second)
 

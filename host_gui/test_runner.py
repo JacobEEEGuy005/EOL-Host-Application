@@ -3589,7 +3589,6 @@ class TestRunner:
                 trigger_signal = act.get('test_trigger_signal')
                 trigger_value = act.get('test_trigger_signal_value')
                 trim_signal = act.get('set_output_current_trim_signal')
-                fallback_trim = act.get('fallback_output_current_trim_value', 100.0)
                 setpoint_signal = act.get('set_output_current_setpoint_signal')
                 output_current = act.get('output_test_current')
                 feedback_msg_id = act.get('feedback_signal_source')
@@ -3711,165 +3710,9 @@ class TestRunner:
                 if pfc_power_good_signal:
                     monitor_signal_map[pfc_power_good_signal] = 'pfc_power_good'
 
-                # Step 1: Get Output Current Trim Value
-                logger.info("Charged HV Bus Test: Step 1 - Getting output current trim value...")
-                logger.info(f"Charged HV Bus Test: Fallback trim value from config: {fallback_trim:.2f}%")
-                trim_value = fallback_trim
-                trim_value_source = "fallback (config default)"
-                
-                # Try to get adjustment_factor from previous Output Current Calibration test
-                if self.gui is not None:
-                    # Strategy 1: Search through _tests list directly (most reliable)
-                    # This finds tests that have been executed and have statistics stored
-                    if hasattr(self.gui, '_tests') and hasattr(self.gui, '_test_execution_data'):
-                        logger.info(f"Charged HV Bus Test: Searching through {len(self.gui._tests)} tests for Output Current Calibration test...")
-                        
-                        # Search in reverse order to get the most recent test first
-                        found_calibration_test = False
-                        for test in reversed(self.gui._tests):
-                            test_name = test.get('name', '')
-                            actuation = test.get('actuation', {})
-                            test_type = actuation.get('type', '')
-                            
-                            if test_type == 'Output Current Calibration':
-                                # Check if this test has execution data
-                                if test_name in self.gui._test_execution_data:
-                                    found_calibration_test = True
-                                    exec_data = self.gui._test_execution_data[test_name]
-                                    logger.info(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' with execution data")
-                                    
-                                    # Check execution status
-                                    exec_status = exec_data.get('status', 'Not Run')
-                                    logger.info(f"Charged HV Bus Test: Test '{test_name}' execution status: {exec_status}")
-                                    
-                                    # Check if test passed and has adjustment_factor
-                                    stats = exec_data.get('statistics', {})
-                                    logger.info(f"Charged HV Bus Test: Statistics keys for '{test_name}': {list(stats.keys()) if stats else 'None'}")
-                                    
-                                    adjustment_factor = stats.get('adjustment_factor')
-                                    test_passed_in_stats = stats.get('passed', False)
-                                    
-                                    # Check both status field and statistics passed field
-                                    test_passed = (exec_status == 'PASS') or test_passed_in_stats
-                                    
-                                    logger.info(f"Charged HV Bus Test: adjustment_factor={adjustment_factor}, test_passed={test_passed} (status={exec_status}, stats.passed={test_passed_in_stats})")
-                                    
-                                    if adjustment_factor is not None:
-                                        if test_passed:
-                                            logger.info(f"Charged HV Bus Test: Extracted adjustment_factor = {adjustment_factor:.6f} from Output Current Calibration test '{test_name}'")
-                                            logger.info(f"Charged HV Bus Test: Converting adjustment_factor to trim_value: {adjustment_factor:.6f} * 100.0 = {adjustment_factor * 100.0:.4f}%")
-                                            trim_value = adjustment_factor * 100.0
-                                            trim_value_source = f"Output Current Calibration test '{test_name}' (adjustment_factor={adjustment_factor:.6f})"
-                                            logger.info(f"Charged HV Bus Test: ✓ Successfully extracted and calculated trim_value = {trim_value:.2f}% from passed Output Current Calibration test '{test_name}'")
-                                            break
-                                        else:
-                                            logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' but it did not pass (status={exec_status}). Using fallback trim value.")
-                                    else:
-                                        logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' but adjustment_factor is None. Statistics keys: {list(stats.keys()) if stats else 'None'}")
-                                else:
-                                    logger.debug(f"Charged HV Bus Test: Found Output Current Calibration test '{test_name}' but no execution data yet.")
-                        
-                        if not found_calibration_test:
-                            logger.warning("Charged HV Bus Test: No Output Current Calibration test found in _tests list with execution data.")
-                    
-                    # Strategy 2: Fallback - search through _test_execution_data by name (legacy approach)
-                    if trim_value == fallback_trim and hasattr(self.gui, '_test_execution_data'):
-                        logger.info(f"Charged HV Bus Test: Fallback search through {len(self.gui._test_execution_data)} tests in execution history...")
-                        
-                        for test_name, exec_data in reversed(list(self.gui._test_execution_data.items())):
-                            # Look up test config from self._tests by name
-                            test_config = None
-                            if hasattr(self.gui, '_tests'):
-                                for test in self.gui._tests:
-                                    if test.get('name', '') == test_name:
-                                        test_config = test
-                                        break
-                            
-                            if test_config is None:
-                                continue
-                            
-                            actuation = test_config.get('actuation', {})
-                            if actuation.get('type') == 'Output Current Calibration':
-                                stats = exec_data.get('statistics', {})
-                                adjustment_factor = stats.get('adjustment_factor')
-                                exec_status = exec_data.get('status', 'Not Run')
-                                test_passed_in_stats = stats.get('passed', False)
-                                test_passed = (exec_status == 'PASS') or test_passed_in_stats
-                                
-                                if adjustment_factor is not None and test_passed:
-                                    logger.info(f"Charged HV Bus Test: Extracted adjustment_factor = {adjustment_factor:.6f} from Output Current Calibration test '{test_name}' (fallback search)")
-                                    logger.info(f"Charged HV Bus Test: Converting adjustment_factor to trim_value: {adjustment_factor:.6f} * 100.0 = {adjustment_factor * 100.0:.4f}%")
-                                    trim_value = adjustment_factor * 100.0
-                                    trim_value_source = f"Output Current Calibration test '{test_name}' (fallback search, adjustment_factor={adjustment_factor:.6f})"
-                                    logger.info(f"Charged HV Bus Test: ✓ Successfully extracted and calculated trim_value = {trim_value:.2f}% from passed Output Current Calibration test '{test_name}' (fallback search)")
-                                    break
-                    
-                    # Fallback: Also check _test_result_data_temp (in case test just finished but _on_test_finished hasn't processed it yet)
-                    if trim_value == fallback_trim and hasattr(self.gui, '_test_result_data_temp'):
-                        logger.info(f"Charged HV Bus Test: Checking _test_result_data_temp as fallback (found {len(self.gui._test_result_data_temp)} tests)...")
-                        for temp_test_name, result_data in self.gui._test_result_data_temp.items():
-                            logger.debug(f"Charged HV Bus Test: Checking temp test '{temp_test_name}'...")
-                            
-                            # Look up test config to verify it's Output Current Calibration
-                            test_config = None
-                            if hasattr(self.gui, '_tests'):
-                                for test in self.gui._tests:
-                                    if test.get('name', '') == temp_test_name:
-                                        test_config = test
-                                        break
-                            
-                            if test_config is None:
-                                logger.debug(f"Charged HV Bus Test: Test config not found for temp test '{temp_test_name}', skipping...")
-                                continue
-                            
-                            actuation = test_config.get('actuation', {})
-                            test_type = actuation.get('type', '')
-                            logger.debug(f"Charged HV Bus Test: Temp test '{temp_test_name}' has type '{test_type}'")
-                            
-                            if test_type == 'Output Current Calibration':
-                                logger.info(f"Charged HV Bus Test: Found Output Current Calibration test '{temp_test_name}' in temp storage")
-                                
-                                adjustment_factor = result_data.get('adjustment_factor')
-                                logger.info(f"Charged HV Bus Test: adjustment_factor from temp storage: {adjustment_factor}")
-                                
-                                if adjustment_factor is not None:
-                                    # Check if test passed (use second sweep gain error)
-                                    second_sweep_gain_error = result_data.get('second_sweep_gain_error')
-                                    tolerance_percent = result_data.get('tolerance_percent', 0)
-                                    test_passed = False
-                                    if second_sweep_gain_error is not None and tolerance_percent is not None:
-                                        test_passed = abs(second_sweep_gain_error) <= tolerance_percent
-                                    
-                                    logger.info(f"Charged HV Bus Test: test_passed={test_passed} (second_sweep_gain_error={second_sweep_gain_error}, tolerance_percent={tolerance_percent})")
-                                    
-                                    if test_passed:
-                                        logger.info(f"Charged HV Bus Test: Extracted adjustment_factor = {adjustment_factor:.6f} from Output Current Calibration test '{temp_test_name}' (temp storage)")
-                                        logger.info(f"Charged HV Bus Test: Converting adjustment_factor to trim_value: {adjustment_factor:.6f} * 100.0 = {adjustment_factor * 100.0:.4f}%")
-                                        trim_value = adjustment_factor * 100.0
-                                        trim_value_source = f"Output Current Calibration test '{temp_test_name}' (temp storage, adjustment_factor={adjustment_factor:.6f})"
-                                        logger.info(f"Charged HV Bus Test: ✓ Successfully extracted and calculated trim_value = {trim_value:.2f}% from passed Output Current Calibration test '{temp_test_name}' (temp storage)")
-                                        break
-                                    else:
-                                        logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{temp_test_name}' in temp storage but it did not pass.")
-                                else:
-                                    logger.warning(f"Charged HV Bus Test: Found Output Current Calibration test '{temp_test_name}' in temp storage but adjustment_factor is None. Result data keys: {list(result_data.keys()) if result_data else 'None'}")
-                
-                if trim_value == fallback_trim:
-                    logger.info(f"Charged HV Bus Test: No Output Current Calibration test found or test did not pass. Using fallback trim value: {trim_value:.2f}%")
-                
-                # Validate trim value range (0-200%)
-                if not (0.0 <= trim_value <= 200.0):
-                    logger.warning(f"Charged HV Bus Test: Trim value {trim_value:.2f}% is outside expected range (0-200%). Proceeding anyway.")
-                    # Clamp to valid range
-                    if trim_value < 0.0:
-                        trim_value = 0.0
-                        logger.warning(f"Charged HV Bus Test: Trim value clamped to 0%")
-                    elif trim_value > 200.0:
-                        trim_value = 200.0
-                        logger.warning(f"Charged HV Bus Test: Trim value clamped to 200%")
-                
-                # Log summary of trim value determination
-                logger.info(f"Charged HV Bus Test: Trim value determination complete. Final trim_value = {trim_value:.2f}% (source: {trim_value_source})")
+                # Step 1: Use fixed trim value 100% (no calibration or fallback)
+                trim_value = 100.0
+                logger.info("Charged HV Bus Test: Step 1 - Using fixed output current trim value: 100%")
                 
                 # Step 2: Send Output Current Trim Value
                 logger.info(f"Charged HV Bus Test: Step 2 - Sending output current trim value to DUT...")
@@ -4313,7 +4156,6 @@ class TestRunner:
                 trigger_signal = act.get('test_trigger_signal')
                 trigger_value = act.get('test_trigger_signal_value')
                 trim_signal = act.get('set_output_current_trim_signal')
-                fallback_trim = act.get('fallback_output_current_trim_value', 100.0)
                 setpoint_signal = act.get('set_output_current_setpoint_signal')
                 output_current = act.get('output_test_current')
                 feedback_msg_id = act.get('feedback_signal_source')
@@ -4450,53 +4292,9 @@ class TestRunner:
                     
                     return data_bytes
                 
-                # Step 1: Get Output Current Trim Value (same logic as Charged HV Bus Test)
-                logger.info("Charger Functional Test: Step 1 - Getting output current trim value...")
-                logger.info(f"Charger Functional Test: Fallback trim value from config: {fallback_trim:.2f}%")
-                trim_value = fallback_trim
-                trim_value_source = "fallback (config default)"
-                
-                # Try to get adjustment_factor from previous Output Current Calibration test
-                if self.gui is not None:
-                    # Strategy 1: Search through _tests list directly (most reliable)
-                    if hasattr(self.gui, '_tests') and hasattr(self.gui, '_test_execution_data'):
-                        logger.info(f"Charger Functional Test: Searching through {len(self.gui._tests)} tests for Output Current Calibration test...")
-                        
-                        found_calibration_test = False
-                        for test in reversed(self.gui._tests):
-                            test_name = test.get('name', '')
-                            actuation = test.get('actuation', {})
-                            test_type = actuation.get('type', '')
-                            
-                            if test_type == 'Output Current Calibration':
-                                if test_name in self.gui._test_execution_data:
-                                    found_calibration_test = True
-                                    exec_data = self.gui._test_execution_data[test_name]
-                                    stats = exec_data.get('statistics', {})
-                                    adjustment_factor = stats.get('adjustment_factor')
-                                    exec_status = exec_data.get('status', 'Not Run')
-                                    test_passed_in_stats = stats.get('passed', False)
-                                    test_passed = (exec_status == 'PASS') or test_passed_in_stats
-                                    
-                                    if adjustment_factor is not None and test_passed:
-                                        trim_value = adjustment_factor * 100.0
-                                        trim_value_source = f"Output Current Calibration test '{test_name}' (adjustment_factor={adjustment_factor:.6f})"
-                                        logger.info(f"Charger Functional Test: ✓ Using trim_value = {trim_value:.2f}% from Output Current Calibration test '{test_name}'")
-                                        break
-                
-                if trim_value == fallback_trim:
-                    logger.info(f"Charger Functional Test: No Output Current Calibration test found or test did not pass. Using fallback trim value: {trim_value:.2f}%")
-                
-                # Validate trim value range (0-200%)
-                if not (0.0 <= trim_value <= 200.0):
-                    logger.warning(f"Charger Functional Test: Trim value {trim_value:.2f}% is outside expected range (0-200%). Proceeding anyway.")
-                    # Clamp to valid range
-                    if trim_value < 0.0:
-                        trim_value = 0.0
-                        logger.warning(f"Charger Functional Test: Trim value clamped to 0%")
-                    elif trim_value > 200.0:
-                        trim_value = 200.0
-                        logger.warning(f"Charger Functional Test: Trim value clamped to 200%")
+                # Step 1: Use fixed trim value 100% (no calibration or fallback)
+                trim_value = 100.0
+                logger.info("Charger Functional Test: Step 1 - Using fixed output current trim value: 100%")
                 
                 # Step 2: Send Output Current Trim Value
                 logger.info(f"Charger Functional Test: Step 2 - Sending output current trim value to DUT...")
