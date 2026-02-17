@@ -154,9 +154,16 @@ class TestExecutionThread(QtCore.QThread):
                 test_name = test.get('name', '<unnamed>')
                 current_test_mode = test.get('test_mode', 0)  # Get current test's test_mode
                 
-                # Reset real-time monitoring labels before each test
+                # Reset real-time monitoring labels before each test (must run on main thread to avoid heap corruption)
                 try:
-                    if hasattr(self.test_runner, 'reset_monitor_signals'):
+                    gui = getattr(self.test_runner, 'gui', None)
+                    if gui is not None and hasattr(gui, '_clear_monitor_signals'):
+                        QtCore.QMetaObject.invokeMethod(
+                            gui,
+                            '_clear_monitor_signals',
+                            QtCore.Qt.ConnectionType.QueuedConnection
+                        )
+                    elif hasattr(self.test_runner, 'reset_monitor_signals'):
                         self.test_runner.reset_monitor_signals()
                 except Exception as e:
                     logger.debug(f"Failed to reset monitor signals: {e}")

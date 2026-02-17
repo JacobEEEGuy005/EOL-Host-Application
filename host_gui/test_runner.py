@@ -1244,39 +1244,53 @@ class TestRunner:
                                     else:
                                         logger.debug(f"EOL config not available, using commanded DAC voltage: {dac_voltage}mV")
                                     
-                                    # Timestamp validation: only use feedback values received AFTER the DAC command
-                                    # This prevents using stale cached values from previous voltage steps
-                                    # Allow small tolerance (-10ms) to handle timing precision issues
-                                    TIMESTAMP_TOLERANCE_SEC = 0.01  # 10ms tolerance
-                                    
-                                    if ts is None:
-                                        # No timestamp available - collect anyway but log warning
-                                        # This can happen if frames don't have timestamps or cache is empty
-                                        logger.info(
-                                            f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
-                                            f"Feedback={fb_val} (no timestamp available)"
-                                        )
-                                        # Batch the data point instead of updating plot immediately
-                                        batched_data_points.append((measured_dac_voltage, fb_val))
-                                        data_points_collected += 1
-                                    elif ts >= (dac_command_timestamp - TIMESTAMP_TOLERANCE_SEC):
-                                        # This feedback value is fresh enough (within tolerance window)
-                                        # Note: Allow small negative difference to handle timing precision
-                                        logger.debug(
-                                            f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
-                                            f"Feedback={fb_val}, timestamp_age={(time.time() - ts)*1000:.1f}ms"
-                                        )
-                                        # Batch the data point instead of updating plot immediately
-                                        batched_data_points.append((measured_dac_voltage, fb_val))
-                                        data_points_collected += 1
-                                    else:
-                                        # Stale feedback value - skip it (logged at debug level only if significant)
-                                        age_ms = (dac_command_timestamp - ts) * 1000
-                                        if age_ms > 50:  # Only log if more than 50ms old
+                                    # Outlier filter: reject points where |DUT measured - DAC measured (EOL)| > 500 mV
+                                    ANALOG_SWEEP_OUTLIER_THRESHOLD_MV = 500
+                                    is_outlier = False
+                                    try:
+                                        fb_float = float(fb_val)
+                                        if abs(fb_float - measured_dac_voltage) > ANALOG_SWEEP_OUTLIER_THRESHOLD_MV:
                                             logger.debug(
-                                                f"Skipping stale feedback value: timestamp {ts} is "
-                                                f"{age_ms:.1f}ms older than DAC command time {dac_command_timestamp}"
+                                                f"Skipping outlier: |DUT measured {fb_float} - DAC measured {measured_dac_voltage}| = {abs(fb_float - measured_dac_voltage):.1f} mV > {ANALOG_SWEEP_OUTLIER_THRESHOLD_MV} mV"
                                             )
+                                            is_outlier = True
+                                    except (ValueError, TypeError):
+                                        pass
+                                    
+                                    if not is_outlier:
+                                        # Timestamp validation: only use feedback values received AFTER the DAC command
+                                        # This prevents using stale cached values from previous voltage steps
+                                        # Allow small tolerance (-10ms) to handle timing precision issues
+                                        TIMESTAMP_TOLERANCE_SEC = 0.01  # 10ms tolerance
+                                        
+                                        if ts is None:
+                                            # No timestamp available - collect anyway but log warning
+                                            # This can happen if frames don't have timestamps or cache is empty
+                                            logger.info(
+                                                f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
+                                                f"Feedback={fb_val} (no timestamp available)"
+                                            )
+                                            # Batch the data point instead of updating plot immediately
+                                            batched_data_points.append((measured_dac_voltage, fb_val))
+                                            data_points_collected += 1
+                                        elif ts >= (dac_command_timestamp - TIMESTAMP_TOLERANCE_SEC):
+                                            # This feedback value is fresh enough (within tolerance window)
+                                            # Note: Allow small negative difference to handle timing precision
+                                            logger.debug(
+                                                f"Collecting feedback data point: DAC={measured_dac_voltage}mV (measured), "
+                                                f"Feedback={fb_val}, timestamp_age={(time.time() - ts)*1000:.1f}ms"
+                                            )
+                                            # Batch the data point instead of updating plot immediately
+                                            batched_data_points.append((measured_dac_voltage, fb_val))
+                                            data_points_collected += 1
+                                        else:
+                                            # Stale feedback value - skip it (logged at debug level only if significant)
+                                            age_ms = (dac_command_timestamp - ts) * 1000
+                                            if age_ms > 50:  # Only log if more than 50ms old
+                                                logger.debug(
+                                                    f"Skipping stale feedback value: timestamp {ts} is "
+                                                    f"{age_ms:.1f}ms older than DAC command time {dac_command_timestamp}"
+                                                )
                             except Exception as e:
                                 logger.debug(f"Error collecting feedback during dwell: {e}")
                         

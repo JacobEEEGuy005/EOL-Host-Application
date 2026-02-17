@@ -3572,6 +3572,11 @@ Data Points Used: {data_points}"""
         
         self._update_signal_with_status(signal_name, value, threshold_good, threshold_warn)
 
+    @QtCore.Slot()
+    def _clear_monitor_signals(self) -> None:
+        """Clear monitor labels (no test config). Must run on main thread. Used by worker via invokeMethod."""
+        self.reset_monitor_signals(None)
+
     def reset_monitor_signals(self, test: Optional[Dict[str, Any]] = None) -> None:
         """Reset real-time monitoring labels and configure for test type.
         
