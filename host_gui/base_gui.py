@@ -5468,13 +5468,13 @@ Data Points Used: {data_points}"""
         form_layout = QtWidgets.QFormLayout()
         
         unit_number_edit = QtWidgets.QLineEdit()
-        firmware_version_edit = QtWidgets.QLineEdit()
         hardware_version_edit = QtWidgets.QLineEdit()
-        unit_build_date_edit = QtWidgets.QLineEdit()
-        unit_build_date_edit.setPlaceholderText('YYYYMMDD')
+        unit_build_date_edit = QtWidgets.QDateEdit()
+        unit_build_date_edit.setCalendarPopup(True)
+        unit_build_date_edit.setDate(QtCore.QDate.currentDate())
+        unit_build_date_edit.setDisplayFormat('yyyy-MM-dd')
         
         form_layout.addRow('Unit Number:', unit_number_edit)
-        form_layout.addRow('Firmware Version:', firmware_version_edit)
         form_layout.addRow('Hardware Version:', hardware_version_edit)
         form_layout.addRow('Unit Build Date:', unit_build_date_edit)
         
@@ -5514,13 +5514,13 @@ Data Points Used: {data_points}"""
         
         def _on_accept():
             unit_number = unit_number_edit.text().strip()
-            firmware_version = firmware_version_edit.text().strip()
             hardware_version = hardware_version_edit.text().strip()
-            unit_build_date = unit_build_date_edit.text().strip()
+            qdate = unit_build_date_edit.date()
+            unit_build_date = f"{qdate.year():04d}{qdate.month():02d}{qdate.day():02d}"
             report_path = report_path_edit.text().strip()
             
-            if not unit_number or not firmware_version or not hardware_version or not unit_build_date:
-                QtWidgets.QMessageBox.warning(dialog, 'Missing Data', 'Please fill in all unit parameters.')
+            if not unit_number or not hardware_version:
+                QtWidgets.QMessageBox.warning(dialog, 'Missing Data', 'Please fill in Unit Number and Hardware Version.')
                 return
             
             if not report_path:
@@ -5535,7 +5535,6 @@ Data Points Used: {data_points}"""
                 self._generate_eol_json_from_report_path(
                     report_path=report_path,
                     unit_number=unit_number,
-                    firmware_version=firmware_version,
                     hardware_version=hardware_version,
                     unit_build_date=unit_build_date,
                 )
@@ -5553,7 +5552,6 @@ Data Points Used: {data_points}"""
         self,
         report_path: str,
         unit_number: str,
-        firmware_version: str,
         hardware_version: str,
         unit_build_date: str,
     ) -> None:
@@ -5561,7 +5559,7 @@ Data Points Used: {data_points}"""
         
         This uses docs/EOL_Parameter Specification/eol_parameters_sample.json as a template and
         fills in trim/offset values based on:
-        - Output Current Calibration Test: ChargerOutputCurrentTrimValue = trim_value / 100
+        - ChargerOutputCurrentTrimValue: fixed at 1.0
         - Phase Offset Calibration Test: PhaseACurrentOffsetValue, PhaseBCurrentOffsetValue
         - Phase Current Test: PhaseACurrentTrimValue, PhaseBCurrentTrimValue
         - MaxChargerVoltageTrimValue: hardcoded to 1.0
@@ -5589,43 +5587,21 @@ Data Points Used: {data_points}"""
         
         tests = report_data.get('tests', [])
         
-        output_current_test = None
         phase_offset_test = None
         phase_current_test = None
         
         for entry in tests:
             exec_data = entry.get('execution_data', {})
             test_type = exec_data.get('test_type') or entry.get('test_configuration', {}).get('type')
-            if test_type == 'Output Current Calibration':
-                output_current_test = entry
-            elif test_type == 'Phase Offset Calibration Test':
+            if test_type == 'Phase Offset Calibration Test':
                 phase_offset_test = entry
             elif test_type == 'Phase Current Test':
                 phase_current_test = entry
         
-        if output_current_test is None:
-            raise ValueError('Output Current Calibration test not found in selected report.')
         if phase_offset_test is None:
             raise ValueError('Phase Offset Calibration Test not found in selected report.')
         if phase_current_test is None:
             raise ValueError('Phase Current Test not found in selected report.')
-        
-        # Output Current Calibration: use calculated trim_value / 100
-        oc_exec = output_current_test.get('execution_data', {})
-        oc_stats = oc_exec.get('statistics', {}) or {}
-        oc_plot = oc_exec.get('plot_data', {}) or {}
-        
-        calculated_trim = oc_stats.get('calculated_trim_value')
-        if calculated_trim is None:
-            calculated_trim = oc_plot.get('calculated_trim_value')
-        if calculated_trim is None:
-            # Fallback: second sweep trim_value if available
-            second = (oc_plot.get('second_sweep') or {})
-            calculated_trim = second.get('trim_value')
-        if calculated_trim is None:
-            raise ValueError('Could not find calculated trim value in Output Current Calibration test.')
-        
-        charger_output_trim = float(calculated_trim) / 100.0
         
         # Phase Offset Calibration Test: offsets
         po_exec = phase_offset_test.get('execution_data', {})
@@ -5654,16 +5630,11 @@ Data Points Used: {data_points}"""
             unit_params['unitNumber'] = unit_number
         
         try:
-            unit_params['firmwareVersion'] = float(firmware_version)
-        except Exception:
-            unit_params['firmwareVersion'] = firmware_version
-        
-        try:
             unit_params['hardwareVersion'] = float(hardware_version)
         except Exception:
             unit_params['hardwareVersion'] = hardware_version
         
-        # Normalize build date: accept raw YYYYMMDD or allow non-digits
+        # Build date from calendar (YYYYMMDD string)
         digits_only = ''.join(ch for ch in unit_build_date if ch.isdigit())
         if digits_only:
             try:
@@ -5673,10 +5644,10 @@ Data Points Used: {data_points}"""
         else:
             unit_params['unitBuildDate'] = unit_build_date
         
-        # Trim parameters
+        # Trim parameters (ChargerOutputCurrentTrimValue fixed at 1.0 per template)
         trim_params['PhaseACurrentTrimValue'] = float(avg_gain_corr_v)
         trim_params['PhaseBCurrentTrimValue'] = float(avg_gain_corr_w)
-        trim_params['ChargerOutputCurrentTrimValue'] = float(charger_output_trim)
+        trim_params['ChargerOutputCurrentTrimValue'] = 1.0
         trim_params['MaxChargerVoltageTrimValue'] = 1.0
         trim_params['PhaseACurrentOffsetValue'] = float(phase_v_offset)
         trim_params['PhaseBCurrentOffsetValue'] = float(phase_w_offset)
