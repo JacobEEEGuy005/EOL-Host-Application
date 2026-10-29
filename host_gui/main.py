@@ -13,7 +13,7 @@ Architecture:
 The application uses a service-based architecture that separates business logic from the GUI layer:
 - Services: CanService, DbcService, SignalService, OscilloscopeService, etc.
 - ServiceContainer: Dependency injection container for service management
-- TestExecutionThread: Async test execution in background thread
+- TestExecutionThread: Async test execution in background thread 
 
 Key Components:
 - BaseGUI: Main application window with tabs for CAN data, test configurator, and test status

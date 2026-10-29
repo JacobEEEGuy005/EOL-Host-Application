@@ -1,0 +1,15 @@
+{
+    "UnitParameters": {
+        "unitNumber": 1234,
+        "unitBuildDate": 20260528,
+        "hardwareVersion": 1.3
+    },
+    "TrimParameters": {
+        "PhaseACurrentTrimValue": 1.0716109635913085,
+        "PhaseBCurrentTrimValue": 1.0221146048262058,
+        "ChargerOutputCurrentTrimValue": 1.0,
+        "MaxChargerVoltageTrimValue": 1.0,
+        "PhaseACurrentOffsetValue": 2029.0,
+        "PhaseBCurrentOffsetValue": 2046.0
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "UnitParameters": {
+        "unitNumber": "fdrfgaf",
+        "unitBuildDate": 20250528,
+        "hardwareVersion": 1.3
+    },
+    "TrimParameters": {
+        "PhaseACurrentTrimValue": 1.0616303716674778,
+        "PhaseBCurrentTrimValue": 1.016888167414796,
+        "ChargerOutputCurrentTrimValue": 1.0,
+        "MaxChargerVoltageTrimValue": 1.0,
+        "PhaseACurrentOffsetValue": 2029.0,
+        "PhaseBCurrentOffsetValue": 2046.0
+    }
+}
